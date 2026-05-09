@@ -1,0 +1,74 @@
+import { contextBridge, ipcRenderer } from 'electron';
+import type { StartupEntry } from '../shared/startup';
+import type { Macro, MacroAction, MacroFolder, MacroState } from '../shared/macro';
+import type { FocusAudioConfig, FocusAudioState } from '../shared/focusAudio';
+import type { AppSettings } from '../shared/settings';
+
+const api = {
+  startupApps: {
+    list: (): Promise<StartupEntry[]> => ipcRenderer.invoke('startup-apps:list'),
+    disable: (id: string): Promise<StartupEntry[]> => ipcRenderer.invoke('startup-apps:disable', id),
+    enable: (id: string): Promise<StartupEntry[]> => ipcRenderer.invoke('startup-apps:enable', id),
+    delete: (id: string): Promise<StartupEntry[]> => ipcRenderer.invoke('startup-apps:delete', id),
+    add: (input: { name: string; executablePath: string; arguments?: string; scope: 'current-user' | 'all-users' }): Promise<StartupEntry[]> =>
+      ipcRenderer.invoke('startup-apps:add', input),
+    update: (input: { id: string; executablePath: string; arguments?: string }): Promise<StartupEntry[]> =>
+      ipcRenderer.invoke('startup-apps:update', input),
+    pickExecutable: (): Promise<string | null> =>
+      ipcRenderer.invoke('startup-apps:pickExecutable'),
+  },
+  focusAudio: {
+    getState: (): Promise<FocusAudioState> => ipcRenderer.invoke('focusAudio:getState'),
+    setEnabled: (enabled: boolean): Promise<FocusAudioConfig> => ipcRenderer.invoke('focusAudio:setEnabled', enabled),
+    setMode: (mode: 'whitelist' | 'blacklist'): Promise<FocusAudioConfig> => ipcRenderer.invoke('focusAudio:setMode', mode),
+    setWhitelist: (list: string[]): Promise<FocusAudioConfig> => ipcRenderer.invoke('focusAudio:setWhitelist', list),
+    setBlacklist: (list: string[]): Promise<FocusAudioConfig> => ipcRenderer.invoke('focusAudio:setBlacklist', list),
+    getActiveApps: (): Promise<string[]> => ipcRenderer.invoke('focusAudio:getActiveApps'),
+  },
+  macros: {
+    getState: (): Promise<MacroState> => ipcRenderer.invoke('macros:getState'),
+    newId: (): Promise<string> => ipcRenderer.invoke('macros:newId'),
+    upsertMacro: (macro: Macro, profileName?: string): Promise<MacroState> =>
+      ipcRenderer.invoke('macros:upsertMacro', macro, profileName),
+    deleteMacro: (macroId: string): Promise<MacroState> =>
+      ipcRenderer.invoke('macros:deleteMacro', macroId),
+    runMacro: (macroId: string): Promise<void> =>
+      ipcRenderer.invoke('macros:runMacro', macroId),
+    reorderActions: (macroId: string, actions: MacroAction[]): Promise<MacroState> =>
+      ipcRenderer.invoke('macros:reorderActions', macroId, actions),
+    moveMacroToFolder: (macroId: string, folderId: string | null): Promise<MacroState> =>
+      ipcRenderer.invoke('macros:moveMacroToFolder', macroId, folderId),
+    upsertFolder: (folder: MacroFolder): Promise<MacroState> =>
+      ipcRenderer.invoke('macros:upsertFolder', folder),
+    deleteFolder: (folderId: string): Promise<MacroState> =>
+      ipcRenderer.invoke('macros:deleteFolder', folderId),
+    switchProfile: (name: string): Promise<MacroState> =>
+      ipcRenderer.invoke('macros:switchProfile', name),
+    addProfile: (name: string): Promise<MacroState> =>
+      ipcRenderer.invoke('macros:addProfile', name),
+    deleteProfile: (name: string): Promise<MacroState> =>
+      ipcRenderer.invoke('macros:deleteProfile', name),
+    updateRecordHotkey: (hotkey: string): Promise<MacroState> =>
+      ipcRenderer.invoke('macros:updateRecordHotkey', hotkey),
+    updateProcessBindings: (profileName: string, bindings: string[]): Promise<MacroState> =>
+      ipcRenderer.invoke('macros:updateProcessBindings', profileName, bindings),
+    getActiveApps: (): Promise<string[]> =>
+      ipcRenderer.invoke('macros:getActiveApps'),
+    /** Subscribe to auto-profile-switch events from the main process. Returns an unsubscribe function. */
+    onProfileChanged: (cb: (state: MacroState) => void): (() => void) => {
+      const listener = (_: Electron.IpcRendererEvent, state: MacroState): void => cb(state);
+      ipcRenderer.on('macros:profileChanged', listener);
+      return () => ipcRenderer.removeListener('macros:profileChanged', listener);
+    },
+  },
+  settings: {
+    get: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get'),
+    update: (patch: Partial<AppSettings>): Promise<AppSettings> => ipcRenderer.invoke('settings:update', patch),
+  },
+  tray: {
+    showMain: (): Promise<void> => ipcRenderer.invoke('tray:show-main'),
+    quit: (): Promise<void> => ipcRenderer.invoke('tray:quit'),
+  },
+};
+
+contextBridge.exposeInMainWorld('winUtils', api);

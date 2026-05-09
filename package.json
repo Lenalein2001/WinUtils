@@ -1,0 +1,79 @@
+{
+  "name": "winutils",
+  "version": "0.1.0",
+  "description": "Windows utility app with startup, macro, focus audio, and tray tools.",
+  "main": "out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p src/renderer/tsconfig.json",
+    "start:desktop": "npm run build && electron .",
+    "package:installer": "electron-builder --win nsis",
+    "package:portable": "electron-builder --win portable",
+    "package": "npm run build && npm run package:installer && npm run package:portable"
+  },
+  "keywords": [
+    "electron",
+    "react",
+    "windows",
+    "startup",
+    "utilities"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "uiohook-napi": "^1.5.5"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.2.0",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "^41.5.0",
+    "electron-builder": "^26.8.1",
+    "electron-vite": "^5.0.0",
+    "typescript": "^6.0.3",
+    "vite": "^7.3.2",
+    "wait-on": "^9.0.5"
+  },
+  "build": {
+    "appId": "com.winutils.app",
+    "productName": "WinUtils",
+    "icon": "resources/icon.ico",
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      { "from": "resources/", "to": "resources/" }
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "icon": "resources/icon.ico",
+      "target": [
+        "nsis",
+        "portable"
+      ],
+      "artifactName": "WinUtils-${version}-setup.${ext}"
+    },
+    "asarUnpack": [
+      "**/node_modules/uiohook-napi/**"
+    ],
+    "portable": {
+      "artifactName": "WinUtils-${version}-portable.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "resources/icon.ico",
+      "uninstallerIcon": "resources/icon.ico"
+    }
+  }
+}
