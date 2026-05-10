@@ -1,6 +1,6 @@
 # WinUtils
 
-WinUtils is a Windows desktop utility app built with Electron, React, TypeScript, and Vite. It brings startup management, process-aware macros, focus-based audio muting, and tray/window behavior controls into one desktop app.
+WinUtils is a Windows desktop utility app built with Electron, React, TypeScript, and Vite. It brings startup management, process-aware macros, focus-based audio muting, Playit.gg tunnel setup, and tray/window behavior controls into one desktop app.
 
 ## Desktop App (Not a Web App)
 
@@ -20,6 +20,7 @@ WinUtils is a Windows desktop utility app built with Electron, React, TypeScript
 - Disable autostart entries, keep them visible from cache, and restore them later
 - Macros with folders, profiles, recorded keyboard/mouse actions, and process-aware automatic profile switching
 - Focus Audio with whitelist/blacklist modes for muting unfocused apps by audio session/process
+- Playit Tunnels detects the local Playit.gg agent, offers Winget or direct signed-agent installer paths, and creates Playit-supported self-managed tunnel types through the Playit API
 - Settings for launch at login, start minimized, minimize to tray, and close to tray
 - Secure IPC bridge between renderer and Electron main process
 
@@ -79,5 +80,6 @@ npm run package:portable
 - Editing `HKLM` startup entries may require elevated privileges depending on the target machine and how the app is launched.
 - Startup folder entries are restored from WinUtils cache storage, so deleting the cache files manually will prevent restore for those disabled items.
 - The cache is stored in Electron's `app.getPath('userData')` location for the installed app.
-- Packaging generates both `release/WinUtils-0.1.0-setup.exe` and `release/WinUtils-0.1.0-portable.exe`.
+- Playit Tunnels requires a claimed Playit.gg agent. WinUtils can open the Playit claim page, finish the claim after browser approval, write Playit's local config without showing the agent secret, and refresh tunnels created outside the app.
+- Packaging generates installer and portable EXE artifacts in `release/`.
 - Release EXEs are published as GitHub release assets and are not tracked in Git.

@@ -4,6 +4,7 @@ import type { StartupEntry } from '../../shared/startup';
 import type { Macro, MacroAction, MacroFolder, MacroState } from '../../shared/macro';
 import type { FocusAudioConfig, FocusAudioState } from '../../shared/focusAudio';
 import type { AppSettings } from '../../shared/settings';
+import type { PlayitAgentClaimStart, PlayitInstallResult, PlayitState, PlayitTunnelInput, PlayitTunnelUpdateInput } from '../../shared/playit';
 
 declare global {
   interface Window {
@@ -46,6 +47,20 @@ declare global {
       settings: {
         get: () => Promise<AppSettings>;
         update: (patch: Partial<AppSettings>) => Promise<AppSettings>;
+      };
+      playit: {
+        getState: () => Promise<PlayitState>;
+        installWithWinget: () => Promise<PlayitInstallResult>;
+        installFromDownload: () => Promise<PlayitInstallResult>;
+        startAgentClaim: () => Promise<PlayitAgentClaimStart>;
+        completeAgentClaim: (claimCode: string) => Promise<PlayitInstallResult>;
+        createTunnel: (input: PlayitTunnelInput) => Promise<PlayitState>;
+        updateTunnel: (input: PlayitTunnelUpdateInput) => Promise<PlayitState>;
+        deleteTunnel: (id: string) => Promise<PlayitState>;
+        startAgent: () => Promise<PlayitState>;
+        openDownloadPage: () => Promise<void>;
+        openAccountPage: () => Promise<void>;
+        openTunnelSetupPage: () => Promise<void>;
       };
       tray: {
         showMain: () => Promise<void>;

@@ -10,6 +10,8 @@ import { registerIpcHandlers } from './ipc';
 import { AppSettingsStore } from './appSettingsStore';
 import { applyAppLoginItemSettings, getAppLaunchAtLogin } from './loginItem';
 import { MacroManager, registerMacroIpcHandlers } from './macroManager';
+import { registerPlayitIpcHandlers } from './playitIpc';
+import { PlayitManager } from './playitManager';
 import { registerSettingsIpcHandlers } from './settingsIpc';
 import { StartupManager } from './startupManager';
 
@@ -256,6 +258,9 @@ async function bootstrap(): Promise<void> {
   const focusAudioManager = new FocusAudioManager();
   registerFocusAudioIpcHandlers(focusAudioManager);
   focusAudioManager.startPolling();
+
+  const playitManager = new PlayitManager();
+  registerPlayitIpcHandlers(playitManager);
   logStartup('IPC handlers registered.');
 
   app.on('second-instance', () => {

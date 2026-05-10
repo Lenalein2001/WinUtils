@@ -3,6 +3,7 @@ import type { StartupEntry } from '../shared/startup';
 import type { Macro, MacroAction, MacroFolder, MacroState } from '../shared/macro';
 import type { FocusAudioConfig, FocusAudioState } from '../shared/focusAudio';
 import type { AppSettings } from '../shared/settings';
+import type { PlayitAgentClaimStart, PlayitInstallResult, PlayitState, PlayitTunnelInput, PlayitTunnelUpdateInput } from '../shared/playit';
 
 const api = {
   startupApps: {
@@ -64,6 +65,20 @@ const api = {
   settings: {
     get: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get'),
     update: (patch: Partial<AppSettings>): Promise<AppSettings> => ipcRenderer.invoke('settings:update', patch),
+  },
+  playit: {
+    getState: (): Promise<PlayitState> => ipcRenderer.invoke('playit:getState'),
+    installWithWinget: (): Promise<PlayitInstallResult> => ipcRenderer.invoke('playit:installWithWinget'),
+    installFromDownload: (): Promise<PlayitInstallResult> => ipcRenderer.invoke('playit:installFromDownload'),
+    startAgentClaim: (): Promise<PlayitAgentClaimStart> => ipcRenderer.invoke('playit:startAgentClaim'),
+    completeAgentClaim: (claimCode: string): Promise<PlayitInstallResult> => ipcRenderer.invoke('playit:completeAgentClaim', claimCode),
+    createTunnel: (input: PlayitTunnelInput): Promise<PlayitState> => ipcRenderer.invoke('playit:createTunnel', input),
+    updateTunnel: (input: PlayitTunnelUpdateInput): Promise<PlayitState> => ipcRenderer.invoke('playit:updateTunnel', input),
+    deleteTunnel: (id: string): Promise<PlayitState> => ipcRenderer.invoke('playit:deleteTunnel', id),
+    startAgent: (): Promise<PlayitState> => ipcRenderer.invoke('playit:startAgent'),
+    openDownloadPage: (): Promise<void> => ipcRenderer.invoke('playit:openDownloadPage'),
+    openAccountPage: (): Promise<void> => ipcRenderer.invoke('playit:openAccountPage'),
+    openTunnelSetupPage: (): Promise<void> => ipcRenderer.invoke('playit:openTunnelSetupPage'),
   },
   tray: {
     showMain: (): Promise<void> => ipcRenderer.invoke('tray:show-main'),

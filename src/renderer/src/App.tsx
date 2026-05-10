@@ -4,6 +4,7 @@ import type { StartupEntry } from '../../shared/startup';
 import type { AppSettings } from '../../shared/settings';
 import { FocusAudioTab } from './FocusAudioTab';
 import { MacrosTab } from './MacrosTab';
+import { PlayitTab } from './PlayitTab';
 import { SettingsTab } from './SettingsTab';
 
 const modules = [
@@ -24,6 +25,12 @@ const modules = [
     label: 'Focus Audio',
     overview: 'focus-based audio muting with whitelist and blacklist rules',
     compact: 'focus audio rules',
+  },
+  {
+    id: 'playit',
+    label: 'Playit Tunnels',
+    overview: 'Playit.gg tunnel setup for forwarding local ports without router changes',
+    compact: 'Playit tunnels',
   },
   {
     id: 'settings',
@@ -263,6 +270,12 @@ function App(): ReactElement {
         {activeTab === 'focus-audio' ? (
           <section className="content-card content-card--focus-audio">
             <FocusAudioTab />
+          </section>
+        ) : null}
+
+        {activeTab === 'playit' ? (
+          <section className="content-card content-card--playit">
+            <PlayitTab />
           </section>
         ) : null}
 
