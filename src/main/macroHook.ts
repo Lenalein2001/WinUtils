@@ -47,6 +47,12 @@ function toElectronAccelerator(hotkey: string): string | null {
       continue;
     }
 
+    const numpadKey = toNumpadAcceleratorKey(token);
+    if (numpadKey) {
+      key = numpadKey;
+      continue;
+    }
+
     if (token.length === 1) {
       key = token.toUpperCase();
       continue;
@@ -112,22 +118,102 @@ function toElectronAccelerator(hotkey: string): string | null {
       key = 'PageDown';
       continue;
     }
+    if (token === 'numlock' || token === 'num-lock') {
+      key = 'Numlock';
+      continue;
+    }
   }
 
   if (!key) return null;
   return [...modifiers, key].join('+');
 }
 
+function toNumpadAcceleratorKey(token: string): string | null {
+  const digit = token.match(/^(?:num|numpad)([0-9])$/)?.[1];
+  if (digit) return `num${digit}`;
+
+  switch (token) {
+    case 'numdec':
+    case 'numdecimal':
+    case 'numpaddecimal':
+      return 'numdec';
+    case 'numadd':
+    case 'numpadadd':
+      return 'numadd';
+    case 'numsub':
+    case 'numsubtract':
+    case 'numpadsubtract':
+      return 'numsub';
+    case 'nummult':
+    case 'nummultiply':
+    case 'numpadmultiply':
+      return 'nummult';
+    case 'numdiv':
+    case 'numdivide':
+    case 'numpaddivide':
+      return 'numdiv';
+    default:
+      return null;
+  }
+}
+
 function registerAllHotkeys(): void {
   globalShortcut.unregisterAll();
 
+  const hotkeys = new Set(callbacks.keys());
+  const registeredAccelerators = new Set<string>();
+
   for (const [hotkey, cb] of callbacks) {
-    const accelerator = toElectronAccelerator(hotkey);
-    if (!accelerator) continue;
-    globalShortcut.register(accelerator, () => {
-      try { cb(); } catch { /* ignore callback crash */ }
-    });
+    for (const accelerator of toElectronAccelerators(hotkey, hotkeys)) {
+      const registrationKey = accelerator.toLowerCase();
+      if (registeredAccelerators.has(registrationKey)) continue;
+      registeredAccelerators.add(registrationKey);
+
+      globalShortcut.register(accelerator, () => {
+        try { cb(); } catch { /* ignore callback crash */ }
+      });
+    }
   }
+}
+
+function toElectronAccelerators(hotkey: string, hotkeys: Set<string>): string[] {
+  const accelerators = new Set<string>();
+  const primary = toElectronAccelerator(hotkey);
+  if (primary) accelerators.add(primary);
+
+  const legacyNumpadAlias = toLegacyNumpadAlias(hotkey, hotkeys);
+  if (legacyNumpadAlias) {
+    const alias = toElectronAccelerator(legacyNumpadAlias);
+    if (alias) accelerators.add(alias);
+  }
+
+  return [...accelerators];
+}
+
+function toLegacyNumpadAlias(hotkey: string, hotkeys: Set<string>): string | null {
+  const tokens = normalizeHotkey(hotkey).split('+').filter(Boolean);
+  const digitIndex = tokens.findIndex(token => /^[0-9]$/.test(token));
+  if (digitIndex < 0) return null;
+
+  const nonModifierTokens = tokens.filter(token => !isModifierToken(token));
+  if (nonModifierTokens.length !== 1) return null;
+
+  const aliasTokens = [...tokens];
+  aliasTokens[digitIndex] = `num${tokens[digitIndex]}`;
+  const alias = aliasTokens.join('+');
+  const aliasAccelerator = toElectronAccelerator(alias)?.toLowerCase();
+  if (!aliasAccelerator) return null;
+
+  for (const existingHotkey of hotkeys) {
+    if (existingHotkey === normalizeHotkey(hotkey)) continue;
+    if (toElectronAccelerator(existingHotkey)?.toLowerCase() === aliasAccelerator) return null;
+  }
+
+  return alias;
+}
+
+function isModifierToken(token: string): boolean {
+  return token === 'ctrl' || token === 'control' || token === 'alt' || token === 'shift' || token === 'win' || token === 'meta' || token === 'super';
 }
 
 export function registerHotkey(hotkey: string, callback: () => void): void {

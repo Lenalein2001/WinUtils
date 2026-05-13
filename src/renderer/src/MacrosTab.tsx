@@ -28,6 +28,32 @@ function blankFolder(name = 'New Folder'): MacroFolder {
   return { id: newId(), name, macros: [], isExpanded: true };
 }
 
+function captureKeyName(event: React.KeyboardEvent<HTMLInputElement>): string {
+  const numpadKey = captureNumpadKeyName(event.code);
+  if (numpadKey) return numpadKey;
+
+  if (event.key === 'Enter') return 'Enter';
+  if (event.key === ' ') return 'Space';
+  if (event.key.length === 1) return event.key.toUpperCase();
+
+  return event.key;
+}
+
+function captureNumpadKeyName(code: string): string | null {
+  const digit = code.match(/^Numpad([0-9])$/)?.[1];
+  if (digit) return `Num${digit}`;
+
+  switch (code) {
+    case 'NumpadDecimal': return 'NumDec';
+    case 'NumpadAdd': return 'NumAdd';
+    case 'NumpadSubtract': return 'NumSub';
+    case 'NumpadMultiply': return 'NumMult';
+    case 'NumpadDivide': return 'NumDiv';
+    case 'NumpadEnter': return 'Enter';
+    default: return null;
+  }
+}
+
 function actionLabel(a: MacroAction): string {
   switch (a.type) {
     case 'delay': return `Delay ${a.milliseconds} ms`;
@@ -66,11 +92,7 @@ function HotkeyInput({
     if (e.shiftKey) parts.push('Shift');
     if (e.metaKey) parts.push('Win');
 
-    let keyName = key;
-    if (keyName === 'Enter') keyName = 'Enter';
-    if (keyName === ' ') keyName = 'Space';
-    if (keyName.length === 1) keyName = keyName.toUpperCase();
-    parts.push(keyName);
+    parts.push(captureKeyName(e));
 
     onChange(parts.join('+'));
     setCapturing(false);

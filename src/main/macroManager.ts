@@ -13,7 +13,7 @@ import type {
   MacroProfile,
   MacroState,
 } from '../shared/macro';
-import { executeMacro } from './macroExecutor';
+import { executeMacro, stopMacroExecutor, warmMacroExecutor } from './macroExecutor';
 import { clearHotkeys, registerHotkey, startHook, stopHook } from './macroHook';
 import { MacroStore } from './macroStore';
 
@@ -65,6 +65,11 @@ export class MacroManager {
     }
 
     await startHook();
+    try {
+      await warmMacroExecutor();
+    } catch (error) {
+      this.log(`Macro input worker warmup failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
     this.rebuildHotkeys();
     this.startFocusMonitor();
   }
@@ -645,6 +650,7 @@ while ($true) {
 
   destroy(): void {
     this.stopFocusMonitor();
+    stopMacroExecutor();
     stopHook();
   }
 }

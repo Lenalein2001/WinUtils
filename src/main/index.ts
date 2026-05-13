@@ -21,6 +21,7 @@ const startupLogFile = path.join(tmpdir(), 'WinUtils-startup.log');
 let mainWindow: BrowserWindow | null = null;
 let trayWindow: BrowserWindow | null = null;
 let appTray: Tray | null = null;
+let isQuitting = false;
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -71,6 +72,22 @@ function getIconPath(filename: string): string {
 
 function buildTrayIcon(): Electron.NativeImage {
   return nativeImage.createFromPath(getIconPath('icon.png'));
+}
+
+function showMainWindow(): void {
+  if (!mainWindow) return;
+
+  mainWindow.setSkipTaskbar(false);
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+}
+
+function hideMainWindowToTray(): void {
+  if (!mainWindow) return;
+
+  mainWindow.hide();
+  mainWindow.setSkipTaskbar(true);
 }
 
 async function createTrayWindow(preloadPath: string): Promise<void> {
@@ -135,29 +152,27 @@ function setupTray(preloadPath: string, settingsStore: AppSettingsStore): void {
 
   ipcMain.handle('tray:show-main', () => {
     trayWindow?.hide();
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-    }
+    showMainWindow();
   });
 
   ipcMain.handle('tray:quit', () => {
+    isQuitting = true;
     appTray?.destroy();
     app.quit();
   });
 
   if (mainWindow) {
     mainWindow.on('close', (event) => {
-      if (settingsStore.get().closeToTray) {
+      if (!isQuitting && settingsStore.get().closeToTray) {
         event.preventDefault();
-        mainWindow?.hide();
+        hideMainWindowToTray();
       }
     });
 
-    (mainWindow as NodeJS.EventEmitter).on('minimize', () => {
+    (mainWindow as NodeJS.EventEmitter).on('minimize', (event: { preventDefault(): void }) => {
       if (settingsStore.get().minimizeToTray) {
-        mainWindow?.hide();
+        event.preventDefault();
+        hideMainWindowToTray();
       }
     });
   }
@@ -174,6 +189,7 @@ async function createWindow(startMinimized: boolean): Promise<void> {
     minHeight: 760,
     center: true,
     show: !startMinimized,
+    skipTaskbar: startMinimized,
     backgroundColor: '#07111f',
     title: 'WinUtils',
     icon: getIconPath('icon.ico'),
@@ -214,10 +230,9 @@ async function createWindow(startMinimized: boolean): Promise<void> {
   }
 
   if (startMinimized) {
-    mainWindow.minimize();
+    hideMainWindowToTray();
   } else {
-    mainWindow.show();
-    mainWindow.focus();
+    showMainWindow();
   }
 
   mainWindow.on('closed', () => {
@@ -265,10 +280,7 @@ async function bootstrap(): Promise<void> {
 
   app.on('second-instance', () => {
     logStartup('Second instance event received.');
-    if (!mainWindow) return;
-    if (mainWindow.isMinimized()) mainWindow.restore();
-    mainWindow.show();
-    mainWindow.focus();
+    showMainWindow();
   });
 
   const preloadPath = path.join(__dirname, '../preload/index.js');
@@ -301,6 +313,8 @@ async function bootstrap(): Promise<void> {
   });
 
   app.on('before-quit', () => {
+    isQuitting = true;
+    macroManager.destroy();
     focusAudioManager.stopPolling();
   });
 }

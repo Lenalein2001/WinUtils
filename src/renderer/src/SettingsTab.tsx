@@ -48,7 +48,7 @@ export function SettingsTab({
         <label className="settings-row">
           <div>
             <strong>Start minimized</strong>
-            <p>When launched from startup, open minimized instead of focused.</p>
+            <p>When launched from startup, start in the system tray instead of focused.</p>
           </div>
           <input
             type="checkbox"

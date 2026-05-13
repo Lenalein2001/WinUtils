@@ -1,4 +1,5 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
+import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { Macro, MacroAction } from '../shared/macro';
 
@@ -22,6 +23,22 @@ const VK_MAP: Record<string, number> = {
   insert: 0x2d,
   f1: 0x70, f2: 0x71, f3: 0x72, f4: 0x73, f5: 0x74, f6: 0x75,
   f7: 0x76, f8: 0x77, f9: 0x78, f10: 0x79, f11: 0x7a, f12: 0x7b,
+  num0: 0x60, numpad0: 0x60,
+  num1: 0x61, numpad1: 0x61,
+  num2: 0x62, numpad2: 0x62,
+  num3: 0x63, numpad3: 0x63,
+  num4: 0x64, numpad4: 0x64,
+  num5: 0x65, numpad5: 0x65,
+  num6: 0x66, numpad6: 0x66,
+  num7: 0x67, numpad7: 0x67,
+  num8: 0x68, numpad8: 0x68,
+  num9: 0x69, numpad9: 0x69,
+  nummult: 0x6a, nummultiply: 0x6a, numpadmultiply: 0x6a,
+  numadd: 0x6b, numpadadd: 0x6b,
+  numsub: 0x6d, numsubtract: 0x6d, numpadsubtract: 0x6d,
+  numdec: 0x6e, numdecimal: 0x6e, numpaddecimal: 0x6e,
+  numdiv: 0x6f, numdivide: 0x6f, numpaddivide: 0x6f,
+  numlock: 0x90,
   '-': 0xbd, '=': 0xbb, '[': 0xdb, ']': 0xdd, '\\': 0xdc,
   ';': 0xba, "'": 0xde, '`': 0xc0, ',': 0xbc, '.': 0xbe, '/': 0xbf,
 };
@@ -41,22 +58,14 @@ function keysForString(keyStr: string): number[] {
   return keyStr.split('+').map(p => parseKey(p)).filter(k => k !== 0);
 }
 
-// ─── PowerShell input injection helper ─────────────────────────────────────
-
-function buildSendInputPwsh(vks: number[], down: boolean): string {
-  const flag = down ? '0' : '2'; // 0 = KEYDOWN, 2 = KEYUP
-  return vks
-    .map(vk => `[void][WinAPI]::SendKey(${vk}, ${flag})`)
-    .join('; ');
-}
-
 function buildSendTextPwsh(text: string): string {
   // Unicode character injection via SendInput
   const escaped = text.replace(/'/g, "''");
   return `[void][WinAPI]::InjectText('${escaped}')`;
 }
 
-// We use a single persistent PowerShell helper script loaded inline for performance.
+// Loaded once in a persistent PowerShell worker so game macros do not pay
+// PowerShell startup and Add-Type compilation between input actions.
 const PS_HELPER = `
 Add-Type -TypeDefinition @"
 using System;
@@ -111,11 +120,221 @@ public static class WinAPI {
 "@
 `;
 
+const PS_WORKER_SCRIPT = `${PS_HELPER}
+$ErrorActionPreference = "Stop"
+[Console]::Out.WriteLine("READY")
+[Console]::Out.Flush()
+while ($true) {
+  $line = [Console]::In.ReadLine()
+  if ($null -eq $line) { break }
+  if ($line -eq "__WINUTILS_EXIT__") { break }
+
+  $space = $line.IndexOf(' ')
+  if ($space -le 0) { continue }
+
+  $requestId = $line.Substring(0, $space)
+  $payload = $line.Substring($space + 1)
+
+  try {
+    $bytes = [Convert]::FromBase64String($payload)
+    $code = [System.Text.Encoding]::UTF8.GetString($bytes)
+    [scriptblock]::Create($code).Invoke() | Out-Null
+    [Console]::Out.WriteLine("OK " + $requestId)
+  } catch {
+    $message = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($_.Exception.Message))
+    [Console]::Out.WriteLine("ERR " + $requestId + " " + $message)
+  }
+
+  [Console]::Out.Flush()
+}
+`;
+
+class MacroInputWorker {
+  private child: ChildProcessWithoutNullStreams | null = null;
+  private ready = false;
+  private stdoutBuffer = '';
+  private stderrBuffer = '';
+  private nextRequestId = 1;
+  private starting: Promise<void> | null = null;
+  private resolveReady: (() => void) | null = null;
+  private rejectReady: ((error: Error) => void) | null = null;
+  private readonly pending = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
+
+  async warm(): Promise<void> {
+    await this.ensureStarted();
+  }
+
+  async run(script: string): Promise<void> {
+    await this.ensureStarted();
+
+    const child = this.child;
+    if (!child || child.killed || !child.stdin.writable) {
+      this.child = null;
+      throw new Error('Macro input worker is not available.');
+    }
+
+    const requestId = String(this.nextRequestId++);
+    const payload = Buffer.from(script, 'utf8').toString('base64');
+
+    await new Promise<void>((resolve, reject) => {
+      this.pending.set(requestId, { resolve, reject });
+      child.stdin.write(`${requestId} ${payload}\n`, (error) => {
+        if (!error) return;
+        this.pending.delete(requestId);
+        reject(error);
+      });
+    });
+  }
+
+  stop(): void {
+    const child = this.child;
+    this.child = null;
+    this.ready = false;
+    this.starting = null;
+    this.resolveReady = null;
+    this.rejectReady = null;
+    this.rejectPending(new Error('Macro input worker stopped.'));
+
+    if (!child || child.killed) return;
+    child.stdin.write('__WINUTILS_EXIT__\n', () => {
+      child.stdin.end();
+    });
+  }
+
+  private async ensureStarted(): Promise<void> {
+    if (this.child && !this.child.killed && this.ready) return;
+    if (this.starting) return this.starting;
+
+    this.ready = false;
+    this.stdoutBuffer = '';
+    this.stderrBuffer = '';
+    this.starting = new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        const detail = this.stderrBuffer.trim();
+        const suffix = detail ? ` ${detail}` : '';
+        const error = new Error(`Macro input worker did not become ready.${suffix}`);
+        this.rejectReady?.(error);
+        this.killCurrentWorker();
+      }, 10_000);
+
+      this.resolveReady = () => {
+        clearTimeout(timer);
+        this.ready = true;
+        this.resolveReady = null;
+        this.rejectReady = null;
+        resolve();
+      };
+      this.rejectReady = (error) => {
+        clearTimeout(timer);
+        this.resolveReady = null;
+        this.rejectReady = null;
+        reject(error);
+      };
+
+      const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', PS_WORKER_SCRIPT], {
+        windowsHide: true,
+        stdio: 'pipe',
+      });
+
+      this.child = child;
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', (chunk: string) => this.handleStdout(chunk));
+      child.stderr.on('data', (chunk: string) => {
+        this.stderrBuffer = `${this.stderrBuffer}${chunk}`.slice(-4000);
+      });
+      child.once('error', (error) => {
+        if (this.child === child) this.child = null;
+        this.ready = false;
+        this.rejectReady?.(error instanceof Error ? error : new Error(String(error)));
+        this.rejectPending(error instanceof Error ? error : new Error(String(error)));
+      });
+      child.once('exit', (code, signal) => {
+        if (this.child === child) this.child = null;
+        this.ready = false;
+        const detail = this.stderrBuffer.trim();
+        const suffix = detail ? ` ${detail}` : '';
+        const error = new Error(`Macro input worker exited (${code ?? signal ?? 'unknown'}).${suffix}`);
+        this.rejectReady?.(error);
+        this.rejectPending(error);
+      });
+    });
+
+    try {
+      await this.starting;
+    } finally {
+      this.starting = null;
+    }
+  }
+
+  private handleStdout(chunk: string): void {
+    this.stdoutBuffer += chunk;
+
+    for (;;) {
+      const lineEnd = this.stdoutBuffer.indexOf('\n');
+      if (lineEnd < 0) return;
+
+      const line = this.stdoutBuffer.slice(0, lineEnd).trim();
+      this.stdoutBuffer = this.stdoutBuffer.slice(lineEnd + 1);
+
+      if (line === 'READY') {
+        this.resolveReady?.();
+        continue;
+      }
+
+      this.handleResponse(line);
+    }
+  }
+
+  private killCurrentWorker(): void {
+    const child = this.child;
+    this.child = null;
+    this.ready = false;
+    if (child && !child.killed) child.kill();
+  }
+
+  private handleResponse(line: string): void {
+    const [status, requestId, encodedMessage] = line.split(' ');
+    const pending = this.pending.get(requestId);
+    if (!pending) return;
+
+    this.pending.delete(requestId);
+
+    if (status === 'OK') {
+      pending.resolve();
+      return;
+    }
+
+    const message = encodedMessage
+      ? Buffer.from(encodedMessage, 'base64').toString('utf8')
+      : 'Macro input worker failed.';
+    pending.reject(new Error(message));
+  }
+
+  private rejectPending(error: Error): void {
+    for (const pending of this.pending.values()) pending.reject(error);
+    this.pending.clear();
+  }
+}
+
+const inputWorker = new MacroInputWorker();
+
+export async function warmMacroExecutor(): Promise<void> {
+  await inputWorker.warm();
+}
+
+export function stopMacroExecutor(): void {
+  inputWorker.stop();
+}
+
 async function runPwsh(script: string): Promise<void> {
-  const full = PS_HELPER + '\n' + script;
-  await execFileAsync('powershell.exe', [
-    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', full,
-  ]);
+  await inputWorker.run(script);
+}
+
+async function runPwshBatch(parts: string[]): Promise<void> {
+  if (parts.length === 0) return;
+  await runPwsh(parts.join('\n'));
+  parts.length = 0;
 }
 
 function mouseFlags(button: string): { down: number; up: number } {
@@ -128,15 +347,20 @@ function mouseFlags(button: string): { down: number; up: number } {
 
 // ─── Action executor ───────────────────────────────────────────────────────
 
-async function executeAction(action: MacroAction): Promise<void> {
+function delayMilliseconds(value: number): number {
+  const milliseconds = Math.trunc(Number(value));
+  return Number.isFinite(milliseconds) ? Math.max(0, milliseconds) : 0;
+}
+
+function appendInputAction(action: MacroAction, parts: string[]): boolean {
   switch (action.type) {
     case 'delay':
-      await new Promise(res => setTimeout(res, action.milliseconds));
-      break;
+      parts.push(`[System.Threading.Thread]::Sleep(${delayMilliseconds(action.milliseconds)})`);
+      return true;
 
     case 'keyboard': {
       const vks = keysForString(action.key);
-      if (vks.length === 0) break;
+      if (vks.length === 0) return true;
       let script = '';
       if (action.pressType === 'press' || action.pressType === 'down') {
         script += vks.map(v => `[void][WinAPI]::SendKey(${v}, 0)`).join('; ') + '; ';
@@ -144,25 +368,42 @@ async function executeAction(action: MacroAction): Promise<void> {
       if (action.pressType === 'press' || action.pressType === 'up') {
         script += [...vks].reverse().map(v => `[void][WinAPI]::SendKey(${v}, 2)`).join('; ');
       }
-      await runPwsh(script);
-      break;
+      parts.push(script);
+      return true;
     }
 
     case 'mouse': {
       const { down, up } = mouseFlags(action.button);
       if (action.actionType === 'move' && action.x !== undefined && action.y !== undefined) {
-        await runPwsh(`[void][WinAPI]::SetCursorPos(${action.x}, ${action.y})`);
+        parts.push(`[void][WinAPI]::SetCursorPos(${action.x}, ${action.y})`);
       } else if (action.actionType === 'click') {
-        await runPwsh(`[void][WinAPI]::MouseClick(${down}, ${up})`);
+        parts.push(`[void][WinAPI]::MouseClick(${down}, ${up})`);
       } else if (action.actionType === 'double-click') {
-        await runPwsh(`[void][WinAPI]::MouseDoubleClick(${down}, ${up})`);
+        parts.push(`[void][WinAPI]::MouseDoubleClick(${down}, ${up})`);
       } else if (action.actionType === 'down') {
-        await runPwsh(`[void][WinAPI]::mouse_event(${down}, 0, 0, 0, 0)`);
+        parts.push(`[void][WinAPI]::mouse_event(${down}, 0, 0, 0, 0)`);
       } else if (action.actionType === 'up') {
-        await runPwsh(`[void][WinAPI]::mouse_event(${up}, 0, 0, 0, 0)`);
+        parts.push(`[void][WinAPI]::mouse_event(${up}, 0, 0, 0, 0)`);
       }
-      break;
+      return true;
     }
+
+    case 'text':
+      parts.push(buildSendTextPwsh(action.text));
+      return true;
+
+    default:
+      return false;
+  }
+}
+
+async function executeNonInputAction(action: MacroAction): Promise<void> {
+  switch (action.type) {
+    case 'delay':
+    case 'keyboard':
+    case 'mouse':
+    case 'text':
+      break;
 
     case 'launch': {
       const p = action.path.trim();
@@ -189,17 +430,21 @@ async function executeAction(action: MacroAction): Promise<void> {
       ], { cwd: action.workingDirectory || process.cwd() });
       break;
     }
-
-    case 'text':
-      await runPwsh(buildSendTextPwsh(action.text));
-      break;
   }
 }
 
 // ─── Public executor ───────────────────────────────────────────────────────
 
 export async function executeMacro(macro: Macro): Promise<void> {
+  const inputBatch: string[] = [];
+
   for (const action of macro.actions) {
-    if (action.enabled) await executeAction(action);
+    if (!action.enabled) continue;
+    if (appendInputAction(action, inputBatch)) continue;
+
+    await runPwshBatch(inputBatch);
+    await executeNonInputAction(action);
   }
+
+  await runPwshBatch(inputBatch);
 }
