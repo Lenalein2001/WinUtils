@@ -82,4 +82,5 @@ npm run package:portable
 - The cache is stored in Electron's `app.getPath('userData')` location for the installed app.
 - Playit Tunnels requires a claimed Playit.gg agent. WinUtils can open the Playit claim page, finish the claim after browser approval, write Playit's local config without showing the agent secret, and refresh tunnels created outside the app.
 - Packaging generates installer and portable EXE artifacts in `release/`.
+- Auto-update support uses the public GitHub release feed. Publish `latest.yml`, the installer EXE, and its blockmap with each installer release; portable users are shown a download link for the new portable EXE.
 - Release EXEs are published as GitHub release assets and are not tracked in Git.

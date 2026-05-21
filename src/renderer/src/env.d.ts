@@ -5,6 +5,7 @@ import type { Macro, MacroAction, MacroFolder, MacroState } from '../../shared/m
 import type { FocusAudioConfig, FocusAudioState } from '../../shared/focusAudio';
 import type { AppSettings } from '../../shared/settings';
 import type { PlayitAgentClaimStart, PlayitInstallResult, PlayitState, PlayitTunnelInput, PlayitTunnelUpdateInput } from '../../shared/playit';
+import type { UpdateState } from '../../shared/updater';
 
 declare global {
   interface Window {
@@ -47,6 +48,14 @@ declare global {
       settings: {
         get: () => Promise<AppSettings>;
         update: (patch: Partial<AppSettings>) => Promise<AppSettings>;
+      };
+      updates: {
+        getState: () => Promise<UpdateState>;
+        check: () => Promise<UpdateState>;
+        download: () => Promise<UpdateState>;
+        install: () => Promise<UpdateState>;
+        openReleasePage: () => Promise<void>;
+        onState: (cb: (state: UpdateState) => void) => () => void;
       };
       playit: {
         getState: () => Promise<PlayitState>;

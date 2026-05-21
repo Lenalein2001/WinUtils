@@ -4,6 +4,7 @@ import type { Macro, MacroAction, MacroFolder, MacroState } from '../shared/macr
 import type { FocusAudioConfig, FocusAudioState } from '../shared/focusAudio';
 import type { AppSettings } from '../shared/settings';
 import type { PlayitAgentClaimStart, PlayitInstallResult, PlayitState, PlayitTunnelInput, PlayitTunnelUpdateInput } from '../shared/playit';
+import type { UpdateState } from '../shared/updater';
 
 const api = {
   startupApps: {
@@ -65,6 +66,18 @@ const api = {
   settings: {
     get: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get'),
     update: (patch: Partial<AppSettings>): Promise<AppSettings> => ipcRenderer.invoke('settings:update', patch),
+  },
+  updates: {
+    getState: (): Promise<UpdateState> => ipcRenderer.invoke('updates:getState'),
+    check: (): Promise<UpdateState> => ipcRenderer.invoke('updates:check'),
+    download: (): Promise<UpdateState> => ipcRenderer.invoke('updates:download'),
+    install: (): Promise<UpdateState> => ipcRenderer.invoke('updates:install'),
+    openReleasePage: (): Promise<void> => ipcRenderer.invoke('updates:openReleasePage'),
+    onState: (cb: (state: UpdateState) => void): (() => void) => {
+      const listener = (_: Electron.IpcRendererEvent, state: UpdateState): void => cb(state);
+      ipcRenderer.on('updates:state', listener);
+      return () => ipcRenderer.removeListener('updates:state', listener);
+    },
   },
   playit: {
     getState: (): Promise<PlayitState> => ipcRenderer.invoke('playit:getState'),

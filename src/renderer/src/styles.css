@@ -396,6 +396,44 @@ code {
   height: 18px;
 }
 
+.settings-card--updates {
+  gap: 14px;
+}
+
+.settings-update-header,
+.settings-update-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-update-header p {
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.settings-update-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.settings-update-progress {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.settings-update-progress span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #7bf0c8, #42a3ff);
+  transition: width 160ms ease;
+}
+
 /* Playit Tunnels */
 
 .content-card--playit {

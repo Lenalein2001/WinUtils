@@ -14,6 +14,8 @@ import { registerPlayitIpcHandlers } from './playitIpc';
 import { PlayitManager } from './playitManager';
 import { registerSettingsIpcHandlers } from './settingsIpc';
 import { StartupManager } from './startupManager';
+import { registerUpdateIpcHandlers } from './updateIpc';
+import { UpdateManager } from './updateManager';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const startupLogFile = path.join(tmpdir(), 'WinUtils-startup.log');
@@ -276,6 +278,10 @@ async function bootstrap(): Promise<void> {
 
   const playitManager = new PlayitManager();
   registerPlayitIpcHandlers(playitManager);
+
+  const updateManager = new UpdateManager(() => { isQuitting = true; });
+  updateManager.init();
+  registerUpdateIpcHandlers(updateManager);
   logStartup('IPC handlers registered.');
 
   app.on('second-instance', () => {
@@ -291,6 +297,7 @@ async function bootstrap(): Promise<void> {
     const shouldStartMinimized = settings.startMinimized && (hasMinimizedArg || Boolean(loginState.wasOpenedAtLogin));
     await createWindow(shouldStartMinimized);
     setupTray(preloadPath, settingsStore);
+    updateManager.scheduleStartupCheck();
   } catch (error) {
     logStartup('Failed to create main window.', error);
     console.error('Failed to create the main window.', error);
