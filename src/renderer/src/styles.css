@@ -216,11 +216,21 @@ code {
 .hero-card {
   display: flex;
   justify-content: space-between;
+  align-items: stretch;
   gap: 20px;
   padding: 28px;
   border-radius: 28px;
   margin-bottom: 22px;
   animation: rise-in 0.6s ease-out;
+}
+
+.hero-card--module {
+  min-height: 190px;
+}
+
+.hero-main {
+  flex: 1;
+  min-width: 0;
 }
 
 .eyebrow,
@@ -277,6 +287,60 @@ code {
 
 .metric-card strong {
   font-size: 2rem;
+}
+
+.modal-backdrop {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(3, 9, 18, 0.72);
+  backdrop-filter: blur(10px);
+}
+
+.admin-dialog {
+  width: min(560px, 100%);
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 16px;
+  padding: 20px;
+  border-radius: 22px;
+  border: 1px solid rgba(141, 210, 255, 0.18);
+  background: linear-gradient(180deg, rgba(10, 27, 47, 0.98), rgba(6, 18, 32, 0.98));
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.48);
+}
+
+.admin-dialog-mark {
+  width: 40px;
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 203, 107, 0.35);
+  background: rgba(255, 203, 107, 0.12);
+  color: #ffd27a;
+  font-weight: 800;
+}
+
+.admin-dialog-body h2 {
+  margin: 0;
+}
+
+.admin-dialog-body p:not(.section-kicker) {
+  margin: 10px 0 0;
+  color: var(--muted);
+}
+
+.admin-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 18px;
 }
 
 .main-grid {

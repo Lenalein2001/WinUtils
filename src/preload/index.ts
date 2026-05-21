@@ -18,6 +18,7 @@ const api = {
       ipcRenderer.invoke('startup-apps:update', input),
     pickExecutable: (): Promise<string | null> =>
       ipcRenderer.invoke('startup-apps:pickExecutable'),
+    restartAsAdmin: (): Promise<void> => ipcRenderer.invoke('startup-apps:restartAsAdmin'),
   },
   focusAudio: {
     getState: (): Promise<FocusAudioState> => ipcRenderer.invoke('focusAudio:getState'),

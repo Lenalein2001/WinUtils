@@ -11,32 +11,42 @@ const modules = [
   {
     id: 'startup-apps',
     label: 'Startup Apps',
+    eyebrow: 'Autostart Control',
     overview: 'startup entries with cache-backed disable and restore',
     compact: 'startup restore',
+    hero: 'Review Windows startup entries, disable noisy launches, and restore cached items when you need them again.',
   },
   {
     id: 'macros',
     label: 'Macros',
+    eyebrow: 'Automation',
     overview: 'process-aware macro profiles and recorded actions',
     compact: 'macro profiles',
+    hero: 'Build profiles, record inputs, and switch macros automatically around the app or game in focus.',
   },
   {
     id: 'focus-audio',
     label: 'Focus Audio',
+    eyebrow: 'Audio Focus',
     overview: 'focus-based audio muting with whitelist and blacklist rules',
     compact: 'focus audio rules',
+    hero: 'Keep foreground audio clear by muting selected background apps based on focus and process rules.',
   },
   {
     id: 'playit',
     label: 'Playit Tunnels',
+    eyebrow: 'Network Tunnels',
     overview: 'Playit.gg tunnel setup for forwarding local ports without router changes',
     compact: 'Playit tunnels',
+    hero: 'Install the Playit agent, claim it, and manage supported tunnels for local services.',
   },
   {
     id: 'settings',
     label: 'Settings',
+    eyebrow: 'App Behavior',
     overview: 'launch, tray, and window behavior settings',
     compact: 'launch and tray settings',
+    hero: 'Adjust launch behavior, tray handling, and update controls for the desktop app.',
   },
 ] as const;
 
@@ -50,7 +60,6 @@ function joinFeatureList(features: readonly string[], finalJoin = 'and'): string
   return `${features.slice(0, -1).join(', ')}, ${finalJoin} ${features[features.length - 1]}`;
 }
 
-const heroDescription = `Manage ${joinFeatureList(modules.map((module) => module.overview))}.`;
 const sidebarDescription = `Manage ${joinFeatureList(modules.map((module) => module.compact), 'plus')}.`;
 
 function App(): ReactElement {
@@ -70,7 +79,10 @@ function App(): ReactElement {
   const [savingEditId, setSavingEditId] = useState<string | null>(null);
   const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
   const [settingsBusy, setSettingsBusy] = useState(false);
+  const [adminPrompt, setAdminPrompt] = useState<{ message: string } | null>(null);
+  const [adminRelaunching, setAdminRelaunching] = useState(false);
 
+  const activeModule = modules.find((module) => module.id === activeTab) ?? modules[0];
   const enabledCount = useMemo(() => entries.filter((entry) => entry.state === 'enabled').length, [entries]);
   const disabledCount = useMemo(() => entries.filter((entry) => entry.state === 'disabled').length, [entries]);
 
@@ -121,6 +133,30 @@ function App(): ReactElement {
     }
   };
 
+  const handleStartupError = (caughtError: unknown, fallback: string): void => {
+    const message = getErrorMessage(caughtError, fallback);
+
+    if (/administrator permission is required/i.test(message)) {
+      setAdminPrompt({ message });
+      return;
+    }
+
+    setError(message);
+  };
+
+  const handleRestartAsAdmin = async (): Promise<void> => {
+    setAdminRelaunching(true);
+    setError(null);
+
+    try {
+      await window.winUtils.startupApps.restartAsAdmin();
+    } catch (caughtError) {
+      setError(getErrorMessage(caughtError, 'Unable to restart WinUtils as administrator.'));
+      setAdminRelaunching(false);
+      setAdminPrompt(null);
+    }
+  };
+
   const handleToggle = async (entry: StartupEntry) => {
     setBusyId(entry.id);
     setError(null);
@@ -133,7 +169,7 @@ function App(): ReactElement {
 
       setEntries(updatedEntries);
     } catch (caughtError) {
-      setError(caughtError instanceof Error ? caughtError.message : 'Unable to update the selected startup app.');
+      handleStartupError(caughtError, 'Unable to update the selected startup app.');
     } finally {
       setBusyId(null);
     }
@@ -151,7 +187,7 @@ function App(): ReactElement {
 
       setEntries(updatedEntries);
     } catch (caughtError) {
-      setError(caughtError instanceof Error ? caughtError.message : 'Unable to delete the selected startup app.');
+      handleStartupError(caughtError, 'Unable to delete the selected startup app.');
     } finally {
       setBusyId(null);
     }
@@ -174,7 +210,7 @@ function App(): ReactElement {
       setNewArguments('');
       setNewScope('current-user');
     } catch (caughtError) {
-      setError(caughtError instanceof Error ? caughtError.message : 'Unable to add the startup entry.');
+      handleStartupError(caughtError, 'Unable to add the startup entry.');
     } finally {
       setAddingEntry(false);
     }
@@ -216,7 +252,7 @@ function App(): ReactElement {
       setEntries(updatedEntries);
       cancelEditingEntry();
     } catch (caughtError) {
-      setError(caughtError instanceof Error ? caughtError.message : 'Unable to update this startup entry.');
+      handleStartupError(caughtError, 'Unable to update this startup entry.');
     } finally {
       setSavingEditId(null);
     }
@@ -225,22 +261,24 @@ function App(): ReactElement {
   return (
     <div className="app-shell">
       <div className="app-backdrop" />
-      <header className="hero-card">
-        <div>
-          <p className="eyebrow">Windows Power Tools</p>
-          <h1>WinUtils</h1>
-          <p className="hero-copy">{heroDescription}</p>
+      <header className={`hero-card ${activeTab !== 'startup-apps' ? 'hero-card--module' : ''}`}>
+        <div className="hero-main">
+          <p className="eyebrow">{activeModule.eyebrow}</p>
+          <h1>{activeModule.label}</h1>
+          <p className="hero-copy">{activeModule.hero}</p>
         </div>
-        <div className="hero-metrics">
-          <div className="metric-card">
-            <span>Enabled</span>
-            <strong>{enabledCount}</strong>
+        {activeTab === 'startup-apps' ? (
+          <div className="hero-metrics">
+            <div className="metric-card">
+              <span>Enabled</span>
+              <strong>{enabledCount}</strong>
+            </div>
+            <div className="metric-card metric-card--dim">
+              <span>Cached Off</span>
+              <strong>{disabledCount}</strong>
+            </div>
           </div>
-          <div className="metric-card metric-card--dim">
-            <span>Cached Off</span>
-            <strong>{disabledCount}</strong>
-          </div>
-        </div>
+        ) : null}
       </header>
 
       <main className="main-grid">
@@ -461,8 +499,41 @@ function App(): ReactElement {
           </div>
         </section>
       </main>
+
+      {adminPrompt ? (
+        <div className="modal-backdrop" role="presentation">
+          <div className="admin-dialog" role="dialog" aria-modal="true" aria-labelledby="admin-dialog-title">
+            <div className="admin-dialog-mark" aria-hidden="true">!</div>
+            <div className="admin-dialog-body">
+              <p className="section-kicker">Elevated permission</p>
+              <h2 id="admin-dialog-title">Restart as administrator?</h2>
+              <p>{adminPrompt.message}</p>
+              <p>WinUtils needs elevated permission for this startup entry. After the restart, repeat the action from Startup Apps.</p>
+              <div className="admin-dialog-actions">
+                <button className="ghost-button" type="button" disabled={adminRelaunching} onClick={() => setAdminPrompt(null)}>
+                  Cancel
+                </button>
+                <button className="toggle-button" type="button" disabled={adminRelaunching} onClick={() => void handleRestartAsAdmin()}>
+                  {adminRelaunching ? 'Restarting...' : 'Restart as Administrator'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
+}
+
+function getErrorMessage(caughtError: unknown, fallback: string): string {
+  if (!(caughtError instanceof Error)) {
+    return typeof caughtError === 'string' && caughtError.trim() ? caughtError : fallback;
+  }
+
+  return caughtError.message
+    .replace(/^Error invoking remote method '[^']+': Error:\s*/i, '')
+    .replace(/^Error:\s*/i, '')
+    .trim() || fallback;
 }
 
 export default App;

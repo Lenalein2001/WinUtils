@@ -138,7 +138,7 @@ export class UpdateManager {
     if (this.status !== 'downloaded') throw new Error('No downloaded update is ready to install.');
 
     this.beforeInstall();
-    autoUpdater.quitAndInstall(false, true);
+    autoUpdater.quitAndInstall(true, true);
     return this.getState();
   }
 

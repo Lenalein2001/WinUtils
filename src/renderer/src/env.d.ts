@@ -18,6 +18,7 @@ declare global {
         add: (input: { name: string; executablePath: string; arguments?: string; scope: 'current-user' | 'all-users' }) => Promise<StartupEntry[]>;
         update: (input: { id: string; executablePath: string; arguments?: string }) => Promise<StartupEntry[]>;
         pickExecutable: () => Promise<string | null>;
+        restartAsAdmin: () => Promise<void>;
       };
       focusAudio: {
         getState: () => Promise<FocusAudioState>;

@@ -1,27 +1,27 @@
 import { spawn } from 'node:child_process';
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
-import type { IpcMainInvokeEvent } from 'electron';
+import { app, dialog, ipcMain } from 'electron';
 import type { StartupEntry } from '../shared/startup';
 import { AdminRequiredError, StartupManager } from './startupManager';
 
 export function registerIpcHandlers(startupManager: StartupManager, prepareForAdminRelaunch: () => void): void {
   ipcMain.handle('startup-apps:list', async () => startupManager.listEntries());
   ipcMain.handle('startup-apps:disable', async (event, id: string) =>
-    handleStartupMutation(event, () => startupManager.disableEntry(id), prepareForAdminRelaunch));
+    handleStartupMutation(() => startupManager.disableEntry(id)));
   ipcMain.handle('startup-apps:enable', async (event, id: string) =>
-    handleStartupMutation(event, () => startupManager.enableEntry(id), prepareForAdminRelaunch));
+    handleStartupMutation(() => startupManager.enableEntry(id)));
   ipcMain.handle('startup-apps:delete', async (event, id: string) =>
-    handleStartupMutation(event, () => startupManager.deleteEntry(id), prepareForAdminRelaunch));
+    handleStartupMutation(() => startupManager.deleteEntry(id)));
   ipcMain.handle(
     'startup-apps:add',
     async (event, input: { name: string; executablePath: string; arguments?: string; scope: 'current-user' | 'all-users' }) =>
-      handleStartupMutation(event, () => startupManager.addEntry(input), prepareForAdminRelaunch),
+      handleStartupMutation(() => startupManager.addEntry(input)),
   );
   ipcMain.handle(
     'startup-apps:update',
     async (event, input: { id: string; executablePath: string; arguments?: string }) =>
-      handleStartupMutation(event, () => startupManager.updateEntry(input), prepareForAdminRelaunch),
+      handleStartupMutation(() => startupManager.updateEntry(input)),
   );
+  ipcMain.handle('startup-apps:restartAsAdmin', () => restartAsAdmin(prepareForAdminRelaunch));
   ipcMain.handle('startup-apps:pickExecutable', async () => {
     const result = await dialog.showOpenDialog({
       properties: ['openFile'],
@@ -40,59 +40,37 @@ export function registerIpcHandlers(startupManager: StartupManager, prepareForAd
 }
 
 async function handleStartupMutation(
-  event: IpcMainInvokeEvent,
   action: () => Promise<StartupEntry[]>,
-  prepareForAdminRelaunch: () => void,
 ): Promise<StartupEntry[]> {
   try {
     return await action();
   } catch (error) {
     if (error instanceof AdminRequiredError) {
-      await askForAdminRelaunch(event, error, prepareForAdminRelaunch);
+      throw new Error(error.message);
     }
 
     throw error;
   }
 }
 
-async function askForAdminRelaunch(
-  event: IpcMainInvokeEvent,
-  error: AdminRequiredError,
-  prepareForAdminRelaunch: () => void,
-): Promise<void> {
-  const parentWindow = BrowserWindow.fromWebContents(event.sender);
-  const options: Electron.MessageBoxOptions = {
-    type: 'warning',
-    buttons: ['Restart as Administrator', 'Cancel'],
-    defaultId: 0,
-    cancelId: 1,
-    title: 'Administrator permission required',
-    message: 'Restart WinUtils as administrator?',
-    detail: `${error.message}\n\nWinUtils needs elevated permission for this startup entry. After the restart, repeat the action from Startup Apps.`,
-  };
-  const result = parentWindow
-    ? await dialog.showMessageBox(parentWindow, options)
-    : await dialog.showMessageBox(options);
-
-  if (result.response !== 0) return;
-
-  startElevatedRelaunchHelper();
+function restartAsAdmin(prepareForAdminRelaunch: () => void): void {
   prepareForAdminRelaunch();
+  app.releaseSingleInstanceLock();
   app.quit();
+  startElevatedRelaunchHelper();
 }
 
 function startElevatedRelaunchHelper(): void {
-  const command = '$processId = [int]$args[0]; $exePath = $args[1]; Wait-Process -Id $processId -ErrorAction SilentlyContinue; Start-Process -FilePath $exePath -Verb RunAs';
+  const script = buildElevatedRelaunchScript();
+  const encodedScript = Buffer.from(script, 'utf16le').toString('base64');
   const child = spawn('powershell.exe', [
     '-NoProfile',
     '-ExecutionPolicy',
     'Bypass',
     '-WindowStyle',
     'Hidden',
-    '-Command',
-    command,
-    String(process.pid),
-    process.execPath,
+    '-EncodedCommand',
+    encodedScript,
   ], {
     detached: true,
     stdio: 'ignore',
@@ -100,4 +78,17 @@ function startElevatedRelaunchHelper(): void {
   });
 
   child.unref();
+}
+
+function buildElevatedRelaunchScript(): string {
+  const args = app.isPackaged ? [] : [app.getAppPath()];
+  const argumentList = args.length
+    ? ` -ArgumentList @(${args.map(quotePowerShellString).join(', ')})`
+    : '';
+
+  return `$ErrorActionPreference = 'Stop'; Start-Process -FilePath ${quotePowerShellString(process.execPath)}${argumentList} -Verb RunAs`;
+}
+
+function quotePowerShellString(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
 }
