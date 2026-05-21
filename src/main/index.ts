@@ -252,7 +252,7 @@ async function bootstrap(): Promise<void> {
   logStartup('Cache store created (lazy initialization enabled).');
 
   const startupManager = new StartupManager(cacheStore);
-  registerIpcHandlers(startupManager);
+  registerIpcHandlers(startupManager, () => { isQuitting = true; });
 
   const settingsStore = new AppSettingsStore();
   registerSettingsIpcHandlers(settingsStore);

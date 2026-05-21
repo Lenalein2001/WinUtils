@@ -1,6 +1,6 @@
 {
   "name": "winutils",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Windows utility app with startup, macro, focus audio, Playit tunnels, and tray tools.",
   "main": "out/main/index.js",
   "scripts": {

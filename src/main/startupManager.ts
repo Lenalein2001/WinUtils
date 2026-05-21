@@ -55,6 +55,13 @@ interface StartupFolderEntryInternal extends StartupEntry {
   originalPath: string;
 }
 
+export class AdminRequiredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AdminRequiredError';
+  }
+}
+
 export class StartupManager {
   constructor(private readonly cacheStore: StartupCacheStore) {}
 
@@ -83,7 +90,7 @@ export class StartupManager {
     try {
       await execFile('reg', ['add', registryKey, '/v', name, '/t', 'REG_SZ', '/d', command, '/f']);
     } catch (error) {
-      throw this.createRegistryOperationError('enable', location.hive, error);
+      throw this.createRegistryOperationError('add', location.hive, error);
     }
 
     return this.listEntries();
@@ -111,7 +118,7 @@ export class StartupManager {
       try {
         await execFile('reg', ['add', registryKey, '/v', registryEntry.valueName, '/t', registryEntry.regType, '/d', command, '/f']);
       } catch (error) {
-        throw this.createRegistryOperationError('enable', registryEntry.registryHive, error);
+        throw this.createRegistryOperationError('update', registryEntry.registryHive, error);
       }
 
       return this.listEntries();
@@ -355,7 +362,11 @@ export class StartupManager {
 
     const cacheFileName = `${entry.id}${path.extname(entry.originalPath)}`;
     const cachedPath = path.join(disabledItemsDir, cacheFileName);
-    await rename(entry.originalPath, cachedPath);
+    try {
+      await rename(entry.originalPath, cachedPath);
+    } catch (error) {
+      throw this.createStartupFolderOperationError('disable', entry.scope, error);
+    }
 
     await this.cacheStore.upsertDisabledEntry({
       kind: 'startup-folder',
@@ -374,8 +385,12 @@ export class StartupManager {
 
   private async enableStartupFolderEntry(record: DisabledStartupFolderRecord): Promise<void> {
     await access(record.cachedPath, fsConstants.F_OK);
-    await mkdir(path.dirname(record.originalPath), { recursive: true });
-    await rename(record.cachedPath, record.originalPath);
+    try {
+      await mkdir(path.dirname(record.originalPath), { recursive: true });
+      await rename(record.cachedPath, record.originalPath);
+    } catch (error) {
+      throw this.createStartupFolderOperationError('enable', record.scope, error);
+    }
   }
 
   private mapDisabledRecord(record: DisabledStartupRecord): StartupEntry {
@@ -439,25 +454,45 @@ export class StartupManager {
   }
 
   private createRegistryOperationError(
-    operation: 'enable' | 'disable',
+    operation: 'add' | 'update' | 'enable' | 'disable',
     hive: 'HKCU' | 'HKLM',
     error: unknown,
   ): Error {
     const rawMessage = this.extractErrorMessage(error);
-    const looksLikeAccessDenied = /access is denied/i.test(rawMessage);
+    const looksLikeAccessDenied = this.isAccessDeniedMessage(rawMessage);
 
     if (hive === 'HKLM' || looksLikeAccessDenied) {
-      return new Error(
-        `Unable to ${operation} this startup entry because administrator permission is required for ${hive}. Please run WinUtils as administrator and try again.`,
+      return new AdminRequiredError(
+        `Administrator permission is required to ${operation} this ${hive} startup entry.`,
       );
     }
 
     return new Error(`Unable to ${operation} this startup entry. ${rawMessage}`.trim());
   }
 
+  private createStartupFolderOperationError(
+    operation: 'enable' | 'disable',
+    scope: StartupEntryScope,
+    error: unknown,
+  ): Error {
+    const rawMessage = this.extractErrorMessage(error);
+
+    if (scope === 'all-users' || this.isAccessDeniedMessage(rawMessage)) {
+      return new AdminRequiredError(
+        `Administrator permission is required to ${operation} this startup folder entry.`,
+      );
+    }
+
+    return new Error(`Unable to ${operation} this startup folder entry. ${rawMessage}`.trim());
+  }
+
+  private isAccessDeniedMessage(message: string): boolean {
+    return /access is denied|permission denied|operation requires elevation|requested operation requires elevation|\beacces\b|\beperm\b/i.test(message);
+  }
+
   private extractErrorMessage(error: unknown): string {
     if (!error || typeof error !== 'object') {
-      return 'Unknown registry error.';
+      return 'Unknown operation error.';
     }
 
     const stderr = 'stderr' in error && typeof error.stderr === 'string' ? error.stderr.trim() : '';
@@ -470,6 +505,6 @@ export class StartupManager {
       return message;
     }
 
-    return 'Unknown registry error.';
+    return 'Unknown operation error.';
   }
 }

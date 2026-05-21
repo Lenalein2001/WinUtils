@@ -53,6 +53,8 @@ export function SettingsTab({
   }
 
   const updateStatus = updateState ? formatUpdateStatus(updateState) : 'Loading update status...';
+  const updateBadge = updateState ? formatUpdateBadge(updateState) : 'Loading';
+  const updateBadgeTone = updateState ? getUpdateBadgeTone(updateState) : 'info';
   const updateDisabled = updateBusy || updateState?.status === 'checking' || updateState?.status === 'downloading';
   const updatePercent = Math.max(0, Math.min(100, updateState?.progress?.percent ?? 0));
 
@@ -125,8 +127,8 @@ export function SettingsTab({
             <strong>Updates</strong>
             <p>{updateStatus}</p>
           </div>
-          <span className={`status-pill status-pill--${updateState?.status === 'available' || updateState?.status === 'downloaded' ? 'enabled' : 'disabled'}`}>
-            {updateState?.status ?? 'loading'}
+          <span className={`status-pill settings-update-badge status-pill--${updateBadgeTone}`}>
+            {updateBadge}
           </span>
         </div>
 
@@ -187,4 +189,21 @@ function formatUpdateStatus(state: UpdateState): string {
   if (state.status === 'not-available') return `WinUtils ${state.currentVersion} is up to date.`;
   if (state.status === 'error') return 'Update check failed.';
   return `WinUtils ${state.currentVersion}.`;
+}
+
+function formatUpdateBadge(state: UpdateState): string {
+  if (state.installMode === 'development') return 'Dev build';
+  if (state.status === 'checking') return 'Checking';
+  if (state.status === 'downloading') return 'Downloading';
+  if (state.status === 'downloaded') return 'Ready to install';
+  if (state.status === 'available') return 'Update available';
+  if (state.status === 'not-available') return 'Up to date';
+  if (state.status === 'error') return 'Update failed';
+  return 'Idle';
+}
+
+function getUpdateBadgeTone(state: UpdateState): 'enabled' | 'disabled' | 'info' {
+  if (state.status === 'not-available' || state.status === 'downloaded') return 'enabled';
+  if (state.status === 'checking' || state.status === 'downloading' || state.status === 'available') return 'info';
+  return 'disabled';
 }

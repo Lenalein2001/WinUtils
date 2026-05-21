@@ -796,6 +796,16 @@ code {
   color: #ffc7a9;
 }
 
+.status-pill--info {
+  background: rgba(66, 163, 255, 0.14);
+  color: #9bd7ff;
+}
+
+.settings-update-badge {
+  text-transform: none;
+  white-space: nowrap;
+}
+
 .toggle-button {
   padding: 11px 14px;
   border-radius: 14px;
