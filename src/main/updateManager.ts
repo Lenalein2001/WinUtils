@@ -1,7 +1,10 @@
 import { app, BrowserWindow, shell } from 'electron';
-import { autoUpdater } from 'electron-updater';
+import { createRequire } from 'node:module';
 import type { ProgressInfo, UpdateInfo } from 'electron-updater';
 import type { AppUpdateInfo, UpdateDownloadProgress, UpdateInstallMode, UpdateState, UpdateStatus } from '../shared/updater';
+
+const require = createRequire(import.meta.url);
+const { autoUpdater } = require('electron-updater') as typeof import('electron-updater');
 
 const GITHUB_OWNER = 'Lenalein2001';
 const GITHUB_REPO = 'WinUtils';
