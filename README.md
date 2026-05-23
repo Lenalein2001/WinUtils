@@ -2,8 +2,7 @@
 
 WinUtils is a Windows desktop utility app built with Electron, React, TypeScript, and Vite. It brings startup management, process-aware macros, focus-based audio muting, Playit.gg tunnel setup, and tray/window behavior controls into one desktop app.
 
-## Desktop App (Not a Web App)
-
+## Desktop App
 - WinUtils runs as an Electron desktop window on Windows.
 - In development, Vite serves renderer assets internally, but the app is still opened by Electron as a desktop application.
 - For distribution, use the generated `.exe` files in the `release` folder.
