@@ -1150,10 +1150,16 @@ code {
   min-height: 34px;
   padding: 7px 9px;
   cursor: pointer;
+  opacity: 0.72;
+}
+
+.regex-token--selected {
+  opacity: 1;
+  box-shadow: 0 0 0 2px rgba(141, 210, 255, 0.36);
 }
 
 .regex-token--captured {
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.55);
+  box-shadow: 0 0 0 2px rgba(141, 210, 255, 0.36), inset 0 0 0 2px rgba(255, 255, 255, 0.55);
 }
 
 .regex-token--exact {
@@ -1196,6 +1202,11 @@ code {
   background: rgba(255, 255, 255, 0.035);
 }
 
+.regex-segment-row--selected {
+  background: rgba(141, 210, 255, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(141, 210, 255, 0.16);
+}
+
 .regex-segment-sample {
   display: inline-flex;
   align-items: center;
@@ -1210,6 +1221,18 @@ code {
   flex-wrap: wrap;
   gap: 5px;
   min-width: 0;
+}
+
+.regex-segment-controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.regex-capture-toggle input:disabled + span,
+.regex-capture-toggle:has(input:disabled) {
+  opacity: 0.55;
 }
 
 .regex-option-pill--active {
