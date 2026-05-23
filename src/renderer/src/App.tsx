@@ -2,9 +2,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { StartupEntry } from '../../shared/startup';
 import type { AppSettings } from '../../shared/settings';
+import type { RegexRenamerExport } from '../../shared/regexLab';
 import { FocusAudioTab } from './FocusAudioTab';
 import { MacrosTab } from './MacrosTab';
 import { PlayitTab } from './PlayitTab';
+import { RegexLabTab } from './RegexLabTab';
 import { RenamerTab } from './RenamerTab';
 import { SettingsTab } from './SettingsTab';
 
@@ -50,6 +52,14 @@ const modules = [
     hero: 'Queue files and folders, stack rename rules, preview every target name, and apply reversible batches.',
   },
   {
+    id: 'regex-lab',
+    label: 'Regex Lab',
+    eyebrow: 'Pattern Builder',
+    overview: 'visual regex testing and generated patterns for rename rules',
+    compact: 'regex pattern building',
+    hero: 'Build regular expressions from sample filenames, test matches, and send patterns straight into the renamer.',
+  },
+  {
     id: 'settings',
     label: 'Settings',
     eyebrow: 'App Behavior',
@@ -90,6 +100,7 @@ function App(): ReactElement {
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [adminPrompt, setAdminPrompt] = useState<{ message: string } | null>(null);
   const [adminRelaunching, setAdminRelaunching] = useState(false);
+  const [renamerRegexImport, setRenamerRegexImport] = useState<RegexRenamerExport | null>(null);
 
   const activeModule = modules.find((module) => module.id === activeTab) ?? modules[0];
   const enabledCount = useMemo(() => entries.filter((entry) => entry.state === 'enabled').length, [entries]);
@@ -328,7 +339,18 @@ function App(): ReactElement {
 
         {activeTab === 'renamer' ? (
           <section className="content-card content-card--renamer">
-            <RenamerTab />
+            <RenamerTab importedRegex={renamerRegexImport} />
+          </section>
+        ) : null}
+
+        {activeTab === 'regex-lab' ? (
+          <section className="content-card content-card--regex-lab">
+            <RegexLabTab
+              onExportToRenamer={(payload) => {
+                setRenamerRegexImport(payload);
+                setActiveTab('renamer');
+              }}
+            />
           </section>
         ) : null}
 

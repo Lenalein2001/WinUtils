@@ -1,6 +1,11 @@
 import type { ChangeEvent, DragEvent, ReactElement } from 'react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import type { RegexRenamerExport } from '../../shared/regexLab';
 import type { RenamePreview, RenamePreviewRow, RenameRule, RenameRuleType, RenameTransaction, RenamerItem } from '../../shared/renamer';
+
+interface RenamerTabProps {
+  importedRegex?: RegexRenamerExport | null;
+}
 
 const ruleTypeLabels: Record<RenameRuleType, string> = {
   'find-replace': 'Find / Replace',
@@ -26,7 +31,7 @@ const addableRuleTypes: RenameRuleType[] = [
 
 const PREVIEW_ROW_PAGE_SIZE = 150;
 
-export function RenamerTab(): ReactElement {
+export function RenamerTab({ importedRegex }: RenamerTabProps): ReactElement {
   const [items, setItems] = useState<RenamerItem[]>([]);
   const [excludedItemIds, setExcludedItemIds] = useState<Set<string>>(() => new Set());
   const [rules, setRules] = useState<RenameRule[]>([createRenameRule('find-replace')]);
@@ -40,6 +45,7 @@ export function RenamerTab(): ReactElement {
   const [visibleRowCount, setVisibleRowCount] = useState(PREVIEW_ROW_PAGE_SIZE);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const lastImportedRegexId = useRef<string | null>(null);
 
   const undoableTransaction = useMemo(
     () => transactions.find((transaction) => !transaction.undoneAt) ?? null,
@@ -65,6 +71,34 @@ export function RenamerTab(): ReactElement {
   useEffect(() => {
     void loadTransactions();
   }, []);
+
+  useEffect(() => {
+    if (!importedRegex || importedRegex.id === lastImportedRegexId.current) return;
+
+    lastImportedRegexId.current = importedRegex.id;
+    const importedRule: RenameRule = {
+      id: newId(),
+      type: 'find-replace',
+      enabled: true,
+      find: importedRegex.pattern,
+      replace: importedRegex.replacement,
+      useRegex: true,
+      caseSensitive: !importedRegex.flags.includes('i'),
+    };
+
+    setRules((currentRules) => {
+      const emptyRuleIndex = currentRules.findIndex(
+        (rule) => rule.type === 'find-replace' && !rule.find && !rule.replace,
+      );
+
+      if (emptyRuleIndex === -1) {
+        return [...currentRules, importedRule];
+      }
+
+      return currentRules.map((rule, index) => (index === emptyRuleIndex ? importedRule : rule));
+    });
+    setMessage('Regex imported from Regex Lab.');
+  }, [importedRegex]);
 
   useEffect(() => {
     setVisibleRowCount(PREVIEW_ROW_PAGE_SIZE);
