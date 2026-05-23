@@ -53,31 +53,54 @@ async function handleStartupMutation(
   }
 }
 
-function restartAsAdmin(prepareForAdminRelaunch: () => void): void {
-  prepareForAdminRelaunch();
+async function restartAsAdmin(prepareForAdminRelaunch: () => void): Promise<void> {
   app.releaseSingleInstanceLock();
+
+  try {
+    await startElevatedRelaunchHelper();
+  } catch (error) {
+    app.requestSingleInstanceLock();
+    throw error;
+  }
+
+  prepareForAdminRelaunch();
   app.quit();
-  startElevatedRelaunchHelper();
 }
 
-function startElevatedRelaunchHelper(): void {
+function startElevatedRelaunchHelper(): Promise<void> {
   const script = buildElevatedRelaunchScript();
   const encodedScript = Buffer.from(script, 'utf16le').toString('base64');
-  const child = spawn('powershell.exe', [
-    '-NoProfile',
-    '-ExecutionPolicy',
-    'Bypass',
-    '-WindowStyle',
-    'Hidden',
-    '-EncodedCommand',
-    encodedScript,
-  ], {
-    detached: true,
-    stdio: 'ignore',
-    windowsHide: true,
-  });
 
-  child.unref();
+  return new Promise((resolve, reject) => {
+    const child = spawn('powershell.exe', [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-WindowStyle',
+      'Hidden',
+      '-EncodedCommand',
+      encodedScript,
+    ], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+      windowsHide: true,
+    });
+
+    let errorOutput = '';
+
+    child.stderr?.on('data', (chunk: Buffer) => {
+      errorOutput += chunk.toString('utf8');
+    });
+
+    child.on('error', (error) => reject(error));
+    child.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      reject(new Error(errorOutput.trim() || 'Windows did not start the administrator relaunch.'));
+    });
+  });
 }
 
 function buildElevatedRelaunchScript(): string {
@@ -85,8 +108,9 @@ function buildElevatedRelaunchScript(): string {
   const argumentList = args.length
     ? ` -ArgumentList @(${args.map(quotePowerShellString).join(', ')})`
     : '';
+  const workingDirectory = ` -WorkingDirectory ${quotePowerShellString(process.cwd())}`;
 
-  return `$ErrorActionPreference = 'Stop'; Start-Process -FilePath ${quotePowerShellString(process.execPath)}${argumentList} -Verb RunAs`;
+  return `$ErrorActionPreference = 'Stop'; Start-Process -FilePath ${quotePowerShellString(process.execPath)}${workingDirectory}${argumentList} -Verb RunAs`;
 }
 
 function quotePowerShellString(value: string): string {
