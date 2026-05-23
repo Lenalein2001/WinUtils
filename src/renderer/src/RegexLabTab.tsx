@@ -88,12 +88,20 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
     setExportMessage(null);
   };
 
+  const applySegmentPattern = (segment: RegexSegment, option: SegmentOption, captured: boolean): void => {
+    setPatternDraft(captured ? `(${option.pattern})` : option.pattern);
+    if (!replacementTouched) {
+      setReplacement(captured ? '$1' : '');
+    }
+    setExportMessage(null);
+  };
+
   const chooseOption = (segment: RegexSegment, option: SegmentOption): void => {
     const nextSelectedOptions = { ...selectedOptions, [segment.id]: option.id };
     const nextCapturedSegments = { ...capturedSegments, [segment.id]: option.captureDefault };
     setSelectedOptions(nextSelectedOptions);
     setCapturedSegments(nextCapturedSegments);
-    applyBuilderPattern(nextSelectedOptions, nextCapturedSegments);
+    applySegmentPattern(segment, option, nextCapturedSegments[segment.id]);
   };
 
   const handleExport = (): void => {
@@ -177,8 +185,9 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
                       checked={Boolean(capturedSegments[segment.id])}
                       onChange={(event) => {
                         const nextCapturedSegments = { ...capturedSegments, [segment.id]: event.target.checked };
+                        const option = getSelectedOption(segment, selectedOptions);
                         setCapturedSegments(nextCapturedSegments);
-                        applyBuilderPattern(selectedOptions, nextCapturedSegments);
+                        applySegmentPattern(segment, option, nextCapturedSegments[segment.id]);
                       }}
                     />
                     Capture
