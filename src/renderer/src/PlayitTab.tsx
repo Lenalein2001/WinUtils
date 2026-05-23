@@ -179,7 +179,7 @@ export function PlayitTab(): ReactElement {
             Create Playit.gg tunnels that point a public address at a local port on this PC.
           </p>
         </div>
-        <button className="ghost-button" type="button" onClick={() => void loadState()} disabled={loading || busy !== null}>
+        <button className="ghost-button" type="button" onClick={() => void loadState()} disabled={loading || busy !== null} title="Recheck Playit installation, agent state, account status, and tunnels.">
           {loading ? 'Checking...' : 'Refresh'}
         </button>
       </div>
@@ -229,10 +229,10 @@ export function PlayitTab(): ReactElement {
             </p>
           </div>
           <div className="playit-actions">
-            <button className="toggle-button" type="button" onClick={() => void handleInstall()} disabled={!tool?.wingetAvailable || busy !== null}>
+            <button className="toggle-button" type="button" onClick={() => void handleInstall()} disabled={!tool?.wingetAvailable || busy !== null} title="Install the Playit agent using Winget if Winget is available on this PC.">
               {busy === 'install Playit' ? 'Installing...' : `Install with Winget`}
             </button>
-            <button className="ghost-button" type="button" onClick={() => void handleDownloadInstall()} disabled={busy !== null}>
+            <button className="ghost-button" type="button" onClick={() => void handleDownloadInstall()} disabled={busy !== null} title="Download and run the official signed Playit agent installer directly.">
               {busy === 'download Playit' ? 'Installing...' : 'Download Agent'}
             </button>
           </div>
@@ -249,7 +249,7 @@ export function PlayitTab(): ReactElement {
             </p>
           </div>
           <div className="playit-actions">
-            <button className="ghost-button" type="button" onClick={() => void handleDownloadInstall()} disabled={busy !== null}>
+            <button className="ghost-button" type="button" onClick={() => void handleDownloadInstall()} disabled={busy !== null} title="Download and run the official signed Playit agent installer to repair the local command.">
               {busy === 'download Playit' ? 'Installing...' : 'Download Agent'}
             </button>
           </div>
@@ -265,13 +265,13 @@ export function PlayitTab(): ReactElement {
             </p>
           </div>
           <div className="playit-actions">
-            <button className="toggle-button" type="button" onClick={() => void handleStartClaim()} disabled={busy !== null || !tool?.installed}>
+            <button className="toggle-button" type="button" onClick={() => void handleStartClaim()} disabled={busy !== null || !tool?.installed} title="Open Playit's browser claim flow for this local agent.">
               {busy === 'open claim page' ? 'Opening...' : 'Open Claim Page'}
             </button>
-            <button className="ghost-button" type="button" onClick={() => void handleCompleteClaim()} disabled={busy !== null || !claim}>
+            <button className="ghost-button" type="button" onClick={() => void handleCompleteClaim()} disabled={busy !== null || !claim} title="Finish claiming the agent after approving it in the browser.">
               {busy === 'finish claim' ? 'Finishing...' : 'Finish Claim'}
             </button>
-            <button className="ghost-button" type="button" onClick={() => void window.winUtils.playit.openAccountPage()}>
+            <button className="ghost-button" type="button" onClick={() => void window.winUtils.playit.openAccountPage()} title="Open the Playit account and agent page in your browser.">
               Open Agent Page
             </button>
           </div>
@@ -292,11 +292,11 @@ export function PlayitTab(): ReactElement {
             <div className="playit-form-grid">
               <label>
                 <span>Name</span>
-                <input className="macro-input" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} />
+                <input className="macro-input" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} title="Name shown for this Playit tunnel." />
               </label>
               <label>
                 <span>Playit Type</span>
-                <select className="macro-select" value={form.tunnelType} onChange={(event) => setForm({ ...form, tunnelType: event.target.value as PlayitTunnelType })}>
+                <select className="macro-select" value={form.tunnelType} onChange={(event) => setForm({ ...form, tunnelType: event.target.value as PlayitTunnelType })} title="Choose the Playit-supported tunnel template for the local service you want to expose.">
                   {playitTunnelTypes.map((option) => (
                     <option value={option.value} key={option.value}>{option.label}</option>
                   ))}
@@ -305,14 +305,14 @@ export function PlayitTab(): ReactElement {
             </div>
             <div className="playit-actions playit-actions--end">
               {!agentOnline ? (
-                <button className="toggle-button" type="button" onClick={() => void handleStartAgent()} disabled={busy !== null}>
+                <button className="toggle-button" type="button" onClick={() => void handleStartAgent()} disabled={busy !== null} title="Start or restart the local Playit agent so tunnels can forward traffic.">
                   {busy === 'start Playit' ? 'Starting...' : tool?.running ? 'Restart Playit' : 'Start Playit'}
                 </button>
               ) : null}
-              <button className="toggle-button" type="button" onClick={() => void handleCreateTunnel()} disabled={busy !== null || !agentOnline}>
+              <button className="toggle-button" type="button" onClick={() => void handleCreateTunnel()} disabled={busy !== null || !agentOnline} title="Create a new tunnel for the selected Playit type. The agent must be online first.">
                 {busy === 'create tunnel' ? 'Creating...' : 'Create Tunnel'}
               </button>
-              <button className="ghost-button" type="button" onClick={() => void window.winUtils.playit.openAccountPage()}>
+              <button className="ghost-button" type="button" onClick={() => void window.winUtils.playit.openAccountPage()} title="Open Playit's web dashboard for managing this agent and its tunnels.">
                 Manage on Playit
               </button>
             </div>
@@ -338,6 +338,7 @@ export function PlayitTab(): ReactElement {
                             value={editForm.localIp}
                             onChange={(event) => setEditForm({ ...editForm, localIp: event.target.value })}
                             aria-label="Local IP"
+                            title="Local IP address the tunnel should forward to, usually 127.0.0.1 for this PC."
                           />
                           <input
                             className="macro-input"
@@ -347,31 +348,32 @@ export function PlayitTab(): ReactElement {
                             value={editForm.localPort}
                             onChange={(event) => setEditForm({ ...editForm, localPort: event.target.value })}
                             aria-label="Local port"
+                            title="Local TCP or UDP port the tunnel should forward to."
                           />
                         </div>
                       ) : (
                         <p>{tunnel.portType.toUpperCase()} - {tunnel.localIp}:{tunnel.localPort}</p>
                       )}
                     </div>
-                    <code>{tunnel.publicAddress || 'Allocation pending'}</code>
-                    <span className={`status-pill status-pill--${tunnel.enabled ? 'enabled' : 'disabled'}`}>
+                    <code title="Public Playit address users connect to.">{tunnel.publicAddress || 'Allocation pending'}</code>
+                    <span className={`status-pill status-pill--${tunnel.enabled ? 'enabled' : 'disabled'}`} title={tunnel.enabled ? 'This tunnel is enabled in Playit.' : 'This tunnel is disabled and will not accept traffic.'}>
                       {tunnel.enabled ? 'enabled' : tunnel.disabledReason ?? 'disabled'}
                     </span>
                     <div className="playit-row-actions">
-                      <button className="micro-button" type="button" onClick={() => void handleCopy(tunnel.publicAddress)} disabled={!tunnel.publicAddress}>
+                      <button className="micro-button" type="button" onClick={() => void handleCopy(tunnel.publicAddress)} disabled={!tunnel.publicAddress} title="Copy the public Playit address to the clipboard.">
                         Copy
                       </button>
                       {editingTunnelId === tunnel.id ? (
                         <>
-                          <button className="micro-button" type="button" onClick={() => void handleSaveTunnelEdit(tunnel.id, tunnel.enabled)} disabled={busy !== null}>
+                          <button className="micro-button" type="button" onClick={() => void handleSaveTunnelEdit(tunnel.id, tunnel.enabled)} disabled={busy !== null} title="Save the local IP and port for this tunnel.">
                             Save
                           </button>
-                          <button className="micro-button" type="button" onClick={() => setEditingTunnelId(null)} disabled={busy !== null}>
+                          <button className="micro-button" type="button" onClick={() => setEditingTunnelId(null)} disabled={busy !== null} title="Cancel editing this tunnel target.">
                             Cancel
                           </button>
                         </>
                       ) : (
-                        <button className="micro-button" type="button" onClick={() => handleStartTunnelEdit(tunnel.id, tunnel.localIp, tunnel.localPort)} disabled={busy !== null}>
+                        <button className="micro-button" type="button" onClick={() => handleStartTunnelEdit(tunnel.id, tunnel.localIp, tunnel.localPort)} disabled={busy !== null} title="Edit the local IP and port this tunnel forwards to.">
                           Edit
                         </button>
                       )}
@@ -380,10 +382,11 @@ export function PlayitTab(): ReactElement {
                         type="button"
                         onClick={() => void handleToggleTunnel(tunnel.id, tunnel.localIp, tunnel.localPort, tunnel.enabled)}
                         disabled={busy !== null}
+                        title={tunnel.enabled ? 'Disable this tunnel in Playit.' : 'Enable this tunnel in Playit.'}
                       >
                         {tunnel.enabled ? 'Disable' : 'Enable'}
                       </button>
-                      <button className="micro-button micro-button--danger" type="button" onClick={() => void handleDeleteTunnel(tunnel.id, tunnel.name)} disabled={busy !== null}>
+                      <button className="micro-button micro-button--danger" type="button" onClick={() => void handleDeleteTunnel(tunnel.id, tunnel.name)} disabled={busy !== null} title="Delete this tunnel from Playit.">
                         Delete
                       </button>
                     </div>

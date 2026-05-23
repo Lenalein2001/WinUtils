@@ -129,6 +129,7 @@ export function FocusAudioTab(): ReactElement {
         <button
           className={`fa-enable-btn ${state.enabled ? 'fa-enable-btn--on' : 'fa-enable-btn--off'}`}
           onClick={() => void handleToggleEnabled()}
+          title="Turn Focus Audio automatic muting on or off."
         >
           {state.enabled ? 'Enabled' : 'Disabled'}
         </button>
@@ -141,6 +142,7 @@ export function FocusAudioTab(): ReactElement {
           <button
             className={`fa-mode-btn ${state.mode === 'whitelist' ? 'fa-mode-btn--active' : ''}`}
             onClick={() => void handleSetMode('whitelist')}
+            title="Mute background audio apps unless they are focused or listed in the whitelist."
           >
             <span className="fa-mode-icon">✓</span>
             <span className="fa-mode-text">
@@ -151,6 +153,7 @@ export function FocusAudioTab(): ReactElement {
           <button
             className={`fa-mode-btn ${state.mode === 'blacklist' ? 'fa-mode-btn--active' : ''}`}
             onClick={() => void handleSetMode('blacklist')}
+            title="Only mute blacklisted apps when they are not the focused window."
           >
             <span className="fa-mode-icon">✗</span>
             <span className="fa-mode-text">
@@ -166,7 +169,7 @@ export function FocusAudioTab(): ReactElement {
         <div className="fa-card">
           <div className="fa-card-header">
             <span>Active Audio Apps</span>
-            <button className="fa-refresh-btn" onClick={() => void refreshActiveApps()} disabled={refreshing}>
+            <button className="fa-refresh-btn" onClick={() => void refreshActiveApps()} disabled={refreshing} title="Refresh the list of apps that currently have Windows audio sessions.">
               {refreshing ? '…' : '↻ Refresh'}
             </button>
           </div>
@@ -180,7 +183,7 @@ export function FocusAudioTab(): ReactElement {
                   <div className="fa-app-actions">
                     <button
                       className="fa-add-btn"
-                      title="Add to Whitelist"
+                      title="Add this app to the whitelist so it stays audible while Focus Audio is enabled."
                       onClick={() => void handleAddFromActiveToList(app, 'whitelist')}
                       disabled={state.whitelist.includes(app)}
                     >
@@ -188,7 +191,7 @@ export function FocusAudioTab(): ReactElement {
                     </button>
                     <button
                       className="fa-add-btn fa-add-btn--bl"
-                      title="Add to Blacklist"
+                      title="Add this app to the blacklist so it is muted when it is not focused."
                       onClick={() => void handleAddFromActiveToList(app, 'blacklist')}
                       disabled={state.blacklist.includes(app)}
                     >
@@ -211,6 +214,7 @@ export function FocusAudioTab(): ReactElement {
               className="fa-input"
               placeholder="e.g. Spotify.exe"
               value={newWhitelistEntry}
+              title="Type an executable name to keep audible, for example Spotify.exe."
               onChange={(e) => setNewWhitelistEntry(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
@@ -221,6 +225,7 @@ export function FocusAudioTab(): ReactElement {
             />
             <button
               className="fa-add-btn"
+              title="Add this executable name to the whitelist."
               onClick={() => {
                 void handleAddToWhitelist(newWhitelistEntry);
                 setNewWhitelistEntry('');
@@ -236,7 +241,7 @@ export function FocusAudioTab(): ReactElement {
               {state.whitelist.map((name) => (
                 <li key={name} className="fa-app-item">
                   <span className="fa-app-name">{name}</span>
-                  <button className="fa-remove-btn" onClick={() => void handleRemoveFromWhitelist(name)}>✕</button>
+                  <button className="fa-remove-btn" onClick={() => void handleRemoveFromWhitelist(name)} title="Remove this app from the whitelist.">✕</button>
                 </li>
               ))}
             </ul>
@@ -253,6 +258,7 @@ export function FocusAudioTab(): ReactElement {
               className="fa-input"
               placeholder="e.g. Cyberpunk2077.exe"
               value={newBlacklistEntry}
+              title="Type an executable name to mute while unfocused, for example Cyberpunk2077.exe."
               onChange={(e) => setNewBlacklistEntry(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
@@ -263,6 +269,7 @@ export function FocusAudioTab(): ReactElement {
             />
             <button
               className="fa-add-btn"
+              title="Add this executable name to the blacklist."
               onClick={() => {
                 void handleAddToBlacklist(newBlacklistEntry);
                 setNewBlacklistEntry('');
@@ -278,7 +285,7 @@ export function FocusAudioTab(): ReactElement {
               {state.blacklist.map((name) => (
                 <li key={name} className="fa-app-item">
                   <span className="fa-app-name">{name}</span>
-                  <button className="fa-remove-btn" onClick={() => void handleRemoveFromBlacklist(name)}>✕</button>
+                  <button className="fa-remove-btn" onClick={() => void handleRemoveFromBlacklist(name)} title="Remove this app from the blacklist.">✕</button>
                 </li>
               ))}
             </ul>

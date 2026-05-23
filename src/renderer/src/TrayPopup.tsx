@@ -19,10 +19,10 @@ export function TrayPopup(): ReactElement {
         </div>
       </div>
       <div className="tray-popup-actions">
-        <button className="tray-popup-btn tray-popup-btn--primary" type="button" onClick={handleOpen}>
+        <button className="tray-popup-btn tray-popup-btn--primary" type="button" onClick={handleOpen} title="Show the main WinUtils window.">
           Open
         </button>
-        <button className="tray-popup-btn tray-popup-btn--danger" type="button" onClick={handleQuit}>
+        <button className="tray-popup-btn tray-popup-btn--danger" type="button" onClick={handleQuit} title="Fully quit WinUtils instead of leaving it in the tray.">
           Quit
         </button>
       </div>

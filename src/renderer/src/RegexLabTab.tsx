@@ -34,6 +34,11 @@ interface RegexMatchResult {
 }
 
 const DEFAULT_SAMPLE = '';
+const regexFlagDescriptions: Record<string, string> = {
+  g: 'Global: find every match instead of stopping after the first one.',
+  i: 'Case-insensitive: match letters regardless of uppercase or lowercase.',
+  m: 'Multiline: make ^ and $ match the start and end of each line.',
+};
 
 export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactElement {
   const [sampleText, setSampleText] = useState(DEFAULT_SAMPLE);
@@ -175,12 +180,23 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
       <div className="regex-lab-topbar">
         <div className="regex-lab-field regex-lab-field--sample">
           <span>Sample Text</span>
-          <input className="macro-input" value={sampleText} onChange={(event) => { setSampleText(event.target.value); setExportMessage(null); }} />
+          <input
+            className="macro-input"
+            title="Paste a filename or text sample here. The builder splits it into clickable regex tokens."
+            value={sampleText}
+            onChange={(event) => { setSampleText(event.target.value); setExportMessage(null); }}
+          />
         </div>
         <div className="regex-flag-row">
           {['g', 'i', 'm'].map((flag) => (
-            <label key={flag}>
-              <input type="checkbox" checked={flags.includes(flag)} onChange={(event) => setFlag(flag, event.target.checked)} />
+            <label key={flag} title={regexFlagDescriptions[flag]}>
+              <input
+                type="checkbox"
+                aria-label={`${flag} regex flag`}
+                checked={flags.includes(flag)}
+                onChange={(event) => setFlag(flag, event.target.checked)}
+                title={regexFlagDescriptions[flag]}
+              />
               {flag}
             </label>
           ))}
@@ -230,6 +246,7 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
                         className={`micro-button ${included && candidate.id === option.id ? 'regex-option-pill--active' : ''}`}
                         key={candidate.id}
                         type="button"
+                        title={included && candidate.id === option.id ? `Remove ${candidate.label} from the regex.` : `Use ${candidate.label} for this token.`}
                         onClick={() => chooseOption(segment, candidate)}
                       >
                         {candidate.label}
@@ -237,20 +254,24 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
                     ))}
                   </div>
                   <div className="regex-segment-controls">
-                    <label className="regex-capture-toggle">
+                    <label className="regex-capture-toggle" title="Include this token in the generated regex output.">
                       <input
                         type="checkbox"
+                        aria-label={`Use ${segment.text}`}
                         checked={included}
                         onChange={(event) => toggleSegmentIncluded(segment, event.target.checked)}
+                        title="Include this token in the generated regex output."
                       />
                       Use
                     </label>
                     <label className="regex-capture-toggle" title="Creates a capture group for replacement references such as $1.">
                       <input
                         type="checkbox"
+                        aria-label={`Capture ${segment.text}`}
                         checked={captured}
                         disabled={!included}
                         onChange={(event) => toggleSegmentCaptured(segment, event.target.checked)}
+                        title="Wrap this token in parentheses so the match can be reused as $1, $2, and so on."
                       />
                       Capture
                     </label>
@@ -268,10 +289,10 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
               <h2>Regex Output</h2>
             </div>
             <div className="regex-card-actions">
-              <button className="ghost-button ghost-button--sm" type="button" onClick={useAllSegments}>
+              <button className="ghost-button ghost-button--sm" type="button" onClick={useAllSegments} title="Include every token from the sample in the regex output.">
                 Use All
               </button>
-              <button className="ghost-button ghost-button--sm" type="button" onClick={clearSelectedSegments}>
+              <button className="ghost-button ghost-button--sm" type="button" onClick={clearSelectedSegments} title="Remove all selected filters and clear the generated output.">
                 Clear
               </button>
             </div>
@@ -282,6 +303,7 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
             value={patternDraft}
             onChange={(event) => { setPatternDraft(event.target.value); setExportMessage(null); }}
             spellCheck={false}
+            title="The regular expression to test and export. You can edit it manually."
           />
 
           <div className="regex-lab-field">
@@ -291,11 +313,18 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
               value={replacement}
               onChange={(event) => { setReplacement(event.target.value); setReplacementTouched(true); setExportMessage(null); }}
               spellCheck={false}
+              title="Replacement text for renaming. Captured groups can be reused as $1, $2, and so on."
             />
           </div>
 
           <div className="regex-actions-row">
-            <button className="toggle-button" type="button" onClick={handleExport} disabled={!patternDraft.trim() || Boolean(matchResult.error)}>
+            <button
+              className="toggle-button"
+              type="button"
+              onClick={handleExport}
+              disabled={!patternDraft.trim() || Boolean(matchResult.error)}
+              title="Send this regex and replacement into Batch Renamer as a Find / Replace rule."
+            >
               Send to Renamer
             </button>
             {exportMessage ? <span className="regex-export-message">{exportMessage}</span> : null}

@@ -293,7 +293,7 @@ function App(): ReactElement {
               <span>Enabled</span>
               <strong>{enabledCount}</strong>
             </div>
-            <div className="metric-card metric-card--dim">
+            <div className="metric-card metric-card--dim" title="Startup entries disabled through WinUtils and kept in the cache so they can be restored later.">
               <span>Cached Off</span>
               <strong>{disabledCount}</strong>
             </div>
@@ -311,6 +311,7 @@ function App(): ReactElement {
                 className={`tab-button ${activeTab === module.id ? 'tab-button--active' : ''}`}
                 type="button"
                 onClick={() => setActiveTab(module.id)}
+                title={module.hero}
               >
                 {module.label}
               </button>
@@ -373,7 +374,13 @@ function App(): ReactElement {
               <p className="section-kicker">Startup Apps</p>
               <h2>Autostart entries across Windows</h2>
             </div>
-            <button className="ghost-button" type="button" onClick={() => void loadEntries()} disabled={loading || busyId !== null}>
+            <button
+              className="ghost-button"
+              type="button"
+              onClick={() => void loadEntries()}
+              disabled={loading || busyId !== null}
+              title="Rescan registry Run keys and Startup folders."
+            >
               Refresh
             </button>
           </div>
@@ -386,17 +393,20 @@ function App(): ReactElement {
                 placeholder="Name (example: Discord)"
                 value={newName}
                 onChange={(event) => setNewName(event.target.value)}
+                title="Display name for the new startup entry."
               />
               <input
                 className="macro-input"
                 placeholder="Executable path (example: C:\\Program Files\\App\\app.exe)"
                 value={newExecutablePath}
                 onChange={(event) => setNewExecutablePath(event.target.value)}
+                title="Full path to the program that should start with Windows."
               />
               <button
                 className="ghost-button startup-browse-button"
                 type="button"
                 onClick={() => void handlePickExecutable()}
+                title="Choose an executable file from disk."
               >
                 Browse...
               </button>
@@ -405,11 +415,13 @@ function App(): ReactElement {
                 placeholder="Arguments (optional)"
                 value={newArguments}
                 onChange={(event) => setNewArguments(event.target.value)}
+                title="Optional command-line arguments passed to the program at startup."
               />
               <select
                 className="macro-select"
                 value={newScope}
                 onChange={(event) => setNewScope(event.target.value as 'current-user' | 'all-users')}
+                title="Current User starts only for this Windows account. All Users applies machine-wide and may require administrator permission."
               >
                 <option value="current-user">Current User</option>
                 <option value="all-users">All Users (Admin)</option>
@@ -421,6 +433,7 @@ function App(): ReactElement {
                 type="button"
                 onClick={() => void handleAddEntry()}
                 disabled={addingEntry || !newName.trim() || !newExecutablePath.trim()}
+                title="Create a new Windows startup entry with the name, path, arguments, and scope above."
               >
                 {addingEntry ? 'Adding...' : 'Add to Startup'}
               </button>
@@ -452,8 +465,8 @@ function App(): ReactElement {
                       <strong>{entry.name}</strong>
                       {entry.disabledAt ? <p className="inline-note">Cached {new Date(entry.disabledAt).toLocaleString()}</p> : null}
                     </div>
-                    <span>{entry.source === 'registry' ? 'Registry' : 'Startup Folder'}</span>
-                    <span>{entry.scope === 'current-user' ? 'Current User' : 'All Users'}</span>
+                    <span title={entry.source === 'registry' ? 'Stored in a Windows Run registry key.' : 'Stored as a shortcut in a Startup folder.'}>{entry.source === 'registry' ? 'Registry' : 'Startup Folder'}</span>
+                    <span title={entry.scope === 'current-user' ? 'Runs only for the signed-in Windows user.' : 'Runs for all Windows users on this PC and may need administrator permission.'}>{entry.scope === 'current-user' ? 'Current User' : 'All Users'}</span>
                     <div>
                       {editingEntryId === entry.id ? (
                         <div className="startup-entry-edit-fields">
@@ -462,12 +475,14 @@ function App(): ReactElement {
                             value={editExecutablePath}
                             onChange={(event) => setEditExecutablePath(event.target.value)}
                             placeholder="Executable path"
+                            title="Update the executable path used by this registry startup entry."
                           />
                           <input
                             className="macro-input"
                             value={editArguments}
                             onChange={(event) => setEditArguments(event.target.value)}
                             placeholder="Arguments"
+                            title="Update optional command-line arguments for this startup entry."
                           />
                         </div>
                       ) : (
@@ -479,13 +494,14 @@ function App(): ReactElement {
                       <p className="inline-note">{entry.location}</p>
                       {entry.notes ? <p className="inline-note">{entry.notes}</p> : null}
                     </div>
-                    <span className={`status-pill status-pill--${entry.state}`}>{entry.state}</span>
+                    <span className={`status-pill status-pill--${entry.state}`} title={entry.state === 'enabled' ? 'This item is currently active at Windows startup.' : 'This item is disabled and can be restored from the WinUtils cache.'}>{entry.state}</span>
                     <div className="startup-action-stack">
                       <button
                         className={`toggle-button ${entry.state === 'disabled' ? 'toggle-button--restore' : ''}`}
                         type="button"
                         onClick={() => void handleToggle(entry)}
                         disabled={!entry.canToggle || busyId === entry.id}
+                        title={entry.state === 'enabled' ? 'Disable this startup entry and cache enough information to restore it later.' : 'Restore this cached startup entry so it starts with Windows again.'}
                       >
                         {busyId === entry.id ? 'Working...' : entry.state === 'enabled' ? 'Disable' : 'Re-enable'}
                       </button>
@@ -495,6 +511,7 @@ function App(): ReactElement {
                         type="button"
                         onClick={() => void handleDelete(entry)}
                         disabled={!entry.canToggle || busyId === entry.id}
+                        title={entry.state === 'enabled' ? 'Disable this active startup entry. Disabled entries are kept in the WinUtils cache.' : 'Delete this disabled startup entry from the WinUtils cache.'}
                       >
                         Delete
                       </button>
@@ -507,6 +524,7 @@ function App(): ReactElement {
                               type="button"
                               onClick={() => void saveEditingEntry(entry)}
                               disabled={savingEditId === entry.id || !editExecutablePath.trim()}
+                              title="Save the edited executable path and arguments for this registry startup entry."
                             >
                               {savingEditId === entry.id ? 'Saving...' : 'Save'}
                             </button>
@@ -515,6 +533,7 @@ function App(): ReactElement {
                               type="button"
                               onClick={cancelEditingEntry}
                               disabled={savingEditId === entry.id}
+                              title="Discard the path and argument edits."
                             >
                               Cancel
                             </button>
@@ -524,6 +543,7 @@ function App(): ReactElement {
                             className="micro-button"
                             type="button"
                             onClick={() => startEditingEntry(entry)}
+                            title="Edit the executable path and command-line arguments for this registry startup entry."
                           >
                             Edit Path/Args
                           </button>
@@ -547,10 +567,10 @@ function App(): ReactElement {
               <p>{adminPrompt.message}</p>
               <p>WinUtils needs elevated permission for this startup entry. After the restart, repeat the action from Startup Apps.</p>
               <div className="admin-dialog-actions">
-                <button className="ghost-button" type="button" disabled={adminRelaunching} onClick={() => setAdminPrompt(null)}>
+                <button className="ghost-button" type="button" disabled={adminRelaunching} onClick={() => setAdminPrompt(null)} title="Keep WinUtils running normally and cancel the administrator restart.">
                   Cancel
                 </button>
-                <button className="toggle-button" type="button" disabled={adminRelaunching} onClick={() => void handleRestartAsAdmin()}>
+                <button className="toggle-button" type="button" disabled={adminRelaunching} onClick={() => void handleRestartAsAdmin()} title="Restart WinUtils with administrator permission so all-users startup entries can be changed.">
                   {adminRelaunching ? 'Restarting...' : 'Restart as Administrator'}
                 </button>
               </div>

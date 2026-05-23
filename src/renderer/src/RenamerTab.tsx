@@ -18,6 +18,17 @@ const ruleTypeLabels: Record<RenameRuleType, string> = {
   extension: 'Extension',
 };
 
+const ruleTypeDescriptions: Record<RenameRuleType, string> = {
+  'find-replace': 'Replace matching text in the filename. Can use plain text or regex.',
+  'prefix-suffix': 'Add text before or after the filename stem.',
+  case: 'Change filename casing.',
+  spaces: 'Convert, remove, or collapse spaces in filenames.',
+  trim: 'Remove characters from the start or end of the filename stem.',
+  'clear-name': 'Remove the entire filename stem while keeping the extension.',
+  numbering: 'Add incrementing numbers as a prefix or suffix.',
+  extension: 'Change the file extension without changing the filename stem.',
+};
+
 const addableRuleTypes: RenameRuleType[] = [
   'find-replace',
   'prefix-suffix',
@@ -256,14 +267,14 @@ export function RenamerTab({ importedRegex }: RenamerTabProps): ReactElement {
     <div className="renamer-layout">
       <div className="renamer-toolbar">
         <div className="renamer-actions">
-          <button className="toggle-button" type="button" onClick={() => void handlePickFiles()} disabled={busy}>Add Files</button>
-          <button className="ghost-button" type="button" onClick={() => void handlePickFolder()} disabled={busy}>Add Folder</button>
-          <button className="ghost-button" type="button" onClick={() => { setItems([]); setExcludedItemIds(new Set()); }} disabled={busy || items.length === 0}>Clear</button>
-          <button className="ghost-button" type="button" onClick={() => setExcludedItemIds(new Set())} disabled={busy || excludedCount === 0}>Include All</button>
+          <button className="toggle-button" type="button" onClick={() => void handlePickFiles()} disabled={busy} title="Choose individual files to add to the rename queue.">Add Files</button>
+          <button className="ghost-button" type="button" onClick={() => void handlePickFolder()} disabled={busy} title="Choose a folder and load its contents using the Recursive and Folders options.">Add Folder</button>
+          <button className="ghost-button" type="button" onClick={() => { setItems([]); setExcludedItemIds(new Set()); }} disabled={busy || items.length === 0} title="Remove all queued items from the preview.">Clear</button>
+          <button className="ghost-button" type="button" onClick={() => setExcludedItemIds(new Set())} disabled={busy || excludedCount === 0} title="Re-include every queued item that was manually excluded.">Include All</button>
         </div>
         <div className="renamer-options">
-          <label><input type="checkbox" checked={recursive} onChange={(event) => setRecursive(event.target.checked)} />Recursive</label>
-          <label><input type="checkbox" checked={includeFolders} onChange={(event) => setIncludeFolders(event.target.checked)} />Folders</label>
+          <label title="When adding a folder, also scan its subfolders."><input type="checkbox" checked={recursive} onChange={(event) => setRecursive(event.target.checked)} title="When adding a folder, also scan its subfolders." />Recursive</label>
+          <label title="Include folders themselves in the rename queue, not only files."><input type="checkbox" checked={includeFolders} onChange={(event) => setIncludeFolders(event.target.checked)} title="Include folders themselves in the rename queue, not only files." />Folders</label>
         </div>
       </div>
 
@@ -277,7 +288,7 @@ export function RenamerTab({ importedRegex }: RenamerTabProps): ReactElement {
               <p className="section-kicker">Rules</p>
               <h2>Rename Stack</h2>
             </div>
-            <span className="renamer-count-pill">{rules.length}</span>
+            <span className="renamer-count-pill" title="Number of rename rules in the stack.">{rules.length}</span>
           </div>
 
           <div className="renamer-rule-list">
@@ -285,17 +296,17 @@ export function RenamerTab({ importedRegex }: RenamerTabProps): ReactElement {
               <div className={`renamer-rule ${rule.enabled ? '' : 'renamer-rule--disabled'}`} key={rule.id}>
                 <div className="renamer-rule-topline">
                   <label className="renamer-rule-enabled">
-                    <input type="checkbox" checked={rule.enabled} onChange={(event) => updateRule(rule.id, { enabled: event.target.checked })} />
+                    <input type="checkbox" checked={rule.enabled} onChange={(event) => updateRule(rule.id, { enabled: event.target.checked })} title="Enable or disable this rule without removing it." />
                     {index + 1}
                   </label>
-                  <select className="macro-select" value={rule.type} onChange={(event) => replaceRuleType(rule.id, event.target.value as RenameRuleType)}>
+                  <select className="macro-select" value={rule.type} onChange={(event) => replaceRuleType(rule.id, event.target.value as RenameRuleType)} title={ruleTypeDescriptions[rule.type]}>
                     {addableRuleTypes.map((type) => <option value={type} key={type}>{ruleTypeLabels[type]}</option>)}
                   </select>
                 </div>
                 <div className="renamer-rule-buttons">
-                  <button className="micro-button" type="button" onClick={() => moveRule(rule.id, -1)} disabled={index === 0}>Up</button>
-                  <button className="micro-button" type="button" onClick={() => moveRule(rule.id, 1)} disabled={index === rules.length - 1}>Down</button>
-                  <button className="micro-button micro-button--danger" type="button" onClick={() => removeRule(rule.id)} disabled={rules.length === 1}>Remove</button>
+                  <button className="micro-button" type="button" onClick={() => moveRule(rule.id, -1)} disabled={index === 0} title="Move this rule earlier in the rename stack.">Up</button>
+                  <button className="micro-button" type="button" onClick={() => moveRule(rule.id, 1)} disabled={index === rules.length - 1} title="Move this rule later in the rename stack.">Down</button>
+                  <button className="micro-button micro-button--danger" type="button" onClick={() => removeRule(rule.id)} disabled={rules.length === 1} title="Remove this rule from the stack.">Remove</button>
                 </div>
                 {renderRuleControls(rule, updateRule)}
               </div>
@@ -303,10 +314,10 @@ export function RenamerTab({ importedRegex }: RenamerTabProps): ReactElement {
           </div>
 
           <div className="renamer-add-rule">
-            <select className="macro-select" value={newRuleType} onChange={(event) => setNewRuleType(event.target.value as RenameRuleType)}>
+            <select className="macro-select" value={newRuleType} onChange={(event) => setNewRuleType(event.target.value as RenameRuleType)} title={ruleTypeDescriptions[newRuleType]}>
               {addableRuleTypes.map((type) => <option value={type} key={type}>{ruleTypeLabels[type]}</option>)}
             </select>
-            <button className="ghost-button" type="button" onClick={() => setRules((currentRules) => [...currentRules, createRenameRule(newRuleType)])}>Add Rule</button>
+            <button className="ghost-button" type="button" onClick={() => setRules((currentRules) => [...currentRules, createRenameRule(newRuleType)])} title="Add the selected rule type to the end of the rename stack.">Add Rule</button>
           </div>
         </aside>
 
@@ -317,14 +328,15 @@ export function RenamerTab({ importedRegex }: RenamerTabProps): ReactElement {
             onDragOver={(event) => event.preventDefault()}
             onDragLeave={() => setDragging(false)}
             onDrop={(event) => void handleDrop(event)}
+            title="Drop files or folders here to add them to the rename preview."
           >
             <div>
               <strong>{items.length === 0 ? 'Drop files or folders' : `${items.length} selected item${items.length === 1 ? '' : 's'}`}</strong>
               <p>{preview ? buildPreviewSummary(preview, excludedCount) : activeItems.length === 0 && items.length > 0 ? `${excludedCount} item${excludedCount === 1 ? '' : 's'} excluded.` : 'Preview is generated before anything changes.'}</p>
             </div>
             <div className="renamer-batch-actions">
-              <button className="toggle-button" type="button" onClick={() => void handleApply()} disabled={busy || activeItems.length === 0 || changedRows === 0 || errorRows > 0}>{busy ? 'Working...' : 'Apply Rename'}</button>
-              <button className="ghost-button" type="button" onClick={() => void handleUndo()} disabled={busy || !undoableTransaction}>Undo Last</button>
+              <button className="toggle-button" type="button" onClick={() => void handleApply()} disabled={busy || activeItems.length === 0 || changedRows === 0 || errorRows > 0} title="Apply the previewed rename changes to the included items.">{busy ? 'Working...' : 'Apply Rename'}</button>
+              <button className="ghost-button" type="button" onClick={() => void handleUndo()} disabled={busy || !undoableTransaction} title="Undo the most recent rename batch recorded by WinUtils.">Undo Last</button>
             </div>
           </div>
 
@@ -362,6 +374,7 @@ export function RenamerTab({ importedRegex }: RenamerTabProps): ReactElement {
                   className="ghost-button ghost-button--sm"
                   type="button"
                   onClick={() => setVisibleRowCount((currentCount) => Math.min(items.length, currentCount + PREVIEW_ROW_PAGE_SIZE))}
+                  title="Show the next batch of queued preview rows."
                 >
                   Show More
                 </button>
@@ -380,22 +393,22 @@ function renderRuleControls(rule: RenameRule, updateRule: (ruleId: string, patch
     case 'find-replace':
       return (
         <div className="renamer-rule-grid renamer-rule-grid--two">
-          <input className="macro-input" value={rule.find} placeholder="Find" onChange={(event) => updateRule(rule.id, { find: event.target.value })} />
-          <input className="macro-input" value={rule.replace} placeholder="Replace" onChange={(event) => updateRule(rule.id, { replace: event.target.value })} />
-          <label><input type="checkbox" checked={rule.useRegex} onChange={(event) => updateRule(rule.id, { useRegex: event.target.checked })} />Regex</label>
-          <label><input type="checkbox" checked={rule.caseSensitive} onChange={(event) => updateRule(rule.id, { caseSensitive: event.target.checked })} />Match case</label>
+          <input className="macro-input" value={rule.find} placeholder="Find" onChange={(event) => updateRule(rule.id, { find: event.target.value })} title="Text or regex pattern to search for in the filename stem." />
+          <input className="macro-input" value={rule.replace} placeholder="Replace" onChange={(event) => updateRule(rule.id, { replace: event.target.value })} title="Replacement text. Regex capture groups can use $1, $2, and so on." />
+          <label title="Treat the Find value as a regular expression."><input type="checkbox" checked={rule.useRegex} onChange={(event) => updateRule(rule.id, { useRegex: event.target.checked })} title="Treat the Find value as a regular expression." />Regex</label>
+          <label title="Only match text with the same uppercase and lowercase letters."><input type="checkbox" checked={rule.caseSensitive} onChange={(event) => updateRule(rule.id, { caseSensitive: event.target.checked })} title="Only match text with the same uppercase and lowercase letters." />Match case</label>
         </div>
       );
     case 'prefix-suffix':
       return (
         <div className="renamer-rule-grid renamer-rule-grid--two">
-          <input className="macro-input" value={rule.prefix} placeholder="Prefix" onChange={(event) => updateRule(rule.id, { prefix: event.target.value })} />
-          <input className="macro-input" value={rule.suffix} placeholder="Suffix" onChange={(event) => updateRule(rule.id, { suffix: event.target.value })} />
+          <input className="macro-input" value={rule.prefix} placeholder="Prefix" onChange={(event) => updateRule(rule.id, { prefix: event.target.value })} title="Text added before the filename stem." />
+          <input className="macro-input" value={rule.suffix} placeholder="Suffix" onChange={(event) => updateRule(rule.id, { suffix: event.target.value })} title="Text added after the filename stem and before the extension." />
         </div>
       );
     case 'case':
       return (
-        <select className="macro-select" value={rule.mode} onChange={(event) => updateRule(rule.id, { mode: event.target.value })}>
+        <select className="macro-select" value={rule.mode} onChange={(event) => updateRule(rule.id, { mode: event.target.value })} title="Choose how filename letter casing should be changed.">
           <option value="lower">lowercase</option>
           <option value="upper">UPPERCASE</option>
           <option value="title">Title Case</option>
@@ -403,7 +416,7 @@ function renderRuleControls(rule: RenameRule, updateRule: (ruleId: string, patch
       );
     case 'spaces':
       return (
-        <select className="macro-select" value={rule.mode} onChange={(event) => updateRule(rule.id, { mode: event.target.value })}>
+        <select className="macro-select" value={rule.mode} onChange={(event) => updateRule(rule.id, { mode: event.target.value })} title="Choose how spaces in filenames should be handled.">
           <option value="underscore">spaces_to_underscores</option>
           <option value="hyphen">spaces-to-hyphens</option>
           <option value="remove">removespaces</option>
@@ -413,8 +426,8 @@ function renderRuleControls(rule: RenameRule, updateRule: (ruleId: string, patch
     case 'trim':
       return (
         <div className="renamer-rule-grid renamer-rule-grid--two">
-          <NumberInput label="Start" value={rule.start} onChange={(value) => updateRule(rule.id, { start: value })} />
-          <NumberInput label="End" value={rule.end} onChange={(value) => updateRule(rule.id, { end: value })} />
+          <NumberInput label="Start" value={rule.start} title="Number of characters to remove from the start of the filename stem." onChange={(value) => updateRule(rule.id, { start: value })} />
+          <NumberInput label="End" value={rule.end} title="Number of characters to remove from the end of the filename stem." onChange={(value) => updateRule(rule.id, { end: value })} />
         </div>
       );
     case 'clear-name':
@@ -422,16 +435,16 @@ function renderRuleControls(rule: RenameRule, updateRule: (ruleId: string, patch
     case 'numbering':
       return (
         <div className="renamer-rule-grid renamer-rule-grid--numbering">
-          <NumberInput label="Start" value={rule.start} onChange={(value) => updateRule(rule.id, { start: value })} />
-          <NumberInput label="Step" value={rule.increment} onChange={(value) => updateRule(rule.id, { increment: value })} />
-          <NumberInput label="Pad" value={rule.padding} onChange={(value) => updateRule(rule.id, { padding: value })} />
+          <NumberInput label="Start" value={rule.start} title="First number used by the numbering rule." onChange={(value) => updateRule(rule.id, { start: value })} />
+          <NumberInput label="Step" value={rule.increment} title="Amount added to the number for each next item." onChange={(value) => updateRule(rule.id, { increment: value })} />
+          <NumberInput label="Pad" value={rule.padding} title="Minimum number of digits, padded with leading zeroes." onChange={(value) => updateRule(rule.id, { padding: value })} />
           <label className="renamer-number-input">
             <span>Separator</span>
-            <input className="macro-input" value={rule.separator} placeholder="_" onChange={(event) => updateRule(rule.id, { separator: event.target.value })} />
+            <input className="macro-input" value={rule.separator} placeholder="_" onChange={(event) => updateRule(rule.id, { separator: event.target.value })} title="Text placed between the filename stem and the number." />
           </label>
           <label className="renamer-number-input">
             <span>Position</span>
-            <select className="macro-select" value={rule.position} onChange={(event) => updateRule(rule.id, { position: event.target.value })}>
+            <select className="macro-select" value={rule.position} onChange={(event) => updateRule(rule.id, { position: event.target.value })} title="Choose whether the number goes before or after the filename stem.">
               <option value="suffix">Suffix</option>
               <option value="prefix">Prefix</option>
             </select>
@@ -439,7 +452,7 @@ function renderRuleControls(rule: RenameRule, updateRule: (ruleId: string, patch
         </div>
       );
     case 'extension':
-      return <input className="macro-input" value={rule.extension} placeholder="Extension" onChange={(event) => updateRule(rule.id, { extension: event.target.value })} />;
+      return <input className="macro-input" value={rule.extension} placeholder="Extension" onChange={(event) => updateRule(rule.id, { extension: event.target.value })} title="New extension, with or without a leading dot." />;
   }
 }
 
@@ -449,7 +462,7 @@ function PreviewRow({ included, item, onToggle, row }: { included: boolean; item
   return (
     <div className={`renamer-table-row renamer-preview-row renamer-preview-row--${status}`}>
       <label className="renamer-include-toggle">
-        <input type="checkbox" checked={included} onChange={(event) => onToggle(event.target.checked)} />
+        <input type="checkbox" checked={included} onChange={(event) => onToggle(event.target.checked)} title="Include or exclude this item from the next rename apply." />
         {included ? 'Yes' : 'No'}
       </label>
       <code>{item.name}</code>
@@ -476,7 +489,7 @@ function StatPill({ label, value, tone = 'default' }: { label: string; value: nu
   );
 }
 
-function NumberInput({ label, value, onChange }: { label: string; value: number; onChange: (value: number) => void }): ReactElement {
+function NumberInput({ label, value, title, onChange }: { label: string; value: number; title: string; onChange: (value: number) => void }): ReactElement {
   const handleChange = (event: ChangeEvent<HTMLInputElement>): void => {
     onChange(Number.isFinite(event.target.valueAsNumber) ? event.target.valueAsNumber : 0);
   };
@@ -484,7 +497,7 @@ function NumberInput({ label, value, onChange }: { label: string; value: number;
   return (
     <label className="renamer-number-input">
       <span>{label}</span>
-      <input className="macro-input" type="number" value={value} onChange={handleChange} />
+      <input className="macro-input" type="number" value={value} onChange={handleChange} title={title} />
     </label>
   );
 }

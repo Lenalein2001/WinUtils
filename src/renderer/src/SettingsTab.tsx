@@ -68,7 +68,7 @@ export function SettingsTab({
       </div>
 
       <div className="settings-card">
-        <label className="settings-row">
+        <label className="settings-row" title="Automatically open WinUtils when you sign into Windows.">
           <div>
             <strong>Launch at Windows login</strong>
             <p>Automatically open WinUtils when you sign into Windows.</p>
@@ -78,10 +78,11 @@ export function SettingsTab({
             checked={settings.launchAtLogin}
             disabled={busy}
             onChange={(event) => onToggleLaunchAtLogin(event.target.checked)}
+            title="Automatically open WinUtils when you sign into Windows."
           />
         </label>
 
-        <label className="settings-row">
+        <label className="settings-row" title="Start WinUtils in the tray when it launches from Windows startup.">
           <div>
             <strong>Start minimized</strong>
             <p>When launched from startup, start in the system tray instead of focused.</p>
@@ -91,10 +92,11 @@ export function SettingsTab({
             checked={settings.startMinimized}
             disabled={busy}
             onChange={(event) => onToggleStartMinimized(event.target.checked)}
+            title="Start WinUtils in the tray when it launches from Windows startup."
           />
         </label>
 
-        <label className="settings-row">
+        <label className="settings-row" title="Send WinUtils to the system tray when minimized instead of leaving it on the taskbar.">
           <div>
             <strong>Minimize to tray</strong>
             <p>Hide to system tray when minimized instead of showing in the taskbar.</p>
@@ -104,10 +106,11 @@ export function SettingsTab({
             checked={settings.minimizeToTray}
             disabled={busy}
             onChange={(event) => onToggleMinimizeToTray(event.target.checked)}
+            title="Send WinUtils to the system tray when minimized instead of leaving it on the taskbar."
           />
         </label>
 
-        <label className="settings-row">
+        <label className="settings-row" title="Keep WinUtils running in the tray when the window close button is pressed.">
           <div>
             <strong>Close to tray</strong>
             <p>Keep running in the system tray when the window is closed.</p>
@@ -117,6 +120,7 @@ export function SettingsTab({
             checked={settings.closeToTray}
             disabled={busy}
             onChange={(event) => onToggleCloseToTray(event.target.checked)}
+            title="Keep WinUtils running in the tray when the window close button is pressed."
           />
         </label>
       </div>
@@ -127,7 +131,7 @@ export function SettingsTab({
             <strong>Updates</strong>
             <p>{updateStatus}</p>
           </div>
-          <span className={`status-pill settings-update-badge status-pill--${updateBadgeTone}`}>
+          <span className={`status-pill settings-update-badge status-pill--${updateBadgeTone}`} title="Current updater state.">
             {updateBadge}
           </span>
         </div>
@@ -146,6 +150,7 @@ export function SettingsTab({
             type="button"
             disabled={!updateState?.canCheck || updateDisabled}
             onClick={() => void runUpdateAction(() => window.winUtils.updates.check())}
+            title="Check GitHub Releases for a newer WinUtils version."
           >
             {updateState?.status === 'checking' ? 'Checking...' : 'Check Now'}
           </button>
@@ -156,18 +161,19 @@ export function SettingsTab({
               type="button"
               disabled={updateDisabled}
               onClick={() => void runUpdateAction(() => window.winUtils.updates.download())}
+              title={updateState.installMode === 'portable' ? 'Open the release download page for the portable EXE.' : 'Download the available WinUtils update.'}
             >
               {updateState.installMode === 'portable' ? 'Open Download' : updateState.status === 'downloading' ? 'Downloading...' : 'Download Update'}
             </button>
           ) : null}
 
           {updateState?.canInstall ? (
-            <button className="toggle-button" type="button" disabled={updateBusy} onClick={() => void runUpdateAction(() => window.winUtils.updates.install())}>
+            <button className="toggle-button" type="button" disabled={updateBusy} onClick={() => void runUpdateAction(() => window.winUtils.updates.install())} title="Install the downloaded update and restart WinUtils.">
               Install and Restart
             </button>
           ) : null}
 
-          <button className="ghost-button" type="button" onClick={() => void window.winUtils.updates.openReleasePage()}>
+          <button className="ghost-button" type="button" onClick={() => void window.winUtils.updates.openReleasePage()} title="Open the WinUtils GitHub Releases page in your browser.">
             Releases
           </button>
         </div>
