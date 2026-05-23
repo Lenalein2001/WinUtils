@@ -5,6 +5,7 @@ import type { AppSettings } from '../../shared/settings';
 import { FocusAudioTab } from './FocusAudioTab';
 import { MacrosTab } from './MacrosTab';
 import { PlayitTab } from './PlayitTab';
+import { RenamerTab } from './RenamerTab';
 import { SettingsTab } from './SettingsTab';
 
 const modules = [
@@ -39,6 +40,14 @@ const modules = [
     overview: 'Playit.gg tunnel setup for forwarding local ports without router changes',
     compact: 'Playit tunnels',
     hero: 'Install the Playit agent, claim it, and manage supported tunnels for local services.',
+  },
+  {
+    id: 'renamer',
+    label: 'Batch Renamer',
+    eyebrow: 'File Workflow',
+    overview: 'preview-first bulk file renaming with rules, validation, and undo',
+    compact: 'batch rename previews',
+    hero: 'Queue files and folders, stack rename rules, preview every target name, and apply reversible batches.',
   },
   {
     id: 'settings',
@@ -314,6 +323,12 @@ function App(): ReactElement {
         {activeTab === 'playit' ? (
           <section className="content-card content-card--playit">
             <PlayitTab />
+          </section>
+        ) : null}
+
+        {activeTab === 'renamer' ? (
+          <section className="content-card content-card--renamer">
+            <RenamerTab />
           </section>
         ) : null}
 

@@ -12,6 +12,8 @@ import { applyAppLoginItemSettings, getAppLaunchAtLogin } from './loginItem';
 import { MacroManager, registerMacroIpcHandlers } from './macroManager';
 import { registerPlayitIpcHandlers } from './playitIpc';
 import { PlayitManager } from './playitManager';
+import { registerRenamerIpcHandlers } from './renamerIpc';
+import { RenamerManager } from './renamerManager';
 import { registerSettingsIpcHandlers } from './settingsIpc';
 import { StartupManager } from './startupManager';
 import { registerUpdateIpcHandlers } from './updateIpc';
@@ -278,6 +280,9 @@ async function bootstrap(): Promise<void> {
 
   const playitManager = new PlayitManager();
   registerPlayitIpcHandlers(playitManager);
+
+  const renamerManager = new RenamerManager();
+  registerRenamerIpcHandlers(renamerManager);
 
   const updateManager = new UpdateManager(() => { isQuitting = true; });
   updateManager.init();

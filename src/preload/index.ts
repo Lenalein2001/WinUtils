@@ -1,9 +1,10 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { StartupEntry } from '../shared/startup';
 import type { Macro, MacroAction, MacroFolder, MacroState } from '../shared/macro';
 import type { FocusAudioConfig, FocusAudioState } from '../shared/focusAudio';
 import type { AppSettings } from '../shared/settings';
 import type { PlayitAgentClaimStart, PlayitInstallResult, PlayitState, PlayitTunnelInput, PlayitTunnelUpdateInput } from '../shared/playit';
+import type { RenameApplyResult, RenamePreview, RenameRule, RenameTransaction, RenameUndoResult, RenamerItem, RenamerLoadOptions, RenamerLoadPathsInput, RenamerPreviewInput } from '../shared/renamer';
 import type { UpdateState } from '../shared/updater';
 
 const api = {
@@ -93,6 +94,17 @@ const api = {
     openDownloadPage: (): Promise<void> => ipcRenderer.invoke('playit:openDownloadPage'),
     openAccountPage: (): Promise<void> => ipcRenderer.invoke('playit:openAccountPage'),
     openTunnelSetupPage: (): Promise<void> => ipcRenderer.invoke('playit:openTunnelSetupPage'),
+  },
+  renamer: {
+    pickFiles: (): Promise<RenamerItem[]> => ipcRenderer.invoke('renamer:pickFiles'),
+    pickFolder: (options: RenamerLoadOptions): Promise<RenamerItem[]> => ipcRenderer.invoke('renamer:pickFolder', options),
+    loadPaths: (input: RenamerLoadPathsInput): Promise<RenamerItem[]> => ipcRenderer.invoke('renamer:loadPaths', input),
+    preview: (input: RenamerPreviewInput): Promise<RenamePreview> => ipcRenderer.invoke('renamer:preview', input),
+    apply: (input: RenamerPreviewInput): Promise<RenameApplyResult> => ipcRenderer.invoke('renamer:apply', input),
+    undo: (transactionId?: string): Promise<RenameUndoResult> => ipcRenderer.invoke('renamer:undo', transactionId),
+    listTransactions: (): Promise<RenameTransaction[]> => ipcRenderer.invoke('renamer:listTransactions'),
+    defaultRules: (): Promise<RenameRule[]> => ipcRenderer.invoke('renamer:defaultRules'),
+    getDroppedPath: (file: Parameters<typeof webUtils.getPathForFile>[0]): string => webUtils.getPathForFile(file),
   },
   tray: {
     showMain: (): Promise<void> => ipcRenderer.invoke('tray:show-main'),

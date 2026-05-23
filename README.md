@@ -20,6 +20,7 @@ WinUtils is a Windows desktop utility app built with Electron, React, TypeScript
 - Macros with folders, profiles, recorded keyboard/mouse actions, and process-aware automatic profile switching
 - Focus Audio with whitelist/blacklist modes for muting unfocused apps by audio session/process
 - Playit Tunnels detects the local Playit.gg agent, offers Winget or direct signed-agent installer paths, and creates Playit-supported self-managed tunnel types through the Playit API
+- Batch Renamer with drag-and-drop loading, ordered rename rules, live validation, conflict preview, reversible apply, and undo history
 - Settings for launch at login, start minimized, minimize to tray, and close to tray
 - Secure IPC bridge between renderer and Electron main process
 

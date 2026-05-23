@@ -5,6 +5,7 @@ import type { Macro, MacroAction, MacroFolder, MacroState } from '../../shared/m
 import type { FocusAudioConfig, FocusAudioState } from '../../shared/focusAudio';
 import type { AppSettings } from '../../shared/settings';
 import type { PlayitAgentClaimStart, PlayitInstallResult, PlayitState, PlayitTunnelInput, PlayitTunnelUpdateInput } from '../../shared/playit';
+import type { RenameApplyResult, RenamePreview, RenameRule, RenameTransaction, RenameUndoResult, RenamerItem, RenamerLoadOptions, RenamerLoadPathsInput, RenamerPreviewInput } from '../../shared/renamer';
 import type { UpdateState } from '../../shared/updater';
 
 declare global {
@@ -71,6 +72,17 @@ declare global {
         openDownloadPage: () => Promise<void>;
         openAccountPage: () => Promise<void>;
         openTunnelSetupPage: () => Promise<void>;
+      };
+      renamer: {
+        pickFiles: () => Promise<RenamerItem[]>;
+        pickFolder: (options: RenamerLoadOptions) => Promise<RenamerItem[]>;
+        loadPaths: (input: RenamerLoadPathsInput) => Promise<RenamerItem[]>;
+        preview: (input: RenamerPreviewInput) => Promise<RenamePreview>;
+        apply: (input: RenamerPreviewInput) => Promise<RenameApplyResult>;
+        undo: (transactionId?: string) => Promise<RenameUndoResult>;
+        listTransactions: () => Promise<RenameTransaction[]>;
+        defaultRules: () => Promise<RenameRule[]>;
+        getDroppedPath: (file: File) => string;
       };
       tray: {
         showMain: () => Promise<void>;
