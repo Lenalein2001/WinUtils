@@ -33,7 +33,7 @@ interface RegexMatchResult {
   }>;
 }
 
-const DEFAULT_SAMPLE = '2025-08-17_21-45-48';
+const DEFAULT_SAMPLE = '';
 
 export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactElement {
   const [sampleText, setSampleText] = useState(DEFAULT_SAMPLE);
@@ -41,24 +41,11 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
   const [selectedOptions, setSelectedOptions] = useState<Record<string, string>>({});
   const [capturedSegments, setCapturedSegments] = useState<Record<string, boolean>>({});
   const [patternDraft, setPatternDraft] = useState('');
-  const [patternTouched, setPatternTouched] = useState(false);
   const [replacement, setReplacement] = useState('');
   const [replacementTouched, setReplacementTouched] = useState(false);
   const [exportMessage, setExportMessage] = useState<string | null>(null);
 
   const segments = useMemo(() => buildSegments(sampleText), [sampleText]);
-  const generatedPattern = useMemo(
-    () => buildGeneratedPattern(segments, selectedOptions, capturedSegments),
-    [capturedSegments, segments, selectedOptions],
-  );
-  const captureCount = useMemo(
-    () => segments.filter((segment) => capturedSegments[segment.id]).length,
-    [capturedSegments, segments],
-  );
-  const suggestedReplacement = useMemo(
-    () => Array.from({ length: captureCount }, (_item, index) => `$${index + 1}`).join('_'),
-    [captureCount],
-  );
   const matchResult = useMemo(
     () => testPattern(patternDraft, flags, sampleText),
     [flags, patternDraft, sampleText],
@@ -76,21 +63,7 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
 
     setSelectedOptions(nextSelectedOptions);
     setCapturedSegments(nextCapturedSegments);
-    setPatternTouched(false);
-    setReplacementTouched(false);
   }, [segments]);
-
-  useEffect(() => {
-    if (!patternTouched) {
-      setPatternDraft(generatedPattern);
-    }
-  }, [generatedPattern, patternTouched]);
-
-  useEffect(() => {
-    if (!replacementTouched) {
-      setReplacement(suggestedReplacement);
-    }
-  }, [replacementTouched, suggestedReplacement]);
 
   const setFlag = (flag: string, enabled: boolean): void => {
     setFlags((currentFlags) => {
@@ -104,10 +77,23 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
     });
   };
 
+  const applyBuilderPattern = (
+    nextSelectedOptions: Record<string, string>,
+    nextCapturedSegments: Record<string, boolean>,
+  ): void => {
+    setPatternDraft(buildGeneratedPattern(segments, nextSelectedOptions, nextCapturedSegments));
+    if (!replacementTouched) {
+      setReplacement(buildSuggestedReplacement(segments, nextCapturedSegments));
+    }
+    setExportMessage(null);
+  };
+
   const chooseOption = (segment: RegexSegment, option: SegmentOption): void => {
-    setSelectedOptions((current) => ({ ...current, [segment.id]: option.id }));
-    setCapturedSegments((current) => ({ ...current, [segment.id]: option.captureDefault }));
-    setPatternTouched(false);
+    const nextSelectedOptions = { ...selectedOptions, [segment.id]: option.id };
+    const nextCapturedSegments = { ...capturedSegments, [segment.id]: option.captureDefault };
+    setSelectedOptions(nextSelectedOptions);
+    setCapturedSegments(nextCapturedSegments);
+    applyBuilderPattern(nextSelectedOptions, nextCapturedSegments);
   };
 
   const handleExport = (): void => {
@@ -129,7 +115,7 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
       <div className="regex-lab-topbar">
         <div className="regex-lab-field regex-lab-field--sample">
           <span>Sample Text</span>
-          <input className="macro-input" value={sampleText} onChange={(event) => { setSampleText(event.target.value); setPatternTouched(false); }} />
+          <input className="macro-input" value={sampleText} onChange={(event) => { setSampleText(event.target.value); setExportMessage(null); }} />
         </div>
         <div className="regex-flag-row">
           {['g', 'i', 'm'].map((flag) => (
@@ -190,8 +176,9 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
                       type="checkbox"
                       checked={Boolean(capturedSegments[segment.id])}
                       onChange={(event) => {
-                        setCapturedSegments((current) => ({ ...current, [segment.id]: event.target.checked }));
-                        setPatternTouched(false);
+                        const nextCapturedSegments = { ...capturedSegments, [segment.id]: event.target.checked };
+                        setCapturedSegments(nextCapturedSegments);
+                        applyBuilderPattern(selectedOptions, nextCapturedSegments);
                       }}
                     />
                     Capture
@@ -208,7 +195,7 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
               <p className="section-kicker">Pattern</p>
               <h2>Regex Output</h2>
             </div>
-            <button className="ghost-button ghost-button--sm" type="button" onClick={() => { setPatternDraft(generatedPattern); setPatternTouched(false); }}>
+            <button className="ghost-button ghost-button--sm" type="button" onClick={() => applyBuilderPattern(selectedOptions, capturedSegments)}>
               Use Builder
             </button>
           </div>
@@ -216,7 +203,7 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
           <textarea
             className="macro-textarea regex-pattern-box"
             value={patternDraft}
-            onChange={(event) => { setPatternDraft(event.target.value); setPatternTouched(true); }}
+            onChange={(event) => { setPatternDraft(event.target.value); setExportMessage(null); }}
             spellCheck={false}
           />
 
@@ -225,7 +212,7 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
             <input
               className="macro-input"
               value={replacement}
-              onChange={(event) => { setReplacement(event.target.value); setReplacementTouched(true); }}
+              onChange={(event) => { setReplacement(event.target.value); setReplacementTouched(true); setExportMessage(null); }}
               spellCheck={false}
             />
           </div>
@@ -352,6 +339,11 @@ function buildGeneratedPattern(
     const option = getSelectedOption(segment, selectedOptions);
     return capturedSegments[segment.id] ? `(${option.pattern})` : option.pattern;
   }).join('');
+}
+
+function buildSuggestedReplacement(segments: RegexSegment[], capturedSegments: Record<string, boolean>): string {
+  const captureCount = segments.filter((segment) => capturedSegments[segment.id]).length;
+  return Array.from({ length: captureCount }, (_item, index) => `$${index + 1}`).join('_');
 }
 
 function getSelectedOption(segment: RegexSegment, selectedOptions: Record<string, string>): SegmentOption {
