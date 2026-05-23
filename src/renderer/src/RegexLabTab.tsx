@@ -89,7 +89,7 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
     setExportMessage(null);
   };
 
-  const includeAllSegments = (): void => {
+  const useAllSegments = (): void => {
     const nextIncludedSegments: Record<string, boolean> = {};
     const nextCapturedSegments = { ...capturedSegments };
 
@@ -105,10 +105,28 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
     applySelectedPattern(selectedOptions, nextIncludedSegments, nextCapturedSegments);
   };
 
+  const clearSelectedSegments = (): void => {
+    setIncludedSegments({});
+    setCapturedSegments({});
+    setPatternDraft('');
+    setReplacement('');
+    setReplacementTouched(false);
+    setExportMessage(null);
+  };
+
   const chooseOption = (segment: RegexSegment, option: SegmentOption): void => {
+    const activeOption = getSelectedOption(segment, selectedOptions);
+    const shouldRemoveFilter = includedSegments[segment.id] && activeOption.id === option.id;
     const nextSelectedOptions = { ...selectedOptions, [segment.id]: option.id };
-    const nextIncludedSegments = { ...includedSegments, [segment.id]: true };
-    const nextCapturedSegments = { ...capturedSegments, [segment.id]: option.captureDefault };
+    const nextIncludedSegments = { ...includedSegments, [segment.id]: !shouldRemoveFilter };
+    const nextCapturedSegments = { ...capturedSegments };
+
+    if (shouldRemoveFilter) {
+      delete nextCapturedSegments[segment.id];
+    } else {
+      nextCapturedSegments[segment.id] = option.captureDefault;
+    }
+
     setSelectedOptions(nextSelectedOptions);
     setIncludedSegments(nextIncludedSegments);
     setCapturedSegments(nextCapturedSegments);
@@ -119,7 +137,9 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
     const nextIncludedSegments = { ...includedSegments, [segment.id]: included };
     const nextCapturedSegments = { ...capturedSegments };
 
-    if (included && !hasSegmentValue(nextCapturedSegments, segment.id)) {
+    if (!included) {
+      delete nextCapturedSegments[segment.id];
+    } else if (!hasSegmentValue(nextCapturedSegments, segment.id)) {
       nextCapturedSegments[segment.id] = getSelectedOption(segment, selectedOptions).captureDefault;
     }
 
@@ -186,8 +206,8 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
                   className={`regex-token regex-token--${option.tone} ${included ? 'regex-token--selected' : ''} ${included && getSegmentCapture(segment, selectedOptions, capturedSegments) ? 'regex-token--captured' : ''}`}
                   key={segment.id}
                   type="button"
-                  onClick={() => cycleSegmentOption(segment, selectedOptions, chooseOption)}
-                  title={option.label}
+                  onClick={() => toggleSegmentIncluded(segment, !included)}
+                  title={included ? `Remove ${option.label}` : `Use ${option.label}`}
                 >
                   {segment.text || ' '}
                 </button>
@@ -206,7 +226,8 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
                   <div className="regex-option-pills">
                     {segment.options.map((candidate) => (
                       <button
-                        className={`micro-button ${candidate.id === option.id ? 'regex-option-pill--active' : ''}`}
+                        aria-pressed={included && candidate.id === option.id}
+                        className={`micro-button ${included && candidate.id === option.id ? 'regex-option-pill--active' : ''}`}
                         key={candidate.id}
                         type="button"
                         onClick={() => chooseOption(segment, candidate)}
@@ -246,9 +267,14 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
               <p className="section-kicker">Pattern</p>
               <h2>Regex Output</h2>
             </div>
-            <button className="ghost-button ghost-button--sm" type="button" onClick={includeAllSegments}>
-              Use Builder
-            </button>
+            <div className="regex-card-actions">
+              <button className="ghost-button ghost-button--sm" type="button" onClick={useAllSegments}>
+                Use All
+              </button>
+              <button className="ghost-button ghost-button--sm" type="button" onClick={clearSelectedSegments}>
+                Clear
+              </button>
+            </div>
           </div>
 
           <textarea
@@ -445,16 +471,6 @@ function getSegmentCapture(
 
 function hasSegmentValue(values: Record<string, boolean>, segmentId: string): boolean {
   return Object.prototype.hasOwnProperty.call(values, segmentId);
-}
-
-function cycleSegmentOption(
-  segment: RegexSegment,
-  selectedOptions: Record<string, string>,
-  chooseOption: (segment: RegexSegment, option: SegmentOption) => void,
-): void {
-  const currentOption = getSelectedOption(segment, selectedOptions);
-  const currentIndex = segment.options.findIndex((option) => option.id === currentOption.id);
-  chooseOption(segment, segment.options[(currentIndex + 1) % segment.options.length]);
 }
 
 function testPattern(pattern: string, flags: string, sampleText: string): RegexMatchResult {

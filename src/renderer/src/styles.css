@@ -1089,6 +1089,13 @@ code {
   font-size: 1.05rem;
 }
 
+.regex-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .regex-card-header--compact {
   margin-bottom: 8px;
 }
