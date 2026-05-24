@@ -1,6 +1,6 @@
 # WinUtils
 
-WinUtils is a Windows desktop utility app built with Electron, React, TypeScript, and Vite. It brings startup management, process-aware macros, focus-based audio muting, Playit.gg tunnel setup, and tray/window behavior controls into one desktop app.
+WinUtils is a Windows desktop utility app built with Electron, React, TypeScript, and Vite. It brings startup management, process-aware macros, focus-based audio muting, clipboard history, Playit.gg tunnel setup, and tray/window behavior controls into one desktop app.
 
 ## Desktop App
 - WinUtils runs as an Electron desktop window on Windows.
@@ -22,6 +22,7 @@ WinUtils is a Windows desktop utility app built with Electron, React, TypeScript
 - Playit Tunnels detects the local Playit.gg agent, offers Winget or direct signed-agent installer paths, and creates Playit-supported self-managed tunnel types through the Playit API
 - Batch Renamer with drag-and-drop loading, ordered rename rules, live validation, conflict preview, reversible apply, and undo history
 - Regex Lab with colored token suggestions, live match checks, capture previews, and direct export into Batch Renamer regex rules
+- Clipboard Manager with local searchable history, pins, smart categories, image capture, Windows OCR, and quick-access hotkeys
 - Settings for launch at login, start minimized, minimize to tray, and close to tray
 - Secure IPC bridge between renderer and Electron main process
 
@@ -82,6 +83,7 @@ npm run package:portable
 - Startup folder entries are restored from WinUtils cache storage, so deleting the cache files manually will prevent restore for those disabled items.
 - The cache is stored in Electron's `app.getPath('userData')` location for the installed app.
 - Playit Tunnels requires a claimed Playit.gg agent. WinUtils can open the Playit claim page, finish the claim after browser approval, write Playit's local config without showing the agent secret, and refresh tunnels created outside the app.
+- Clipboard Manager stores history locally under the app user data directory. Image OCR uses Windows built-in OCR and does not upload clipboard contents.
 - Packaging generates installer and portable EXE artifacts in `release/`.
 - Auto-update support uses the public GitHub release feed. Publish `latest.yml`, the installer EXE, and its blockmap with each installer release; portable users are shown a download link for the new portable EXE.
 - Release EXEs are published as GitHub release assets and are not tracked in Git.

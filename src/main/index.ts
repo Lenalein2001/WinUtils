@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { StartupCacheStore } from './cacheStore';
+import { registerClipboardIpcHandlers } from './clipboardIpc';
+import { ClipboardManager } from './clipboardManager';
 import { FocusAudioManager } from './focusAudioManager';
 import { registerFocusAudioIpcHandlers } from './focusAudioIpc';
 import { registerIpcHandlers } from './ipc';
@@ -284,6 +286,28 @@ async function bootstrap(): Promise<void> {
   const renamerManager = new RenamerManager();
   registerRenamerIpcHandlers(renamerManager);
 
+  const clipboardManager = new ClipboardManager({
+    onStateChanged: () => {
+      BrowserWindow.getAllWindows().forEach((window) => {
+        window.webContents.send('clipboard:changed');
+      });
+    },
+    onQuickAccess: () => {
+      showMainWindow();
+      const window = mainWindow;
+      if (!window || window.isDestroyed()) return;
+
+      window.setAlwaysOnTop(true);
+      window.setAlwaysOnTop(false);
+      setTimeout(() => {
+        if (window.isDestroyed()) return;
+        window.webContents.send('clipboard:open');
+      }, 60);
+    },
+  });
+  registerClipboardIpcHandlers(clipboardManager);
+  clipboardManager.init().catch(err => logStartup('ClipboardManager init error', err));
+
   const updateManager = new UpdateManager(() => { isQuitting = true; });
   updateManager.init();
   registerUpdateIpcHandlers(updateManager);
@@ -328,6 +352,7 @@ async function bootstrap(): Promise<void> {
     isQuitting = true;
     macroManager.destroy();
     focusAudioManager.stopPolling();
+    clipboardManager.destroy();
   });
 }
 

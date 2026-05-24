@@ -1286,9 +1286,326 @@ code {
   color: var(--muted);
 }
 
+/* Clipboard Manager */
+
+.content-card--clipboard {
+  align-self: start;
+}
+
+.clipboard-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.clipboard-topbar,
+.clipboard-toolbar,
+.clipboard-controls,
+.clipboard-settings-strip,
+.clipboard-filter-row,
+.clipboard-list-header,
+.clipboard-entry-title-row,
+.clipboard-category-row,
+.clipboard-entry-actions,
+.clipboard-ocr-header,
+.clipboard-clear-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.clipboard-topbar,
+.clipboard-list-header,
+.clipboard-entry-title-row {
+  justify-content: space-between;
+}
+
+.clipboard-subtitle,
+.clipboard-entry-title-row p,
+.clipboard-ocr-box p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.clipboard-toolbar,
+.clipboard-filter-row,
+.clipboard-settings-strip,
+.clipboard-category-row,
+.clipboard-entry-actions,
+.clipboard-clear-actions {
+  flex-wrap: wrap;
+}
+
+.clipboard-stats {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.clipboard-stat {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(141, 210, 255, 0.12);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.clipboard-stat--warning {
+  border-color: rgba(255, 210, 122, 0.26);
+}
+
+.clipboard-stat span,
+.clipboard-search span {
+  display: block;
+  color: #8db7d7;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.clipboard-stat strong {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 1.12rem;
+}
+
+.clipboard-stat small {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.clipboard-stat--warning small {
+  color: #ffd27a;
+}
+
+.clipboard-controls,
+.clipboard-settings-strip {
+  justify-content: space-between;
+  padding: 12px;
+  border: 1px solid rgba(141, 210, 255, 0.12);
+  border-radius: 16px;
+  background: rgba(8, 24, 43, 0.62);
+}
+
+.clipboard-search {
+  flex: 1 1 280px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.clipboard-settings-strip label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.clipboard-settings-strip input[type='checkbox'] {
+  width: 17px;
+  height: 17px;
+}
+
+.clipboard-list-header {
+  color: var(--muted);
+}
+
+.clipboard-list-header strong {
+  color: var(--text);
+}
+
+.clipboard-entry-list {
+  display: grid;
+  gap: 10px;
+}
+
+.clipboard-entry {
+  display: grid;
+  grid-template-columns: 130px minmax(0, 1fr);
+  grid-template-areas:
+    "media main"
+    "media actions";
+  gap: 14px;
+  align-items: start;
+  padding: 14px;
+  border: 1px solid rgba(141, 210, 255, 0.1);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(10, 27, 47, 0.82), rgba(7, 19, 33, 0.82));
+}
+
+.clipboard-entry--pinned {
+  border-color: rgba(123, 240, 200, 0.28);
+  box-shadow: inset 3px 0 0 rgba(123, 240, 200, 0.58);
+}
+
+.clipboard-entry > * {
+  min-width: 0;
+}
+
+.clipboard-entry-media {
+  grid-area: media;
+  width: 130px;
+  min-height: 82px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border: 1px solid rgba(141, 210, 255, 0.12);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.clipboard-entry-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.clipboard-entry-media span {
+  color: #8db7d7;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+}
+
+.clipboard-entry-main {
+  grid-area: main;
+  display: grid;
+  gap: 10px;
+}
+
+.clipboard-entry-title-row strong {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clipboard-entry-title-row > div:first-child {
+  min-width: 0;
+}
+
+.clipboard-category-row {
+  justify-content: flex-start;
+  max-width: 100%;
+}
+
+.clipboard-entry-actions {
+  grid-area: actions;
+  justify-content: flex-start;
+  align-self: end;
+  min-width: 0;
+}
+
+.clipboard-entry-actions .micro-button {
+  min-width: 62px;
+  min-height: 30px;
+  padding: 5px 10px;
+  white-space: nowrap;
+}
+
+.clipboard-text-preview,
+.clipboard-file-list {
+  max-height: 178px;
+  overflow: auto;
+  margin: 0;
+  padding: 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.035);
+  color: #d9eefc;
+  font-family: "Cascadia Code", "Consolas", monospace;
+  font-size: 0.82rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.clipboard-file-list {
+  display: grid;
+  gap: 6px;
+}
+
+.clipboard-file-list code {
+  color: #d9eefc;
+}
+
+.clipboard-ocr-box {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(141, 210, 255, 0.1);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.clipboard-ocr-header {
+  justify-content: space-between;
+}
+
+.clipboard-ocr-status {
+  text-transform: capitalize;
+}
+
+.clipboard-ocr-status--pending {
+  background: rgba(255, 210, 122, 0.12);
+  color: #ffd27a;
+}
+
+.clipboard-ocr-status--complete {
+  background: rgba(123, 240, 200, 0.12);
+  color: var(--success);
+}
+
+.clipboard-ocr-status--error,
+.clipboard-ocr-status--unsupported {
+  background: rgba(255, 138, 122, 0.12);
+  color: #ffc0b7;
+}
+
+.clipboard-ocr-status--none {
+  background: rgba(151, 173, 195, 0.12);
+  color: var(--muted);
+}
+
+.micro-button--active {
+  background: var(--accent-soft);
+  border-color: rgba(141, 210, 255, 0.3);
+  color: #d9f1ff;
+}
+
+.clipboard-filter-row .clipboard-filter-button {
+  min-height: 26px;
+  padding: 3px 9px;
+}
+
+.clipboard-test-hotkey {
+  min-height: 28px;
+}
+
+.clipboard-filter-row .micro-button--active {
+  background: linear-gradient(135deg, #1cb2ff, #0b6cff);
+  border-color: rgba(178, 226, 255, 0.72);
+  color: #ffffff;
+  box-shadow: 0 0 0 1px rgba(141, 210, 255, 0.24), 0 8px 22px rgba(11, 108, 255, 0.28);
+}
+
+.clipboard-filter-row .micro-button--active:hover:not(:disabled) {
+  background: linear-gradient(135deg, #35bdff, #1b78ff);
+}
+
 @media (max-width: 1160px) {
   .renamer-workspace,
   .regex-lab-grid,
+  .clipboard-entry,
   .renamer-rule-grid--numbering {
     grid-template-columns: 1fr;
   }
@@ -1296,19 +1613,35 @@ code {
   .renamer-toolbar,
   .renamer-drop-zone,
   .regex-lab-topbar,
-  .regex-card-header {
+  .regex-card-header,
+  .clipboard-topbar,
+  .clipboard-controls,
+  .clipboard-entry-title-row {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .renamer-stat-grid {
+  .renamer-stat-grid,
+  .clipboard-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .clipboard-entry-media {
+    width: 100%;
+  }
+
+  .clipboard-entry {
+    grid-template-areas:
+      "media"
+      "main"
+      "actions";
   }
 }
 
 @media (max-width: 760px) {
   .renamer-rule-grid--two,
-  .renamer-stat-grid {
+  .renamer-stat-grid,
+  .clipboard-stats {
     grid-template-columns: 1fr;
   }
 

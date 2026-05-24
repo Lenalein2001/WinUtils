@@ -6,6 +6,7 @@ import type { AppSettings } from '../shared/settings';
 import type { PlayitAgentClaimStart, PlayitInstallResult, PlayitState, PlayitTunnelInput, PlayitTunnelUpdateInput } from '../shared/playit';
 import type { RenameApplyResult, RenamePreview, RenameRule, RenameTransaction, RenameUndoResult, RenamerItem, RenamerLoadOptions, RenamerLoadPathsInput, RenamerPreviewInput } from '../shared/renamer';
 import type { UpdateState } from '../shared/updater';
+import type { ClipboardClearMode, ClipboardQuery, ClipboardState } from '../shared/clipboard';
 
 const api = {
   startupApps: {
@@ -105,6 +106,29 @@ const api = {
     listTransactions: (): Promise<RenameTransaction[]> => ipcRenderer.invoke('renamer:listTransactions'),
     defaultRules: (): Promise<RenameRule[]> => ipcRenderer.invoke('renamer:defaultRules'),
     getDroppedPath: (file: Parameters<typeof webUtils.getPathForFile>[0]): string => webUtils.getPathForFile(file),
+  },
+  clipboard: {
+    getState: (query?: ClipboardQuery): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:getState', query),
+    captureNow: (): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:captureNow'),
+    setMonitoring: (enabled: boolean): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:setMonitoring', enabled),
+    setCaptureImages: (enabled: boolean): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:setCaptureImages', enabled),
+    setImageOcr: (enabled: boolean): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:setImageOcr', enabled),
+    setPinned: (id: string, pinned: boolean): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:setPinned', id, pinned),
+    copy: (id: string): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:copy', id),
+    delete: (id: string): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:delete', id),
+    clear: (mode: ClipboardClearMode): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:clear', mode),
+    rerunOcr: (id: string): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:rerunOcr', id),
+    openQuickAccess: (): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:openQuickAccess'),
+    onChanged: (cb: () => void): (() => void) => {
+      const listener = (): void => cb();
+      ipcRenderer.on('clipboard:changed', listener);
+      return () => ipcRenderer.removeListener('clipboard:changed', listener);
+    },
+    onOpenRequested: (cb: () => void): (() => void) => {
+      const listener = (): void => cb();
+      ipcRenderer.on('clipboard:open', listener);
+      return () => ipcRenderer.removeListener('clipboard:open', listener);
+    },
   },
   tray: {
     showMain: (): Promise<void> => ipcRenderer.invoke('tray:show-main'),

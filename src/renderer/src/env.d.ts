@@ -7,6 +7,7 @@ import type { AppSettings } from '../../shared/settings';
 import type { PlayitAgentClaimStart, PlayitInstallResult, PlayitState, PlayitTunnelInput, PlayitTunnelUpdateInput } from '../../shared/playit';
 import type { RenameApplyResult, RenamePreview, RenameRule, RenameTransaction, RenameUndoResult, RenamerItem, RenamerLoadOptions, RenamerLoadPathsInput, RenamerPreviewInput } from '../../shared/renamer';
 import type { UpdateState } from '../../shared/updater';
+import type { ClipboardClearMode, ClipboardQuery, ClipboardState } from '../../shared/clipboard';
 
 declare global {
   interface Window {
@@ -83,6 +84,21 @@ declare global {
         listTransactions: () => Promise<RenameTransaction[]>;
         defaultRules: () => Promise<RenameRule[]>;
         getDroppedPath: (file: File) => string;
+      };
+      clipboard: {
+        getState: (query?: ClipboardQuery) => Promise<ClipboardState>;
+        captureNow: () => Promise<ClipboardState>;
+        setMonitoring: (enabled: boolean) => Promise<ClipboardState>;
+        setCaptureImages: (enabled: boolean) => Promise<ClipboardState>;
+        setImageOcr: (enabled: boolean) => Promise<ClipboardState>;
+        setPinned: (id: string, pinned: boolean) => Promise<ClipboardState>;
+        copy: (id: string) => Promise<ClipboardState>;
+        delete: (id: string) => Promise<ClipboardState>;
+        clear: (mode: ClipboardClearMode) => Promise<ClipboardState>;
+        rerunOcr: (id: string) => Promise<ClipboardState>;
+        openQuickAccess: () => Promise<ClipboardState>;
+        onChanged: (cb: () => void) => () => void;
+        onOpenRequested: (cb: () => void) => () => void;
       };
       tray: {
         showMain: () => Promise<void>;

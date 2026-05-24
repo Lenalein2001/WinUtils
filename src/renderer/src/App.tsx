@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { StartupEntry } from '../../shared/startup';
 import type { AppSettings } from '../../shared/settings';
 import type { RegexRenamerExport } from '../../shared/regexLab';
+import { ClipboardTab } from './ClipboardTab';
 import { FocusAudioTab } from './FocusAudioTab';
 import { MacrosTab } from './MacrosTab';
 import { PlayitTab } from './PlayitTab';
@@ -58,6 +59,14 @@ const modules = [
     overview: 'visual regex testing and generated patterns for rename rules',
     compact: 'regex pattern building',
     hero: 'Build regular expressions from sample filenames, test matches, and send patterns straight into the renamer.',
+  },
+  {
+    id: 'clipboard',
+    label: 'Clipboard',
+    eyebrow: 'Clipboard History',
+    overview: 'searchable clipboard history with pins, categories, images, and OCR',
+    compact: 'clipboard history',
+    hero: 'Keep copied text, images, and file paths searchable with pins, smart categories, OCR, and a quick-access hotkey.',
   },
   {
     id: 'settings',
@@ -127,6 +136,12 @@ function App(): ReactElement {
 
   useEffect(() => {
     void loadEntries();
+  }, []);
+
+  useEffect(() => {
+    return window.winUtils.clipboard.onOpenRequested(() => {
+      setActiveTab('clipboard');
+    });
   }, []);
 
   useEffect(() => {
@@ -352,6 +367,12 @@ function App(): ReactElement {
                 setActiveTab('renamer');
               }}
             />
+          </section>
+        ) : null}
+
+        {activeTab === 'clipboard' ? (
+          <section className="content-card content-card--clipboard">
+            <ClipboardTab />
           </section>
         ) : null}
 

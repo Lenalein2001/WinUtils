@@ -9,6 +9,7 @@ import { app, globalShortcut } from 'electron';
 let hooked = false;
 
 const callbacks = new Map<string, () => void>();
+const registeredAccelerators = new Set<string>();
 
 function normalizeHotkey(raw: string): string {
   return raw.trim().toLowerCase().replace(/\s+/g, '');
@@ -158,22 +159,30 @@ function toNumpadAcceleratorKey(token: string): string | null {
 }
 
 function registerAllHotkeys(): void {
-  globalShortcut.unregisterAll();
+  unregisterRegisteredHotkeys();
 
   const hotkeys = new Set(callbacks.keys());
-  const registeredAccelerators = new Set<string>();
+  const attemptedAccelerators = new Set<string>();
 
   for (const [hotkey, cb] of callbacks) {
     for (const accelerator of toElectronAccelerators(hotkey, hotkeys)) {
       const registrationKey = accelerator.toLowerCase();
-      if (registeredAccelerators.has(registrationKey)) continue;
-      registeredAccelerators.add(registrationKey);
+      if (attemptedAccelerators.has(registrationKey)) continue;
+      attemptedAccelerators.add(registrationKey);
 
-      globalShortcut.register(accelerator, () => {
+      const registered = globalShortcut.register(accelerator, () => {
         try { cb(); } catch { /* ignore callback crash */ }
       });
+      if (registered) registeredAccelerators.add(accelerator);
     }
   }
+}
+
+function unregisterRegisteredHotkeys(): void {
+  for (const accelerator of registeredAccelerators) {
+    try { globalShortcut.unregister(accelerator); } catch { /* ignore stale shortcut */ }
+  }
+  registeredAccelerators.clear();
 }
 
 function toElectronAccelerators(hotkey: string, hotkeys: Set<string>): string[] {
@@ -228,7 +237,7 @@ export function unregisterHotkey(hotkey: string): void {
 
 export function clearHotkeys(): void {
   callbacks.clear();
-  if (hooked) globalShortcut.unregisterAll();
+  if (hooked) unregisterRegisteredHotkeys();
 }
 
 export async function startHook(): Promise<void> {
@@ -250,6 +259,6 @@ export async function startHook(): Promise<void> {
 
 export function stopHook(): void {
   if (!hooked) return;
-  try { globalShortcut.unregisterAll(); } catch { /* ignore */ }
+  unregisterRegisteredHotkeys();
   hooked = false;
 }
