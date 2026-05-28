@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { StartupEntry } from '../shared/startup';
 import type { Macro, MacroAction, MacroFolder, MacroState } from '../shared/macro';
 import type { FocusAudioConfig, FocusAudioState } from '../shared/focusAudio';
+import type { AlwaysActiveMode, AlwaysActiveRuleUpdate, AlwaysActiveState } from '../shared/alwaysActive';
 import type { AppSettings } from '../shared/settings';
 import type { PlayitAgentClaimStart, PlayitInstallResult, PlayitState, PlayitTunnelInput, PlayitTunnelUpdateInput } from '../shared/playit';
 import type { RenameApplyResult, RenamePreview, RenameRule, RenameTransaction, RenameUndoResult, RenamerItem, RenamerLoadOptions, RenamerLoadPathsInput, RenamerPreviewInput } from '../shared/renamer';
@@ -29,6 +30,20 @@ const api = {
     setWhitelist: (list: string[]): Promise<FocusAudioConfig> => ipcRenderer.invoke('focusAudio:setWhitelist', list),
     setBlacklist: (list: string[]): Promise<FocusAudioConfig> => ipcRenderer.invoke('focusAudio:setBlacklist', list),
     getActiveApps: (): Promise<string[]> => ipcRenderer.invoke('focusAudio:getActiveApps'),
+  },
+  alwaysActive: {
+    getState: (): Promise<AlwaysActiveState> => ipcRenderer.invoke('alwaysActive:getState'),
+    refreshWindows: (): Promise<AlwaysActiveState> => ipcRenderer.invoke('alwaysActive:refreshWindows'),
+    setEnabled: (enabled: boolean): Promise<AlwaysActiveState> => ipcRenderer.invoke('alwaysActive:setEnabled', enabled),
+    addRuleFromWindow: (windowId: string, mode?: AlwaysActiveMode): Promise<AlwaysActiveState> => ipcRenderer.invoke('alwaysActive:addRuleFromWindow', windowId, mode),
+    updateRule: (patch: AlwaysActiveRuleUpdate): Promise<AlwaysActiveState> => ipcRenderer.invoke('alwaysActive:updateRule', patch),
+    deleteRule: (id: string): Promise<AlwaysActiveState> => ipcRenderer.invoke('alwaysActive:deleteRule', id),
+    pause: (seconds: number): Promise<AlwaysActiveState> => ipcRenderer.invoke('alwaysActive:pause', seconds),
+    onChanged: (cb: () => void): (() => void) => {
+      const listener = (): void => cb();
+      ipcRenderer.on('alwaysActive:changed', listener);
+      return () => ipcRenderer.removeListener('alwaysActive:changed', listener);
+    },
   },
   macros: {
     getState: (): Promise<MacroState> => ipcRenderer.invoke('macros:getState'),

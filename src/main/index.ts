@@ -3,6 +3,8 @@ import { appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { registerAlwaysActiveIpcHandlers } from './alwaysActiveIpc';
+import { AlwaysActiveManager } from './alwaysActiveManager';
 import { StartupCacheStore } from './cacheStore';
 import { registerClipboardIpcHandlers } from './clipboardIpc';
 import { ClipboardManager } from './clipboardManager';
@@ -280,6 +282,16 @@ async function bootstrap(): Promise<void> {
   registerFocusAudioIpcHandlers(focusAudioManager);
   focusAudioManager.startPolling();
 
+  const alwaysActiveManager = new AlwaysActiveManager({
+    onStateChanged: () => {
+      BrowserWindow.getAllWindows().forEach((window) => {
+        window.webContents.send('alwaysActive:changed');
+      });
+    },
+  });
+  registerAlwaysActiveIpcHandlers(alwaysActiveManager);
+  alwaysActiveManager.init().catch(err => logStartup('AlwaysActiveManager init error', err));
+
   const playitManager = new PlayitManager();
   registerPlayitIpcHandlers(playitManager);
 
@@ -352,6 +364,7 @@ async function bootstrap(): Promise<void> {
     isQuitting = true;
     macroManager.destroy();
     focusAudioManager.stopPolling();
+    alwaysActiveManager.destroy();
     clipboardManager.destroy();
   });
 }

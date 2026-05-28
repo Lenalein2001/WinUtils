@@ -3,6 +3,7 @@
 import type { StartupEntry } from '../../shared/startup';
 import type { Macro, MacroAction, MacroFolder, MacroState } from '../../shared/macro';
 import type { FocusAudioConfig, FocusAudioState } from '../../shared/focusAudio';
+import type { AlwaysActiveMode, AlwaysActiveRuleUpdate, AlwaysActiveState } from '../../shared/alwaysActive';
 import type { AppSettings } from '../../shared/settings';
 import type { PlayitAgentClaimStart, PlayitInstallResult, PlayitState, PlayitTunnelInput, PlayitTunnelUpdateInput } from '../../shared/playit';
 import type { RenameApplyResult, RenamePreview, RenameRule, RenameTransaction, RenameUndoResult, RenamerItem, RenamerLoadOptions, RenamerLoadPathsInput, RenamerPreviewInput } from '../../shared/renamer';
@@ -29,6 +30,16 @@ declare global {
         setWhitelist: (list: string[]) => Promise<FocusAudioConfig>;
         setBlacklist: (list: string[]) => Promise<FocusAudioConfig>;
         getActiveApps: () => Promise<string[]>;
+      };
+      alwaysActive: {
+        getState: () => Promise<AlwaysActiveState>;
+        refreshWindows: () => Promise<AlwaysActiveState>;
+        setEnabled: (enabled: boolean) => Promise<AlwaysActiveState>;
+        addRuleFromWindow: (windowId: string, mode?: AlwaysActiveMode) => Promise<AlwaysActiveState>;
+        updateRule: (patch: AlwaysActiveRuleUpdate) => Promise<AlwaysActiveState>;
+        deleteRule: (id: string) => Promise<AlwaysActiveState>;
+        pause: (seconds: number) => Promise<AlwaysActiveState>;
+        onChanged: (cb: () => void) => () => void;
       };
       macros: {
         getState: () => Promise<MacroState>;

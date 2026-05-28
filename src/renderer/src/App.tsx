@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { StartupEntry } from '../../shared/startup';
 import type { AppSettings } from '../../shared/settings';
 import type { RegexRenamerExport } from '../../shared/regexLab';
+import { AlwaysActiveTab } from './AlwaysActiveTab';
 import { ClipboardTab } from './ClipboardTab';
 import { FocusAudioTab } from './FocusAudioTab';
 import { MacrosTab } from './MacrosTab';
@@ -35,6 +36,14 @@ const modules = [
     overview: 'focus-based audio muting with whitelist and blacklist rules',
     compact: 'focus audio rules',
     hero: 'Keep foreground audio clear by muting selected background apps based on focus and process rules.',
+  },
+  {
+    id: 'always-active',
+    label: 'Always Active',
+    eyebrow: 'Window Focus',
+    overview: 'best-effort active-window rules for selected apps',
+    compact: 'always-active apps',
+    hero: 'Select apps that should keep receiving active-window signals or return to the foreground when Windows focus changes.',
   },
   {
     id: 'playit',
@@ -344,6 +353,12 @@ function App(): ReactElement {
         {activeTab === 'focus-audio' ? (
           <section className="content-card content-card--focus-audio">
             <FocusAudioTab />
+          </section>
+        ) : null}
+
+        {activeTab === 'always-active' ? (
+          <section className="content-card content-card--always-active">
+            <AlwaysActiveTab />
           </section>
         ) : null}
 

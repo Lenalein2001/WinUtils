@@ -705,6 +705,244 @@ code {
   min-width: 0;
 }
 
+/* Always Active */
+
+.content-card--always-active {
+  align-self: start;
+}
+
+.always-active-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.always-active-header,
+.always-active-toolbar,
+.always-active-panel-header,
+.always-active-rule-main,
+.always-active-rule-controls,
+.always-active-window,
+.always-active-window-actions,
+.always-active-window-flags,
+.always-active-rule-meta {
+  display: flex;
+  gap: 10px;
+}
+
+.always-active-header,
+.always-active-panel-header,
+.always-active-rule-main,
+.always-active-window {
+  justify-content: space-between;
+}
+
+.always-active-header,
+.always-active-rule-main,
+.always-active-window {
+  align-items: flex-start;
+}
+
+.always-active-toolbar,
+.always-active-rule-controls,
+.always-active-window-actions,
+.always-active-window-flags,
+.always-active-rule-meta {
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.always-active-subtitle,
+.always-active-panel-header p,
+.always-active-rule p,
+.always-active-window p,
+.always-active-rule-meta {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.always-active-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.always-active-title-row h2 {
+  margin: 0;
+}
+
+.always-active-beta {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 203, 107, 0.32);
+  background: rgba(255, 203, 107, 0.12);
+  color: #ffe0a1;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.always-active-warning {
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 203, 107, 0.24);
+  background: rgba(255, 203, 107, 0.1);
+  color: #ffe0a1;
+}
+
+.always-active-stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.always-active-stat,
+.always-active-panel {
+  border: 1px solid rgba(141, 210, 255, 0.12);
+  border-radius: 16px;
+  background: rgba(8, 24, 43, 0.62);
+}
+
+.always-active-stat {
+  padding: 14px;
+  min-width: 0;
+}
+
+.always-active-stat span {
+  display: block;
+  color: #8db7d7;
+  font-size: 0.76rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.always-active-stat strong {
+  display: block;
+  margin-top: 7px;
+  font-size: 1.08rem;
+}
+
+.always-active-stat--warning {
+  border-color: rgba(255, 203, 107, 0.28);
+  background: rgba(255, 203, 107, 0.1);
+}
+
+.always-active-grid {
+  display: grid;
+  grid-template-columns: minmax(300px, 0.9fr) minmax(360px, 1.1fr);
+  gap: 14px;
+}
+
+.always-active-panel {
+  min-width: 0;
+  padding: 16px;
+}
+
+.always-active-panel h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.always-active-rule-list,
+.always-active-window-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  max-height: 560px;
+  overflow-y: auto;
+}
+
+.always-active-rule,
+.always-active-window {
+  min-width: 0;
+  border: 1px solid rgba(141, 210, 255, 0.1);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.always-active-rule {
+  display: grid;
+  gap: 10px;
+}
+
+.always-active-rule--active,
+.always-active-window--foreground {
+  border-color: rgba(123, 240, 200, 0.28);
+  background: rgba(123, 240, 200, 0.07);
+}
+
+.always-active-rule--disabled {
+  opacity: 0.66;
+}
+
+.always-active-rule-main > div,
+.always-active-window-main {
+  min-width: 0;
+}
+
+.always-active-rule strong,
+.always-active-window strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.always-active-rule p,
+.always-active-window p {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.always-active-pill,
+.always-active-window-flags span {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(69, 184, 255, 0.12);
+  color: #a8dcff;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.always-active-rule-controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.always-active-window {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  align-items: center;
+}
+
+.always-active-window-actions {
+  justify-content: flex-end;
+}
+
+@media (max-width: 1160px) {
+  .always-active-grid,
+  .always-active-stats,
+  .always-active-window {
+    grid-template-columns: 1fr;
+  }
+
+  .always-active-header {
+    flex-direction: column;
+  }
+}
+
 /* Batch Renamer */
 
 .content-card--renamer {
