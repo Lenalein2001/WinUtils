@@ -4,7 +4,6 @@ import type { Macro, MacroAction, MacroFolder, MacroState } from '../shared/macr
 import type { FocusAudioConfig, FocusAudioState } from '../shared/focusAudio';
 import type { AlwaysActiveMode, AlwaysActiveRuleUpdate, AlwaysActiveState } from '../shared/alwaysActive';
 import type { AppSettings } from '../shared/settings';
-import type { PlayitAgentClaimStart, PlayitInstallResult, PlayitState, PlayitTunnelInput, PlayitTunnelUpdateInput } from '../shared/playit';
 import type { RenameApplyResult, RenamePreview, RenameRule, RenameTransaction, RenameUndoResult, RenamerItem, RenamerLoadOptions, RenamerLoadPathsInput, RenamerPreviewInput } from '../shared/renamer';
 import type { UpdateState } from '../shared/updater';
 import type { ClipboardClearMode, ClipboardQuery, ClipboardState } from '../shared/clipboard';
@@ -96,20 +95,6 @@ const api = {
       ipcRenderer.on('updates:state', listener);
       return () => ipcRenderer.removeListener('updates:state', listener);
     },
-  },
-  playit: {
-    getState: (): Promise<PlayitState> => ipcRenderer.invoke('playit:getState'),
-    installWithWinget: (): Promise<PlayitInstallResult> => ipcRenderer.invoke('playit:installWithWinget'),
-    installFromDownload: (): Promise<PlayitInstallResult> => ipcRenderer.invoke('playit:installFromDownload'),
-    startAgentClaim: (): Promise<PlayitAgentClaimStart> => ipcRenderer.invoke('playit:startAgentClaim'),
-    completeAgentClaim: (claimCode: string): Promise<PlayitInstallResult> => ipcRenderer.invoke('playit:completeAgentClaim', claimCode),
-    createTunnel: (input: PlayitTunnelInput): Promise<PlayitState> => ipcRenderer.invoke('playit:createTunnel', input),
-    updateTunnel: (input: PlayitTunnelUpdateInput): Promise<PlayitState> => ipcRenderer.invoke('playit:updateTunnel', input),
-    deleteTunnel: (id: string): Promise<PlayitState> => ipcRenderer.invoke('playit:deleteTunnel', id),
-    startAgent: (): Promise<PlayitState> => ipcRenderer.invoke('playit:startAgent'),
-    openDownloadPage: (): Promise<void> => ipcRenderer.invoke('playit:openDownloadPage'),
-    openAccountPage: (): Promise<void> => ipcRenderer.invoke('playit:openAccountPage'),
-    openTunnelSetupPage: (): Promise<void> => ipcRenderer.invoke('playit:openTunnelSetupPage'),
   },
   renamer: {
     pickFiles: (): Promise<RenamerItem[]> => ipcRenderer.invoke('renamer:pickFiles'),

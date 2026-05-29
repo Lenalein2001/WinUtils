@@ -138,7 +138,7 @@ export function ClipboardTab(): ReactElement {
       </div>
 
       {error ? <div className="error-banner">{error}</div> : null}
-      {message ? <div className="playit-message">{message}</div> : null}
+      {message ? <div className="success-banner">{message}</div> : null}
 
       <div className="clipboard-stats">
         <ClipboardStat label="Saved" value={state?.total ?? 0} title="Total clipboard items stored locally by WinUtils." />

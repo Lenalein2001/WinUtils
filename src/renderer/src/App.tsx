@@ -7,7 +7,6 @@ import { AlwaysActiveTab } from './AlwaysActiveTab';
 import { ClipboardTab } from './ClipboardTab';
 import { FocusAudioTab } from './FocusAudioTab';
 import { MacrosTab } from './MacrosTab';
-import { PlayitTab } from './PlayitTab';
 import { RegexLabTab } from './RegexLabTab';
 import { RenamerTab } from './RenamerTab';
 import { SettingsTab } from './SettingsTab';
@@ -44,14 +43,6 @@ const modules = [
     overview: 'best-effort active-window rules for selected apps',
     compact: 'always-active apps',
     hero: 'Select apps that should keep receiving active-window signals or return to the foreground when Windows focus changes.',
-  },
-  {
-    id: 'playit',
-    label: 'Playit Tunnels',
-    eyebrow: 'Network Tunnels',
-    overview: 'Playit.gg tunnel setup for forwarding local ports without router changes',
-    compact: 'Playit tunnels',
-    hero: 'Install the Playit agent, claim it, and manage supported tunnels for local services.',
   },
   {
     id: 'renamer',
@@ -359,12 +350,6 @@ function App(): ReactElement {
         {activeTab === 'always-active' ? (
           <section className="content-card content-card--always-active">
             <AlwaysActiveTab />
-          </section>
-        ) : null}
-
-        {activeTab === 'playit' ? (
-          <section className="content-card content-card--playit">
-            <PlayitTab />
           </section>
         ) : null}
 

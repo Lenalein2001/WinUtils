@@ -14,8 +14,6 @@ import { registerIpcHandlers } from './ipc';
 import { AppSettingsStore } from './appSettingsStore';
 import { applyAppLoginItemSettings, getAppLaunchAtLogin } from './loginItem';
 import { MacroManager, registerMacroIpcHandlers } from './macroManager';
-import { registerPlayitIpcHandlers } from './playitIpc';
-import { PlayitManager } from './playitManager';
 import { registerRenamerIpcHandlers } from './renamerIpc';
 import { RenamerManager } from './renamerManager';
 import { registerSettingsIpcHandlers } from './settingsIpc';
@@ -37,9 +35,6 @@ if (!hasSingleInstanceLock) {
   logStartup('Another instance already has the single-instance lock. Exiting.');
   app.quit();
 }
-
-app.disableHardwareAcceleration();
-app.commandLine.appendSwitch('disable-gpu-sandbox');
 
 process.on('uncaughtException', (error) => {
   logStartup('uncaughtException', error);
@@ -291,9 +286,6 @@ async function bootstrap(): Promise<void> {
   });
   registerAlwaysActiveIpcHandlers(alwaysActiveManager);
   alwaysActiveManager.init().catch(err => logStartup('AlwaysActiveManager init error', err));
-
-  const playitManager = new PlayitManager();
-  registerPlayitIpcHandlers(playitManager);
 
   const renamerManager = new RenamerManager();
   registerRenamerIpcHandlers(renamerManager);

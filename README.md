@@ -1,6 +1,6 @@
 # WinUtils
 
-WinUtils is a Windows desktop utility app built with Electron, React, TypeScript, and Vite. It brings startup management, process-aware macros, focus-based audio muting, beta always-active app focus rules, clipboard history, Playit.gg tunnel setup, and tray/window behavior controls into one desktop app.
+WinUtils is a Windows desktop utility app built with Electron, React, TypeScript, and Vite. It brings startup management, process-aware macros, focus-based audio muting, beta always-active app focus rules, clipboard history, and tray/window behavior controls into one desktop app.
 
 ## Desktop App
 - WinUtils runs as an Electron desktop window on Windows.
@@ -20,7 +20,6 @@ WinUtils is a Windows desktop utility app built with Electron, React, TypeScript
 - Macros with folders, profiles, recorded keyboard/mouse actions, and process-aware automatic profile switching
 - Focus Audio with whitelist/blacklist modes for muting unfocused apps by audio session/process
 - Always Active (Beta) rules for preventing window deactivation, throttled game keepalive signals, active-window signals, or focus-locking selected running apps
-- Playit Tunnels detects the local Playit.gg agent, offers Winget or direct signed-agent installer paths, and creates Playit-supported self-managed tunnel types through the Playit API
 - Batch Renamer with drag-and-drop loading, ordered rename rules, live validation, conflict preview, reversible apply, and undo history
 - Regex Lab with colored token suggestions, live match checks, capture previews, and direct export into Batch Renamer regex rules
 - Clipboard Manager with local searchable history, pins, smart categories, image capture, Windows OCR, and quick-access hotkeys
@@ -83,7 +82,6 @@ npm run package:portable
 - Editing `HKLM` startup entries may require elevated privileges depending on the target machine and how the app is launched.
 - Startup folder entries are restored from WinUtils cache storage, so deleting the cache files manually will prevent restore for those disabled items.
 - The cache is stored in Electron's `app.getPath('userData')` location for the installed app.
-- Playit Tunnels requires a claimed Playit.gg agent. WinUtils can open the Playit claim page, finish the claim after browser approval, write Playit's local config without showing the agent secret, and refresh tunnels created outside the app.
 - Always Active is best-effort because Windows only has one true foreground window. Prevent Deactivation uses a native window hook and may be blocked by protected, elevated, fullscreen, or anti-cheat apps.
 - Clipboard Manager stores history locally under the app user data directory. Image OCR uses Windows built-in OCR and does not upload clipboard contents.
 - Packaging generates installer and portable EXE artifacts in `release/`.

@@ -92,7 +92,7 @@ export function AlwaysActiveTab(): ReactElement {
       </div>
 
       {error ? <div className="error-banner">{error}</div> : null}
-      {message ? <div className="playit-message">{message}</div> : null}
+      {message ? <div className="success-banner">{message}</div> : null}
       {state?.workerStatus.error ? <div className="always-active-warning">{state.workerStatus.error}</div> : null}
 
       <div className="always-active-stats">
@@ -177,12 +177,14 @@ function AlwaysActiveRuleRow({ rule, busy, active, onToggle, onMode, onRestoreMi
   onRestoreMinimized: (restoreMinimized: boolean) => Promise<void>;
   onDelete: () => Promise<void>;
 }): ReactElement {
+  const identity = formatIdentity(rule);
+
   return (
     <article className={`always-active-rule ${rule.enabled ? '' : 'always-active-rule--disabled'} ${active ? 'always-active-rule--active' : ''}`}>
       <div className="always-active-rule-main">
         <div>
           <strong>{rule.label}</strong>
-          <p>{formatIdentity(rule)}</p>
+          <p className="always-active-rule-identity" title={identity}>{identity}</p>
         </div>
         <span className="always-active-pill">{active ? 'Matched' : rule.enabled ? 'Ready' : 'Off'}</span>
       </div>
@@ -190,16 +192,18 @@ function AlwaysActiveRuleRow({ rule, busy, active, onToggle, onMode, onRestoreMi
         <select className="macro-select" value={rule.mode} onChange={(event) => void onMode(event.target.value as AlwaysActiveMode)} disabled={busy} title="Choose how strongly WinUtils should keep this app active.">
           {modeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </select>
-        <label title="Restore this window before focus-lock mode brings it forward.">
-          <input type="checkbox" checked={rule.restoreMinimized} disabled={busy} onChange={(event) => void onRestoreMinimized(event.target.checked)} />
-          <span>Restore</span>
-        </label>
-        <button className="micro-button" type="button" disabled={busy} onClick={() => void onToggle()} title={rule.enabled ? 'Disable this rule.' : 'Enable this rule.'}>
-          {rule.enabled ? 'Disable' : 'Enable'}
-        </button>
-        <button className="micro-button micro-button--danger" type="button" disabled={busy} onClick={() => void onDelete()} title="Remove this app from Always Active.">
-          Remove
-        </button>
+        <div className="always-active-rule-actions">
+          <label title="Restore this window before focus-lock mode brings it forward.">
+            <input type="checkbox" checked={rule.restoreMinimized} disabled={busy} onChange={(event) => void onRestoreMinimized(event.target.checked)} />
+            <span>Restore</span>
+          </label>
+          <button className="micro-button" type="button" disabled={busy} onClick={() => void onToggle()} title={rule.enabled ? 'Disable this rule.' : 'Enable this rule.'}>
+            {rule.enabled ? 'Disable' : 'Enable'}
+          </button>
+          <button className="micro-button micro-button--danger" type="button" disabled={busy} onClick={() => void onDelete()} title="Remove this app from Always Active.">
+            Remove
+          </button>
+        </div>
       </div>
       <div className="always-active-rule-meta">
         <span>{modeLabel(rule.mode)}</span>

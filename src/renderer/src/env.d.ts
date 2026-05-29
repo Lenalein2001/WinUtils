@@ -5,7 +5,6 @@ import type { Macro, MacroAction, MacroFolder, MacroState } from '../../shared/m
 import type { FocusAudioConfig, FocusAudioState } from '../../shared/focusAudio';
 import type { AlwaysActiveMode, AlwaysActiveRuleUpdate, AlwaysActiveState } from '../../shared/alwaysActive';
 import type { AppSettings } from '../../shared/settings';
-import type { PlayitAgentClaimStart, PlayitInstallResult, PlayitState, PlayitTunnelInput, PlayitTunnelUpdateInput } from '../../shared/playit';
 import type { RenameApplyResult, RenamePreview, RenameRule, RenameTransaction, RenameUndoResult, RenamerItem, RenamerLoadOptions, RenamerLoadPathsInput, RenamerPreviewInput } from '../../shared/renamer';
 import type { UpdateState } from '../../shared/updater';
 import type { ClipboardClearMode, ClipboardQuery, ClipboardState } from '../../shared/clipboard';
@@ -70,20 +69,6 @@ declare global {
         install: () => Promise<UpdateState>;
         openReleasePage: () => Promise<void>;
         onState: (cb: (state: UpdateState) => void) => () => void;
-      };
-      playit: {
-        getState: () => Promise<PlayitState>;
-        installWithWinget: () => Promise<PlayitInstallResult>;
-        installFromDownload: () => Promise<PlayitInstallResult>;
-        startAgentClaim: () => Promise<PlayitAgentClaimStart>;
-        completeAgentClaim: (claimCode: string) => Promise<PlayitInstallResult>;
-        createTunnel: (input: PlayitTunnelInput) => Promise<PlayitState>;
-        updateTunnel: (input: PlayitTunnelUpdateInput) => Promise<PlayitState>;
-        deleteTunnel: (id: string) => Promise<PlayitState>;
-        startAgent: () => Promise<PlayitState>;
-        openDownloadPage: () => Promise<void>;
-        openAccountPage: () => Promise<void>;
-        openTunnelSetupPage: () => Promise<void>;
       };
       renamer: {
         pickFiles: () => Promise<RenamerItem[]>;
