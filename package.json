@@ -1,6 +1,6 @@
 {
   "name": "winutils",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "Windows utility app with startup, macros, focus audio, beta always-active focus rules, clipboard history, and tray tools.",
   "main": "out/main/index.js",
   "scripts": {
