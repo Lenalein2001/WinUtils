@@ -10,6 +10,7 @@ const GITHUB_OWNER = 'Lenalein2001';
 const GITHUB_REPO = 'WinUtils';
 const GITHUB_RELEASES_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
 const GITHUB_LATEST_API_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
+const GITHUB_RELEASES_API_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases`;
 
 interface GitHubReleaseAsset {
   name?: string;
@@ -146,8 +147,51 @@ export class UpdateManager {
     await shell.openExternal(this.update?.releaseUrl ?? GITHUB_RELEASES_URL);
   }
 
+  async getLatestRelease(): Promise<AppUpdateInfo> {
+    return this.fromGitHubRelease(await this.fetchLatestRelease());
+  }
+
+  async getReleaseHistory(): Promise<AppUpdateInfo[]> {
+    const releases: GitHubRelease[] = [];
+
+    for (let page = 1; page <= 10; page += 1) {
+      const pageReleases = await this.fetchReleasesPage(page);
+      releases.push(...pageReleases);
+      if (pageReleases.length < 100) break;
+    }
+
+    return releases.map((release) => this.fromGitHubRelease(release));
+  }
+
   private async checkPortableRelease(): Promise<void> {
-    const response = await fetch(GITHUB_LATEST_API_URL, {
+    const update = this.fromGitHubRelease(await this.fetchLatestRelease());
+
+    if (compareVersions(update.version, app.getVersion()) <= 0) {
+      this.setState({ status: 'not-available', update: null, progress: null, error: null });
+      return;
+    }
+
+    this.setState({
+      status: 'available',
+      update,
+      progress: null,
+      error: null,
+    });
+  }
+
+  private async fetchLatestRelease(): Promise<GitHubRelease> {
+    return await this.fetchGitHubRelease(GITHUB_LATEST_API_URL) as GitHubRelease;
+  }
+
+  private async fetchReleasesPage(page: number): Promise<GitHubRelease[]> {
+    const url = `${GITHUB_RELEASES_API_URL}?per_page=100&page=${page}`;
+    const releases = await this.fetchGitHubRelease(url);
+    if (!Array.isArray(releases)) throw new Error('GitHub release history returned an invalid response.');
+    return releases as GitHubRelease[];
+  }
+
+  private async fetchGitHubRelease(url: string): Promise<unknown> {
+    const response = await fetch(url, {
       headers: {
         Accept: 'application/vnd.github+json',
         'User-Agent': 'WinUtils',
@@ -156,28 +200,22 @@ export class UpdateManager {
 
     if (!response.ok) throw new Error(`GitHub update check failed with HTTP ${response.status}.`);
 
-    const release = await response.json() as GitHubRelease;
-    const version = normalizeVersion(release.tag_name ?? '');
+    return await response.json() as unknown;
+  }
 
-    if (!version || compareVersions(version, app.getVersion()) <= 0) {
-      this.setState({ status: 'not-available', update: null, progress: null, error: null });
-      return;
-    }
+  private fromGitHubRelease(release: GitHubRelease): AppUpdateInfo {
+    const version = normalizeVersion(release.tag_name ?? '');
+    if (!version) throw new Error('GitHub latest release did not include a version tag.');
 
     const portableAsset = release.assets?.find((asset) => /portable\.exe$/i.test(asset.name ?? ''));
-    this.setState({
-      status: 'available',
-      update: {
-        version,
-        releaseName: release.name ?? null,
-        releaseDate: release.published_at ?? null,
-        releaseNotes: release.body ?? null,
-        releaseUrl: release.html_url ?? GITHUB_RELEASES_URL,
-        downloadUrl: portableAsset?.browser_download_url ?? release.html_url ?? GITHUB_RELEASES_URL,
-      },
-      progress: null,
-      error: null,
-    });
+    return {
+      version,
+      releaseName: release.name ?? null,
+      releaseDate: release.published_at ?? null,
+      releaseNotes: release.body ?? null,
+      releaseUrl: release.html_url ?? GITHUB_RELEASES_URL,
+      downloadUrl: portableAsset?.browser_download_url ?? release.html_url ?? GITHUB_RELEASES_URL,
+    };
   }
 
   private fromElectronUpdateInfo(info: UpdateInfo): AppUpdateInfo {
