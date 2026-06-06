@@ -1,6 +1,6 @@
 # WinUtils
 
-WinUtils is a Windows desktop utility app built with Electron, React, TypeScript, and Vite. It brings startup management, process-aware macros, focus-based audio muting, beta always-active app focus rules, clipboard history, and tray/window behavior controls into one desktop app.
+WinUtils is a Windows desktop utility app built with Electron, React, TypeScript, and Vite. It brings startup management, process-aware macros, focus-based audio muting, beta always-active app focus rules, clipboard history, safe file sync, and tray/window behavior controls into one desktop app.
 
 ## Desktop App
 - WinUtils runs as an Electron desktop window on Windows.
@@ -22,7 +22,8 @@ WinUtils is a Windows desktop utility app built with Electron, React, TypeScript
 - Always Active (Beta) rules for preventing window deactivation, throttled game keepalive signals, active-window signals, or focus-locking selected running apps
 - Batch Renamer with drag-and-drop loading, ordered rename rules, live validation, conflict preview, reversible apply, and undo history
 - Regex Lab with colored token suggestions, live match checks, capture previews, and direct export into Batch Renamer regex rules
-- Clipboard Manager with local searchable history, pins, smart categories, image capture, Windows OCR, and quick-access hotkeys
+- Clipboard Manager with local searchable history, pins, smart categories, image capture, Windows OCR, Windows history delete sync, and quick-access hotkeys
+- File Sync with local folder jobs, GoodSync-style integrated left/right folder selectors, auto-analyzing tree previews, direct include/exclude filter actions, one-way and two-way sync, empty-folder handling, guarded automation triggers, verified copies, conflict handling, metadata-preserving copies, and quarantine for replaced/deleted files
 - Settings for launch at login, start minimized, minimize to tray, and close to tray
 - Secure IPC bridge between renderer and Electron main process
 
@@ -83,7 +84,8 @@ npm run package:portable
 - Startup folder entries are restored from WinUtils cache storage, so deleting the cache files manually will prevent restore for those disabled items.
 - The cache is stored in Electron's `app.getPath('userData')` location for the installed app.
 - Always Active is best-effort because Windows only has one true foreground window. Prevent Deactivation uses a native window hook and may be blocked by protected, elevated, fullscreen, or anti-cheat apps.
-- Clipboard Manager stores history locally under the app user data directory. Image OCR uses Windows built-in OCR and does not upload clipboard contents.
+- Clipboard Manager stores history locally under the app user data directory. Deleting matching entries also removes them from Windows clipboard history when available. Image OCR uses Windows built-in OCR and does not upload clipboard contents.
+- File Sync starts with local folder-to-folder jobs only. Always review Analyze results first; Sync rejects nested endpoints, uses temporary verified copies, preserves copied file timestamps, syncs true empty folders, and moves replaced/deleted files into the WinUtils quarantine folder instead of hard-deleting them. Automation triggers require one successful manual sync before they can apply changes.
 - Packaging generates installer and portable EXE artifacts in `release/`.
 - Auto-update support uses the public GitHub release feed. Publish `latest.yml`, the installer EXE, and its blockmap with each installer release; portable users are shown a download link for the new portable EXE.
 - Release EXEs are published as GitHub release assets and are not tracked in Git.

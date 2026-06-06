@@ -8,6 +8,8 @@ import { AlwaysActiveManager } from './alwaysActiveManager';
 import { StartupCacheStore } from './cacheStore';
 import { registerClipboardIpcHandlers } from './clipboardIpc';
 import { ClipboardManager } from './clipboardManager';
+import { FileSyncManager } from './fileSyncManager';
+import { registerFileSyncIpcHandlers } from './fileSyncIpc';
 import { FocusAudioManager } from './focusAudioManager';
 import { registerFocusAudioIpcHandlers } from './focusAudioIpc';
 import { registerIpcHandlers } from './ipc';
@@ -290,6 +292,16 @@ async function bootstrap(): Promise<void> {
   const renamerManager = new RenamerManager();
   registerRenamerIpcHandlers(renamerManager);
 
+  const fileSyncManager = new FileSyncManager({
+    onStateChanged: () => {
+      BrowserWindow.getAllWindows().forEach((window) => {
+        window.webContents.send('fileSync:changed');
+      });
+    },
+  });
+  registerFileSyncIpcHandlers(fileSyncManager);
+  fileSyncManager.init().catch(err => logStartup('FileSyncManager init error', err));
+
   const clipboardManager = new ClipboardManager({
     onStateChanged: () => {
       BrowserWindow.getAllWindows().forEach((window) => {
@@ -357,6 +369,7 @@ async function bootstrap(): Promise<void> {
     macroManager.destroy();
     focusAudioManager.stopPolling();
     alwaysActiveManager.destroy();
+    fileSyncManager.destroy();
     clipboardManager.destroy();
   });
 }

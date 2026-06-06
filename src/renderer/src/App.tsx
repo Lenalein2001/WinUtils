@@ -5,6 +5,7 @@ import type { AppSettings } from '../../shared/settings';
 import type { RegexRenamerExport } from '../../shared/regexLab';
 import { AlwaysActiveTab } from './AlwaysActiveTab';
 import { ClipboardTab } from './ClipboardTab';
+import { FileSyncTab } from './FileSyncTab';
 import { FocusAudioTab } from './FocusAudioTab';
 import { MacrosTab } from './MacrosTab';
 import { RegexLabTab } from './RegexLabTab';
@@ -67,6 +68,14 @@ const modules = [
     overview: 'searchable clipboard history with pins, categories, images, and OCR',
     compact: 'clipboard history',
     hero: 'Keep copied text, images, and file paths searchable with pins, smart categories, OCR, and a quick-access hotkey.',
+  },
+  {
+    id: 'file-sync',
+    label: 'File Sync',
+    eyebrow: 'Safe Folder Sync',
+    overview: 'preview-first local folder sync with filters, quarantine, and conflict checks',
+    compact: 'safe file sync',
+    hero: 'Analyze local folder differences, review every planned copy or quarantine, and sync only after a safe preview.',
   },
   {
     id: 'settings',
@@ -373,6 +382,12 @@ function App(): ReactElement {
         {activeTab === 'clipboard' ? (
           <section className="content-card content-card--clipboard">
             <ClipboardTab />
+          </section>
+        ) : null}
+
+        {activeTab === 'file-sync' ? (
+          <section className="content-card content-card--file-sync">
+            <FileSyncTab />
           </section>
         ) : null}
 

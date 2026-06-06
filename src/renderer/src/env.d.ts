@@ -6,8 +6,9 @@ import type { FocusAudioConfig, FocusAudioState } from '../../shared/focusAudio'
 import type { AlwaysActiveMode, AlwaysActiveRuleUpdate, AlwaysActiveState } from '../../shared/alwaysActive';
 import type { AppSettings } from '../../shared/settings';
 import type { RenameApplyResult, RenamePreview, RenameRule, RenameTransaction, RenameUndoResult, RenamerItem, RenamerLoadOptions, RenamerLoadPathsInput, RenamerPreviewInput } from '../../shared/renamer';
-import type { UpdateState } from '../../shared/updater';
+import type { AppUpdateInfo, UpdateState } from '../../shared/updater';
 import type { ClipboardClearMode, ClipboardQuery, ClipboardState } from '../../shared/clipboard';
+import type { FileSyncAnalyzeResult, FileSyncApplyResult, FileSyncJobInput, FileSyncState } from '../../shared/fileSync';
 
 declare global {
   interface Window {
@@ -67,6 +68,8 @@ declare global {
         check: () => Promise<UpdateState>;
         download: () => Promise<UpdateState>;
         install: () => Promise<UpdateState>;
+        getLatestRelease: () => Promise<AppUpdateInfo>;
+        getReleaseHistory: () => Promise<AppUpdateInfo[]>;
         openReleasePage: () => Promise<void>;
         onState: (cb: (state: UpdateState) => void) => () => void;
       };
@@ -80,6 +83,16 @@ declare global {
         listTransactions: () => Promise<RenameTransaction[]>;
         defaultRules: () => Promise<RenameRule[]>;
         getDroppedPath: (file: File) => string;
+      };
+      fileSync: {
+        getState: () => Promise<FileSyncState>;
+        createJob: (input?: FileSyncJobInput) => Promise<FileSyncState>;
+        updateJob: (id: string, input: FileSyncJobInput) => Promise<FileSyncState>;
+        deleteJob: (id: string) => Promise<FileSyncState>;
+        analyze: (jobId: string) => Promise<FileSyncAnalyzeResult>;
+        apply: (jobId: string) => Promise<FileSyncApplyResult>;
+        pickFolder: () => Promise<string | null>;
+        onChanged: (cb: () => void) => () => void;
       };
       clipboard: {
         getState: (query?: ClipboardQuery) => Promise<ClipboardState>;

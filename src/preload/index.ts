@@ -5,8 +5,9 @@ import type { FocusAudioConfig, FocusAudioState } from '../shared/focusAudio';
 import type { AlwaysActiveMode, AlwaysActiveRuleUpdate, AlwaysActiveState } from '../shared/alwaysActive';
 import type { AppSettings } from '../shared/settings';
 import type { RenameApplyResult, RenamePreview, RenameRule, RenameTransaction, RenameUndoResult, RenamerItem, RenamerLoadOptions, RenamerLoadPathsInput, RenamerPreviewInput } from '../shared/renamer';
-import type { UpdateState } from '../shared/updater';
+import type { AppUpdateInfo, UpdateState } from '../shared/updater';
 import type { ClipboardClearMode, ClipboardQuery, ClipboardState } from '../shared/clipboard';
+import type { FileSyncAnalyzeResult, FileSyncApplyResult, FileSyncJobInput, FileSyncState } from '../shared/fileSync';
 
 const api = {
   startupApps: {
@@ -89,6 +90,8 @@ const api = {
     check: (): Promise<UpdateState> => ipcRenderer.invoke('updates:check'),
     download: (): Promise<UpdateState> => ipcRenderer.invoke('updates:download'),
     install: (): Promise<UpdateState> => ipcRenderer.invoke('updates:install'),
+    getLatestRelease: (): Promise<AppUpdateInfo> => ipcRenderer.invoke('updates:getLatestRelease'),
+    getReleaseHistory: (): Promise<AppUpdateInfo[]> => ipcRenderer.invoke('updates:getReleaseHistory'),
     openReleasePage: (): Promise<void> => ipcRenderer.invoke('updates:openReleasePage'),
     onState: (cb: (state: UpdateState) => void): (() => void) => {
       const listener = (_: Electron.IpcRendererEvent, state: UpdateState): void => cb(state);
@@ -106,6 +109,20 @@ const api = {
     listTransactions: (): Promise<RenameTransaction[]> => ipcRenderer.invoke('renamer:listTransactions'),
     defaultRules: (): Promise<RenameRule[]> => ipcRenderer.invoke('renamer:defaultRules'),
     getDroppedPath: (file: Parameters<typeof webUtils.getPathForFile>[0]): string => webUtils.getPathForFile(file),
+  },
+  fileSync: {
+    getState: (): Promise<FileSyncState> => ipcRenderer.invoke('fileSync:getState'),
+    createJob: (input?: FileSyncJobInput): Promise<FileSyncState> => ipcRenderer.invoke('fileSync:createJob', input),
+    updateJob: (id: string, input: FileSyncJobInput): Promise<FileSyncState> => ipcRenderer.invoke('fileSync:updateJob', id, input),
+    deleteJob: (id: string): Promise<FileSyncState> => ipcRenderer.invoke('fileSync:deleteJob', id),
+    analyze: (jobId: string): Promise<FileSyncAnalyzeResult> => ipcRenderer.invoke('fileSync:analyze', jobId),
+    apply: (jobId: string): Promise<FileSyncApplyResult> => ipcRenderer.invoke('fileSync:apply', jobId),
+    pickFolder: (): Promise<string | null> => ipcRenderer.invoke('fileSync:pickFolder'),
+    onChanged: (cb: () => void): (() => void) => {
+      const listener = (): void => cb();
+      ipcRenderer.on('fileSync:changed', listener);
+      return () => ipcRenderer.removeListener('fileSync:changed', listener);
+    },
   },
   clipboard: {
     getState: (query?: ClipboardQuery): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:getState', query),
