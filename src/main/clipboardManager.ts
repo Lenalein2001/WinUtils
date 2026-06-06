@@ -55,6 +55,24 @@ interface ClipboardSnapshot {
   sizeBytes?: number;
 }
 
+type WindowsClipboardHistoryAction = 'delete' | 'resolve';
+type WindowsClipboardHistorySyncStatus = 'success' | 'history-disabled' | 'access-denied' | 'unsupported';
+
+interface WindowsClipboardHistoryTarget {
+  type: ClipboardEntryType;
+  text?: string;
+  filePaths?: string[];
+  windowsHistoryItemId?: string;
+}
+
+interface WindowsClipboardHistorySyncResult {
+  status: WindowsClipboardHistorySyncStatus;
+  matched: number;
+  deleted: number;
+  itemIds: string[];
+  message?: string;
+}
+
 const WINDOWS_OCR_SCRIPT = String.raw`
 param(
   [Parameter(Mandatory = $true)]
@@ -114,6 +132,179 @@ try {
     $stream.Dispose()
   }
 }
+`;
+
+const WINDOWS_HISTORY_SYNC_SCRIPT = String.raw`
+param(
+  [Parameter(Mandatory = $true)]
+  [string]$InputPath
+)
+
+$ErrorActionPreference = 'Stop'
+
+function Write-SyncResult([string]$Status, [int]$Matched, [int]$Deleted, [string[]]$ItemIds, [string]$Message) {
+  [ordered]@{
+    status = $Status
+    matched = $Matched
+    deleted = $Deleted
+    itemIds = @($ItemIds)
+    message = $Message
+  } | ConvertTo-Json -Compress
+}
+
+try {
+  Add-Type -AssemblyName System.Runtime.WindowsRuntime
+  [Windows.ApplicationModel.DataTransfer.Clipboard, Windows.ApplicationModel.DataTransfer, ContentType = WindowsRuntime] | Out-Null
+  [Windows.ApplicationModel.DataTransfer.ClipboardHistoryItemsResult, Windows.ApplicationModel.DataTransfer, ContentType = WindowsRuntime] | Out-Null
+  [Windows.ApplicationModel.DataTransfer.StandardDataFormats, Windows.ApplicationModel.DataTransfer, ContentType = WindowsRuntime] | Out-Null
+  [String, mscorlib] | Out-Null
+} catch {
+  Write-SyncResult 'unsupported' 0 0 @() $_.Exception.Message
+  return
+}
+
+function Await-WinRt($Operation, [Type]$ResultType, [string]$Step) {
+  $method = [System.WindowsRuntimeSystemExtensions].GetMethods() |
+    Where-Object { $_.Name -eq 'AsTask' -and $_.IsGenericMethod -and $_.GetParameters().Count -eq 1 } |
+    Select-Object -First 1
+  $task = $method.MakeGenericMethod($ResultType).Invoke($null, @($Operation))
+  try {
+    $task.Wait()
+  } catch {
+    if ($task.Exception -and $task.Exception.InnerException) {
+      throw "$Step failed: $($task.Exception.InnerException.Message)"
+    }
+    throw
+  }
+  $task.Result
+}
+
+function Normalize-LineEndings([string]$Value) {
+  if ($null -eq $Value) {
+    return $null
+  }
+  $cr = [string][char]13
+  $lf = [string][char]10
+  $Value -replace "$cr$lf?", $lf
+}
+
+function Test-TextEquals([string]$Left, [string]$Right) {
+  if ($null -eq $Left -or $null -eq $Right) {
+    return $false
+  }
+  $Left -eq $Right -or (Normalize-LineEndings $Left) -eq (Normalize-LineEndings $Right)
+}
+
+function Get-TargetFileText($Target) {
+  if ($null -eq $Target.filePaths) {
+    return $null
+  }
+  (@($Target.filePaths) | ForEach-Object { [string]$_ }) -join ([string][char]10)
+}
+
+function Get-HistoryItemText($Item) {
+  if (-not $Item.Content.Contains([Windows.ApplicationModel.DataTransfer.StandardDataFormats]::Text)) {
+    return $null
+  }
+  Await-WinRt ($Item.Content.GetTextAsync()) ([String]) 'Read clipboard history text'
+}
+
+function Test-IdMatch($Item, $Target) {
+  $targetId = [string]$Target.windowsHistoryItemId
+  $targetId -and $targetId -eq [string]$Item.Id
+}
+
+function Test-DeleteMatch($Item, $Target) {
+  if (Test-IdMatch $Item $Target) {
+    return $true
+  }
+
+  $targetType = [string]$Target.type
+  if ($targetType -eq 'image') {
+    return $false
+  }
+
+  $historyText = Get-HistoryItemText $Item
+  if ($null -eq $historyText) {
+    return $false
+  }
+
+  if ($targetType -eq 'files') {
+    $targetFileText = Get-TargetFileText $Target
+    return (Test-TextEquals $historyText ([string]$Target.text)) -or (Test-TextEquals $historyText $targetFileText)
+  }
+
+  Test-TextEquals $historyText ([string]$Target.text)
+}
+
+function Test-ResolveMatch($Item, $Target) {
+  if (Test-IdMatch $Item $Target) {
+    return $true
+  }
+
+  $targetType = [string]$Target.type
+  if ($targetType -eq 'image') {
+    return $Item.Content.Contains([Windows.ApplicationModel.DataTransfer.StandardDataFormats]::Bitmap)
+  }
+
+  Test-DeleteMatch $Item $Target
+}
+
+$request = Get-Content -LiteralPath $InputPath -Raw | ConvertFrom-Json
+$action = if ($request.action) { [string]$request.action } else { 'delete' }
+$targets = @($request.targets)
+
+if ($targets.Count -eq 0) {
+  Write-SyncResult 'success' 0 0 @() $null
+  return
+}
+
+$history = Await-WinRt ([Windows.ApplicationModel.DataTransfer.Clipboard]::GetHistoryItemsAsync()) ([Windows.ApplicationModel.DataTransfer.ClipboardHistoryItemsResult]) 'Read Windows clipboard history'
+$historyStatus = [string]$history.Status
+if ($historyStatus -ne 'Success') {
+  $status = switch ($historyStatus) {
+    'ClipboardHistoryDisabled' { 'history-disabled' }
+    'AccessDenied' { 'access-denied' }
+    default { 'unsupported' }
+  }
+  Write-SyncResult $status 0 0 @() "Windows clipboard history returned $historyStatus."
+  return
+}
+
+$matches = New-Object 'System.Collections.Generic.List[object]'
+$itemIds = New-Object 'System.Collections.Generic.List[string]'
+
+foreach ($item in $history.Items) {
+  foreach ($target in $targets) {
+    if ($action -eq 'resolve') {
+      if (Test-ResolveMatch $item $target) {
+        $itemIds.Add([string]$item.Id)
+        break
+      }
+    } elseif (Test-DeleteMatch $item $target) {
+      $matches.Add($item)
+      break
+    }
+  }
+
+  if ($action -eq 'resolve' -and $itemIds.Count -gt 0) {
+    break
+  }
+}
+
+if ($action -eq 'resolve') {
+  Write-SyncResult 'success' $itemIds.Count 0 $itemIds.ToArray() $null
+  return
+}
+
+$deleted = 0
+foreach ($item in $matches) {
+  if ([Windows.ApplicationModel.DataTransfer.Clipboard]::DeleteItemFromHistory($item)) {
+    $deleted++
+  }
+}
+
+Write-SyncResult 'success' $matches.Count $deleted @() $null
 `;
 
 export class ClipboardManager {
@@ -247,6 +438,10 @@ export class ClipboardManager {
       electronClipboard.writeText(entry.text ?? '');
     }
 
+    if (entry.type === 'image') {
+      await this.attachWindowsHistoryItemId(entry);
+    }
+
     const now = new Date().toISOString();
     entry.lastUsedAt = now;
     entry.updatedAt = now;
@@ -281,6 +476,7 @@ export class ClipboardManager {
       return this.getState();
     }
 
+    await this.deleteWindowsHistoryEntries([entry]);
     file.entries = file.entries.filter((item) => item.id !== id);
     await this.deleteEntryImage(entry);
     await this.save(file);
@@ -291,8 +487,10 @@ export class ClipboardManager {
   async clear(mode: ClipboardClearMode): Promise<ClipboardState> {
     const file = await this.load();
     const removed = mode === 'all' ? file.entries : file.entries.filter((entry) => !entry.pinned);
-    file.entries = mode === 'all' ? [] : file.entries.filter((entry) => entry.pinned);
+    const kept = mode === 'all' ? [] : file.entries.filter((entry) => entry.pinned);
 
+    await this.deleteWindowsHistoryEntries(removed);
+    file.entries = kept;
     await Promise.all(removed.map((entry) => this.deleteEntryImage(entry)));
     await this.save(file);
     this.lastSignature = null;
@@ -323,6 +521,10 @@ export class ClipboardManager {
 
   private get ocrScriptPath(): string {
     return path.join(this.historyDir, 'windows-ocr.ps1');
+  }
+
+  private get windowsHistorySyncScriptPath(): string {
+    return path.join(this.historyDir, 'windows-clipboard-history-sync.ps1');
   }
 
   private startPolling(): void {
@@ -387,6 +589,9 @@ export class ClipboardManager {
     if (duplicate) {
       duplicate.copiedAt = new Date().toISOString();
       duplicate.updatedAt = duplicate.copiedAt;
+      if (duplicate.type === 'image') {
+        await this.attachWindowsHistoryItemId(duplicate);
+      }
       file.entries = [duplicate, ...file.entries.filter((entry) => entry.id !== duplicate.id)];
       await this.save(file);
       this.notifyStateChanged();
@@ -394,6 +599,9 @@ export class ClipboardManager {
     }
 
     const entry = await this.createEntry(snapshot, file.settings);
+    if (entry.type === 'image') {
+      await this.attachWindowsHistoryItemId(entry);
+    }
     file.entries = [entry, ...file.entries];
     await this.pruneEntries(file);
     await this.save(file);
@@ -550,6 +758,79 @@ export class ClipboardManager {
     return this.ocrScriptPath;
   }
 
+  private async ensureWindowsHistorySyncScript(): Promise<string> {
+    await mkdir(this.historyDir, { recursive: true });
+    await writeFile(this.windowsHistorySyncScriptPath, WINDOWS_HISTORY_SYNC_SCRIPT, 'utf8');
+    return this.windowsHistorySyncScriptPath;
+  }
+
+  private async attachWindowsHistoryItemId(entry: ClipboardEntry): Promise<void> {
+    if (process.platform !== 'win32' || entry.type !== 'image') return;
+
+    try {
+      const result = await this.runWindowsHistorySync('resolve', [entry]);
+      if (result.status === 'success' && result.itemIds[0]) {
+        entry.windowsHistoryItemId = result.itemIds[0];
+      }
+    } catch (error) {
+      console.warn('[ClipboardManager] Unable to associate image clipboard entry with Windows history.', commandErrorMessage(error));
+    }
+  }
+
+  private async deleteWindowsHistoryEntries(entries: ClipboardEntry[]): Promise<void> {
+    if (process.platform !== 'win32' || entries.length === 0) return;
+
+    const result = await this.runWindowsHistorySync('delete', entries);
+    if (result.status === 'history-disabled' || result.status === 'unsupported') {
+      return;
+    }
+
+    if (result.status === 'access-denied') {
+      throw new Error(result.message ?? 'Windows denied access to clipboard history.');
+    }
+
+    if (result.matched > result.deleted) {
+      throw new Error('Windows reported a matching clipboard history item but did not delete it.');
+    }
+  }
+
+  private async runWindowsHistorySync(action: WindowsClipboardHistoryAction, entries: ClipboardEntry[]): Promise<WindowsClipboardHistorySyncResult> {
+    const scriptPath = await this.ensureWindowsHistorySyncScript();
+    const inputPath = path.join(this.historyDir, `windows-clipboard-history-${action}-${randomUUID()}.json`);
+    const payload = {
+      action,
+      targets: entries.map((entry) => this.createWindowsHistoryTarget(entry, action === 'delete')),
+    };
+
+    await writeFile(inputPath, JSON.stringify(payload), 'utf8');
+
+    try {
+      const { stdout } = await execFile(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, inputPath],
+        { encoding: 'utf8', timeout: 15_000, windowsHide: true, maxBuffer: 1024 * 1024 },
+      );
+      return parseWindowsHistorySyncResult(stdout);
+    } catch (error) {
+      throw new Error(`Unable to update Windows clipboard history: ${commandErrorMessage(error)}`);
+    } finally {
+      try {
+        await unlink(inputPath);
+      } catch {
+        // Temporary sync inputs are best-effort cleanup.
+      }
+    }
+  }
+
+  private createWindowsHistoryTarget(entry: ClipboardEntry, includeWindowsHistoryItemId: boolean): WindowsClipboardHistoryTarget {
+    return {
+      type: entry.type,
+      text: entry.text,
+      filePaths: entry.filePaths,
+      windowsHistoryItemId: includeWindowsHistoryItemId ? entry.windowsHistoryItemId : undefined,
+    };
+  }
+
   private async pruneEntries(file: ClipboardHistoryFile): Promise<void> {
     const pinned = file.entries.filter((entry) => entry.pinned);
     const unpinned = file.entries.filter((entry) => !entry.pinned);
@@ -664,6 +945,7 @@ function normalizeEntry(entry: ClipboardEntry): ClipboardEntry | null {
     categories: Array.isArray(entry.categories) ? entry.categories : ['plain-text'],
     preview: entry.preview || createPreview(entry),
     ocrStatus: entry.ocrStatus ?? 'none',
+    windowsHistoryItemId: typeof entry.windowsHistoryItemId === 'string' && entry.windowsHistoryItemId.trim() ? entry.windowsHistoryItemId : undefined,
     pinned: Boolean(entry.pinned),
     copiedAt: entry.copiedAt || new Date().toISOString(),
     updatedAt: entry.updatedAt || entry.copiedAt || new Date().toISOString(),
@@ -784,6 +1066,54 @@ function commandErrorMessage(error: unknown): string {
   if (output) return simplifyPowerShellError(output);
   if (error instanceof Error) return simplifyPowerShellError(error.message);
   return String(error);
+}
+
+function parseWindowsHistorySyncResult(stdout: string): WindowsClipboardHistorySyncResult {
+  const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const lastLine = lines[lines.length - 1];
+  if (!lastLine) {
+    throw new Error('Windows clipboard history sync did not return a result.');
+  }
+
+  const parsed = JSON.parse(lastLine) as unknown;
+  if (!isRecord(parsed)) {
+    throw new Error('Windows clipboard history sync returned an invalid result.');
+  }
+
+  const status = normalizeWindowsHistorySyncStatus(parsed.status);
+  const itemIds = Array.isArray(parsed.itemIds)
+    ? parsed.itemIds.filter((itemId): itemId is string => typeof itemId === 'string' && itemId.trim().length > 0)
+    : [];
+
+  return {
+    status,
+    matched: toNonNegativeInteger(parsed.matched),
+    deleted: toNonNegativeInteger(parsed.deleted),
+    itemIds,
+    message: typeof parsed.message === 'string' && parsed.message.trim() ? parsed.message : undefined,
+  };
+}
+
+function normalizeWindowsHistorySyncStatus(value: unknown): WindowsClipboardHistorySyncStatus {
+  switch (value) {
+    case 'success':
+    case 'history-disabled':
+    case 'access-denied':
+    case 'unsupported':
+      return value;
+    default:
+      throw new Error('Windows clipboard history sync returned an unknown status.');
+  }
+}
+
+function toNonNegativeInteger(value: unknown): number {
+  const number = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(number)) return 0;
+  return Math.max(0, Math.floor(number));
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }
 
 function getCommandOutput(error: unknown): string {

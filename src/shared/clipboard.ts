@@ -27,6 +27,7 @@ export interface ClipboardEntry {
   ocrStatus: ClipboardOcrStatus;
   ocrError?: string;
   hash: string;
+  windowsHistoryItemId?: string;
   pinned: boolean;
   copiedAt: string;
   updatedAt: string;

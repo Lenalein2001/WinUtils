@@ -294,7 +294,7 @@ function ClipboardEntryRow({ entry, busy, onCopy, onPinned, onDelete, onRerunOcr
         <button className="micro-button" type="button" disabled={busy} onClick={() => void onPinned(entry)} title={entry.pinned ? 'Allow this item to be removed by normal cleanup.' : 'Keep this item at the top and protect it from unpinned cleanup.'}>
           {entry.pinned ? 'Unpin' : 'Pin'}
         </button>
-        <button className="micro-button micro-button--danger" type="button" disabled={busy} onClick={() => void onDelete(entry)} title="Delete this saved clipboard item from local history.">
+        <button className="micro-button micro-button--danger" type="button" disabled={busy} onClick={() => void onDelete(entry)} title="Delete this saved clipboard item from WinUtils and matching Windows clipboard history.">
           Delete
         </button>
       </div>
