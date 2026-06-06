@@ -179,7 +179,7 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
     <div className="regex-lab-layout">
       <div className="regex-lab-topbar">
         <div className="regex-lab-field regex-lab-field--sample">
-          <span>Sample Text</span>
+          <span>Text Input</span>
           <input
             className="macro-input"
             title="Paste a filename or text sample here. The builder splits it into clickable regex tokens."
