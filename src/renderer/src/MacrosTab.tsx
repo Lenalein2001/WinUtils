@@ -1,16 +1,24 @@
 import type { ReactElement } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { normalizeMacroPlayback } from '../../shared/macro';
 import type {
   CommandAction,
   DelayAction,
+  IfAction,
   KeyboardAction,
   LaunchAction,
   Macro,
   MacroAction,
+  MacroCondition,
+  MacroConditionOperator,
+  MacroConditionSource,
   MacroFolder,
+  MacroPlaybackMode,
+  MacroPlaybackOptions,
   MacroProfile,
   MacroState,
   MouseAction,
+  RepeatAction,
   TextAction,
 } from '../../shared/macro';
 
@@ -21,22 +29,78 @@ function newId(): string {
 }
 
 function blankMacro(name = 'New Macro'): Macro {
-  return { id: newId(), name, hotkey: '', actions: [], enabled: true };
+  return { id: newId(), name, hotkey: '', actions: [], enabled: true, playback: normalizeMacroPlayback(undefined) };
 }
 
 function blankFolder(name = 'New Folder'): MacroFolder {
   return { id: newId(), name, macros: [], isExpanded: true };
 }
 
+function blankCondition(): MacroCondition {
+  return { source: 'active-process', operator: 'contains', value: '', caseSensitive: false };
+}
+
+function blankAction(type: MacroAction['type']): MacroAction {
+  switch (type) {
+    case 'delay': return { id: newId(), type: 'delay', enabled: true, milliseconds: 500 };
+    case 'keyboard': return { id: newId(), type: 'keyboard', enabled: true, key: 'Enter', pressType: 'press' };
+    case 'mouse': return { id: newId(), type: 'mouse', enabled: true, button: 'left', actionType: 'click' };
+    case 'launch': return { id: newId(), type: 'launch', enabled: true, path: '', arguments: '' };
+    case 'command': return { id: newId(), type: 'command', enabled: true, command: '', workingDirectory: '' };
+    case 'text': return { id: newId(), type: 'text', enabled: true, text: '' };
+    case 'repeat': return { id: newId(), type: 'repeat', enabled: true, times: 10, actions: [] };
+    case 'if': return { id: newId(), type: 'if', enabled: true, condition: blankCondition(), thenActions: [], elseActions: [] };
+  }
+}
+
+function keyboardHoldReleaseActions(key: string): MacroAction[] {
+  return [
+    { id: newId(), type: 'delay', enabled: true, milliseconds: 100 },
+    { id: newId(), type: 'keyboard', enabled: true, key, pressType: 'up' },
+  ];
+}
+
+function updateActionAt(actions: MacroAction[], index: number, updated: MacroAction, insertAfter: MacroAction[] = []): MacroAction[] {
+  const previous = actions[index];
+  const next = actions.flatMap((action, actionIndex) => (
+    actionIndex === index ? [updated, ...insertAfter] : [action]
+  ));
+
+  if (
+    previous?.type === 'keyboard'
+    && updated.type === 'keyboard'
+    && previous.pressType === 'down'
+    && updated.pressType === 'down'
+    && previous.key !== updated.key
+    && insertAfter.length === 0
+  ) {
+    const delayAction = next[index + 1];
+    const keyUpAction = next[index + 2];
+    if (delayAction?.type === 'delay' && keyUpAction?.type === 'keyboard' && keyUpAction.pressType === 'up' && keyUpAction.key === previous.key) {
+      next[index + 2] = { ...keyUpAction, key: updated.key };
+    }
+  }
+
+  return next;
+}
+
 function captureKeyName(event: React.KeyboardEvent<HTMLInputElement>): string {
   const numpadKey = captureNumpadKeyName(event.code);
   if (numpadKey) return numpadKey;
 
+  if (event.key === 'Control') return 'Ctrl';
+  if (event.key === 'Alt') return 'Alt';
+  if (event.key === 'Shift') return 'Shift';
+  if (event.key === 'Meta' || event.key === 'OS') return 'Win';
   if (event.key === 'Enter') return 'Enter';
   if (event.key === ' ') return 'Space';
   if (event.key.length === 1) return event.key.toUpperCase();
 
   return event.key;
+}
+
+function isCapturedModifierKey(key: string): boolean {
+  return key === 'Ctrl' || key === 'Alt' || key === 'Shift' || key === 'Win';
 }
 
 function captureNumpadKeyName(code: string): string | null {
@@ -62,6 +126,8 @@ function actionLabel(a: MacroAction): string {
     case 'launch': return `Launch ${a.path.split(/[\\/]/).pop() ?? a.path}`;
     case 'command': return `Run: ${a.command.slice(0, 40)}`;
     case 'text': return `Type: ${a.text.slice(0, 30)}`;
+    case 'repeat': return `Repeat ${a.times}x`;
+    case 'if': return `If ${conditionSourceLabels[a.condition.source]}`;
     default: return '';
   }
 }
@@ -73,7 +139,156 @@ const macroActionDescriptions: Record<MacroAction['type'], string> = {
   launch: 'Start an app or executable file.',
   command: 'Run a PowerShell command.',
   text: 'Type text into the focused window.',
+  repeat: 'Run a nested action group a fixed number of times.',
+  if: 'Run one branch or another when a condition matches.',
 };
+
+const actionTypes: MacroAction['type'][] = ['delay', 'keyboard', 'mouse', 'text', 'repeat', 'if', 'launch', 'command'];
+
+const conditionSourceLabels: Record<MacroConditionSource, string> = {
+  'active-process': 'Active process',
+  'active-window-title': 'Active window title',
+  'clipboard-text': 'Clipboard text',
+  'file-exists': 'File path',
+};
+
+const conditionOperatorLabels: Record<MacroConditionOperator, string> = {
+  contains: 'Contains',
+  equals: 'Equals',
+  matches: 'Regex matches',
+  'not-contains': 'Does not contain',
+  'not-equals': 'Does not equal',
+  'not-matches': 'Regex does not match',
+  exists: 'Exists',
+  'not-exists': 'Does not exist',
+};
+
+const textConditionOperators: MacroConditionOperator[] = ['contains', 'equals', 'matches', 'not-contains', 'not-equals', 'not-matches'];
+const fileConditionOperators: MacroConditionOperator[] = ['exists', 'not-exists'];
+
+const macroPlaybackModes: MacroPlaybackMode[] = ['once', 'multiple', 'toggle', 'while-pressed', 'queue'];
+
+const macroPlaybackLabels: Record<MacroPlaybackMode, string> = {
+  once: 'Play once',
+  multiple: 'Play multiple times',
+  toggle: 'Toggle continuous playback on/off',
+  'while-pressed': 'Play while assigned key is pressed',
+  queue: 'Queue',
+};
+
+const macroPlaybackDescriptions: Record<MacroPlaybackMode, string> = {
+  once: 'Runs the macro once when the hotkey is pressed.',
+  multiple: 'Runs the macro a fixed number of times when the hotkey is pressed.',
+  toggle: 'Starts or stops a continuous macro loop each time the hotkey is pressed.',
+  'while-pressed': 'Loops the macro while the assigned hotkey is held down.',
+  queue: 'Adds another macro run to the queue each time the hotkey is pressed.',
+};
+
+interface MacroPreset {
+  id: string;
+  label: string;
+  description: string;
+  createActions: (options: MacroPresetOptions) => MacroAction[];
+}
+
+type AutoClickerTimingMode = 'delay' | 'cps';
+
+interface AutoClickerPresetOptions {
+  repeatCount: number;
+  timingMode: AutoClickerTimingMode;
+  delayMs: number;
+  clicksPerSecond: number;
+}
+
+interface MacroPresetOptions {
+  autoClicker: AutoClickerPresetOptions;
+}
+
+const AUTO_CLICKER_CLICK_MS = 0;
+const DEFAULT_AUTO_CLICKER_OPTIONS: AutoClickerPresetOptions = {
+  repeatCount: 50,
+  timingMode: 'delay',
+  delayMs: 0,
+  clicksPerSecond: 20,
+};
+
+function clampInteger(value: number, min: number, max: number, fallback: number): number {
+  const integer = Math.trunc(Number(value));
+  if (!Number.isFinite(integer)) return fallback;
+  return Math.max(min, Math.min(max, integer));
+}
+
+function clampFloat(value: number, min: number, max: number, fallback: number): number {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, number));
+}
+
+function autoClickerDelayMs(options: AutoClickerPresetOptions): number {
+  if (options.timingMode === 'delay') {
+    return clampInteger(options.delayMs, 0, 60_000, DEFAULT_AUTO_CLICKER_OPTIONS.delayMs);
+  }
+
+  const clicksPerSecond = clampFloat(options.clicksPerSecond, 0.1, 10_000, DEFAULT_AUTO_CLICKER_OPTIONS.clicksPerSecond);
+  const targetPeriodMs = 1000 / clicksPerSecond;
+  return Math.max(0, Math.floor(targetPeriodMs - AUTO_CLICKER_CLICK_MS));
+}
+
+const macroPresets: MacroPreset[] = [
+  {
+    id: 'auto-clicker',
+    label: 'Auto Clicker',
+    description: 'Left-click repeatedly with a configurable pause between clicks.',
+    createActions: ({ autoClicker }) => [{
+      id: newId(),
+      type: 'repeat',
+      enabled: true,
+      times: clampInteger(autoClicker.repeatCount, 1, 10_000, DEFAULT_AUTO_CLICKER_OPTIONS.repeatCount),
+      actions: [
+        { id: newId(), type: 'mouse', enabled: true, button: 'left', actionType: 'click' },
+        { id: newId(), type: 'delay', enabled: true, milliseconds: autoClickerDelayMs(autoClicker) },
+      ],
+    }],
+  },
+  {
+    id: 'key-spammer',
+    label: 'Key Spammer',
+    description: 'Press Space repeatedly with a short pause between presses.',
+    createActions: () => [{
+      id: newId(),
+      type: 'repeat',
+      enabled: true,
+      times: 25,
+      actions: [
+        { id: newId(), type: 'keyboard', enabled: true, key: 'Space', pressType: 'press' },
+        { id: newId(), type: 'delay', enabled: true, milliseconds: 120 },
+      ],
+    }],
+  },
+  {
+    id: 'hold-left-click',
+    label: 'Hold Left Click',
+    description: 'Hold left mouse down for one second, then release it.',
+    createActions: () => [
+      { id: newId(), type: 'mouse', enabled: true, button: 'left', actionType: 'down' },
+      { id: newId(), type: 'delay', enabled: true, milliseconds: 1000 },
+      { id: newId(), type: 'mouse', enabled: true, button: 'left', actionType: 'up' },
+    ],
+  },
+  {
+    id: 'window-title-if',
+    label: 'Window Title If',
+    description: 'Run different actions depending on the focused window title.',
+    createActions: () => [{
+      id: newId(),
+      type: 'if',
+      enabled: true,
+      condition: { source: 'active-window-title', operator: 'contains', value: '', caseSensitive: false },
+      thenActions: [{ id: newId(), type: 'text', enabled: true, text: 'Matched window' }],
+      elseActions: [{ id: newId(), type: 'text', enabled: true, text: 'Other window' }],
+    }],
+  },
+];
 
 // ─── Hotkey capture input ─────────────────────────────────────────────────
 
@@ -81,10 +296,14 @@ function HotkeyInput({
   value,
   onChange,
   placeholder = 'Click and press keys…',
+  title = 'Click here, then press the key combination that should trigger this macro globally.',
+  allowModifierKeys = false,
 }: {
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
+  title?: string;
+  allowModifierKeys?: boolean;
 }): ReactElement {
   const [capturing, setCapturing] = useState(false);
 
@@ -92,16 +311,16 @@ function HotkeyInput({
     e.preventDefault();
     e.stopPropagation();
 
-    const key = e.key;
-    if (['Control', 'Alt', 'Shift', 'Meta', 'OS'].includes(key)) return;
+    const capturedKey = captureKeyName(e);
+    if (isCapturedModifierKey(capturedKey) && !allowModifierKeys) return;
 
     const parts: string[] = [];
-    if (e.ctrlKey) parts.push('Ctrl');
-    if (e.altKey) parts.push('Alt');
-    if (e.shiftKey) parts.push('Shift');
-    if (e.metaKey) parts.push('Win');
+    if (e.ctrlKey && capturedKey !== 'Ctrl') parts.push('Ctrl');
+    if (e.altKey && capturedKey !== 'Alt') parts.push('Alt');
+    if (e.shiftKey && capturedKey !== 'Shift') parts.push('Shift');
+    if (e.metaKey && capturedKey !== 'Win') parts.push('Win');
 
-    parts.push(captureKeyName(e));
+    parts.push(capturedKey);
 
     onChange(parts.join('+'));
     setCapturing(false);
@@ -117,9 +336,22 @@ function HotkeyInput({
       onBlur={() => setCapturing(false)}
       onKeyDown={capturing ? handleKeyDown : undefined}
       onChange={() => {}}
-      title="Click here, then press the key combination that should trigger this macro globally."
+      title={title}
     />
   );
+}
+
+function conditionOperatorsForSource(source: MacroConditionSource): MacroConditionOperator[] {
+  return source === 'file-exists' ? fileConditionOperators : textConditionOperators;
+}
+
+function normalizeConditionForSource(condition: MacroCondition, source: MacroConditionSource): MacroCondition {
+  const operators = conditionOperatorsForSource(source);
+  return {
+    ...condition,
+    source,
+    operator: operators.includes(condition.operator) ? condition.operator : operators[0],
+  };
 }
 
 // ─── Action editor ────────────────────────────────────────────────────────
@@ -130,11 +362,25 @@ function ActionEditor({
   onDelete,
 }: {
   action: MacroAction;
-  onChange: (a: MacroAction) => void;
+  onChange: (a: MacroAction, insertAfter?: MacroAction[]) => void;
   onDelete: () => void;
 }): ReactElement {
-  const patch = (updates: Partial<MacroAction>) =>
-    onChange({ ...action, ...updates } as MacroAction);
+  const patch = (updates: Partial<MacroAction>, insertAfter?: MacroAction[]) =>
+    onChange({ ...action, ...updates } as MacroAction, insertAfter);
+
+  const patchCondition = (updates: Partial<MacroCondition>) => {
+    if (action.type !== 'if') return;
+    const current = (action as IfAction).condition;
+    patch({ condition: { ...current, ...updates } } as Partial<MacroAction>);
+  };
+
+  const changeKeyboardPressType = (pressType: KeyboardAction['pressType']) => {
+    if (action.type !== 'keyboard') return;
+    const insertAfter = pressType === 'down' && action.pressType !== 'down'
+      ? keyboardHoldReleaseActions(action.key)
+      : undefined;
+    patch({ pressType } as Partial<MacroAction>, insertAfter);
+  };
 
   return (
     <div className={`action-row${action.enabled ? '' : ' action-row--disabled'}`}>
@@ -172,18 +418,18 @@ function ActionEditor({
       {action.type === 'keyboard' && (
         <div className="action-fields">
           <label className="macro-label">Key</label>
-          <input
-            className="macro-input"
+          <HotkeyInput
             value={(action as KeyboardAction).key}
-            placeholder="e.g. Ctrl+C"
-            onChange={e => patch({ key: e.target.value })}
-            title="Key or key combination to send, such as Ctrl+C or Enter."
+            placeholder="Click and press key…"
+            onChange={key => patch({ key } as Partial<MacroAction>)}
+            title="Click here, then press the key or key combination this action should send."
+            allowModifierKeys
           />
           <label className="macro-label">Type</label>
           <select
             className="macro-select"
             value={(action as KeyboardAction).pressType}
-            onChange={e => patch({ pressType: e.target.value as KeyboardAction['pressType'] })}
+            onChange={e => changeKeyboardPressType(e.target.value as KeyboardAction['pressType'])}
             title="Choose whether to press and release the key, hold it down, or release it."
           >
             <option value="press">Press (down+up)</option>
@@ -296,6 +542,143 @@ function ActionEditor({
           />
         </div>
       )}
+
+      {action.type === 'repeat' && (
+        <div className="action-nested-editor">
+          <div className="action-fields">
+            <label className="macro-label">Times</label>
+            <input
+              type="number"
+              className="macro-input macro-input--half"
+              value={(action as RepeatAction).times}
+              min={0}
+              max={10000}
+              onChange={e => patch({ times: Number(e.target.value) } as Partial<MacroAction>)}
+              title="How many times to run the nested actions."
+            />
+          </div>
+          <NestedActionsEditor
+            label="Repeated actions"
+            emptyText="No repeated actions yet."
+            actions={(action as RepeatAction).actions}
+            onChange={actions => patch({ actions } as Partial<MacroAction>)}
+          />
+        </div>
+      )}
+
+      {action.type === 'if' && (
+        <div className="action-nested-editor">
+          <div className="macro-condition-grid">
+            <label className="macro-label">If</label>
+            <select
+              className="macro-select"
+              value={(action as IfAction).condition.source}
+              onChange={e => {
+                const source = e.target.value as MacroConditionSource;
+                patch({ condition: normalizeConditionForSource((action as IfAction).condition, source) } as Partial<MacroAction>);
+              }}
+              title="Choose what this condition should inspect."
+            >
+              {(Object.keys(conditionSourceLabels) as MacroConditionSource[]).map(source => (
+                <option key={source} value={source}>{conditionSourceLabels[source]}</option>
+              ))}
+            </select>
+
+            <label className="macro-label">Operator</label>
+            <select
+              className="macro-select"
+              value={(action as IfAction).condition.operator}
+              onChange={e => patchCondition({ operator: e.target.value as MacroConditionOperator })}
+              title="Choose how the condition should compare the inspected value."
+            >
+              {conditionOperatorsForSource((action as IfAction).condition.source).map(operator => (
+                <option key={operator} value={operator}>{conditionOperatorLabels[operator]}</option>
+              ))}
+            </select>
+
+            <label className="macro-label">Value</label>
+            <input
+              className="macro-input"
+              value={(action as IfAction).condition.value}
+              placeholder={(action as IfAction).condition.source === 'file-exists' ? 'C:\\path\\to\\file.txt' : 'Text or regex'}
+              onChange={e => patchCondition({ value: e.target.value })}
+              title={(action as IfAction).condition.source === 'file-exists' ? 'Path to check for existence.' : 'Text or regular expression to compare against.'}
+            />
+
+            {(action as IfAction).condition.source !== 'file-exists' ? (
+              <label className="macro-check-label" title="Make this text comparison case-sensitive.">
+                <input
+                  type="checkbox"
+                  checked={(action as IfAction).condition.caseSensitive}
+                  onChange={e => patchCondition({ caseSensitive: e.target.checked })}
+                />
+                <span>Case</span>
+              </label>
+            ) : null}
+          </div>
+
+          <NestedActionsEditor
+            label="Then"
+            emptyText="No Then actions yet."
+            actions={(action as IfAction).thenActions}
+            onChange={thenActions => patch({ thenActions } as Partial<MacroAction>)}
+          />
+          <NestedActionsEditor
+            label="Else"
+            emptyText="No Else actions yet."
+            actions={(action as IfAction).elseActions}
+            onChange={elseActions => patch({ elseActions } as Partial<MacroAction>)}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NestedActionsEditor({
+  label,
+  emptyText,
+  actions,
+  onChange,
+}: {
+  label: string;
+  emptyText: string;
+  actions: MacroAction[];
+  onChange: (actions: MacroAction[]) => void;
+}): ReactElement {
+  const updateAction = (index: number, updated: MacroAction, insertAfter?: MacroAction[]) => {
+    onChange(updateActionAt(actions, index, updated, insertAfter));
+  };
+
+  const deleteAction = (index: number) => {
+    onChange(actions.filter((_, actionIndex) => actionIndex !== index));
+  };
+
+  return (
+    <div className="nested-actions">
+      <div className="nested-actions-header">
+        <span>{label}</span>
+        <div className="macro-add-actions">
+          {actionTypes.map(type => (
+            <button key={type} type="button" className="ghost-button ghost-button--xs" onClick={() => onChange([...actions, blankAction(type)])} title={macroActionDescriptions[type]}>
+              +{type}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="nested-actions-list">
+        {actions.length === 0 ? <div className="empty-state empty-state--compact">{emptyText}</div> : null}
+        {actions.map((nestedAction, index) => (
+          <div key={nestedAction.id} className="nested-action-row">
+            <span className="nested-action-index">{index + 1}</span>
+            <ActionEditor
+              action={nestedAction}
+              onChange={(updated, insertAfter) => updateAction(index, updated, insertAfter)}
+              onDelete={() => deleteAction(index)}
+            />
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -394,26 +777,27 @@ export function MacrosTab(): ReactElement {
 
   // Save macro after debounced edit
   const saveMacro = useCallback((macro: Macro) => {
+    const normalizedMacro: Macro = { ...macro, playback: normalizeMacroPlayback(macro.playback) };
     setState(prev => {
       if (!prev) return prev;
       const p = prev.activeProfile;
       const patchProfile = (prof: MacroProfile): MacroProfile => ({
         ...prof,
-        macros: prof.macros.map((m: Macro) => m.id === macro.id ? macro : m),
+        macros: prof.macros.map((m: Macro) => m.id === normalizedMacro.id ? normalizedMacro : m),
         folders: prof.folders.map((f: MacroFolder) => ({
           ...f,
-          macros: f.macros.map((m: Macro) => m.id === macro.id ? macro : m),
+          macros: f.macros.map((m: Macro) => m.id === normalizedMacro.id ? normalizedMacro : m),
         })),
       });
       return {
         ...prev,
         activeProfile: patchProfile(p),
-        allMacros: prev.allMacros.map((m: Macro) => m.id === macro.id ? macro : m),
+        allMacros: prev.allMacros.map((m: Macro) => m.id === normalizedMacro.id ? normalizedMacro : m),
       };
     });
     if (saveTimeout.current) clearTimeout(saveTimeout.current);
     saveTimeout.current = setTimeout(() => {
-      void api.upsertMacro(macro).then(s => setState(s)).catch(() => {});
+      void api.upsertMacro(normalizedMacro).then(s => setState(s)).catch(() => {});
     }, 600);
   }, [api]);
 
@@ -705,23 +1089,31 @@ function MacroEditor({
 }): ReactElement {
   const [dragIndex, setDragIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
+  const [selectedPresetId, setSelectedPresetId] = useState(macroPresets[0]?.id ?? '');
+  const [autoClickerOptions, setAutoClickerOptions] = useState<AutoClickerPresetOptions>(DEFAULT_AUTO_CLICKER_OPTIONS);
+  const playback = normalizeMacroPlayback(macro.playback);
+  const selectedPreset = macroPresets.find(item => item.id === selectedPresetId) ?? macroPresets[0];
+  const calculatedAutoClickerDelay = autoClickerDelayMs(autoClickerOptions);
 
-  const addAction = (type: MacroAction['type']) => {
-    let action: MacroAction;
-    switch (type) {
-      case 'delay': action = { id: newId(), type: 'delay', enabled: true, milliseconds: 500 }; break;
-      case 'keyboard': action = { id: newId(), type: 'keyboard', enabled: true, key: 'Enter', pressType: 'press' }; break;
-      case 'mouse': action = { id: newId(), type: 'mouse', enabled: true, button: 'left', actionType: 'click' }; break;
-      case 'launch': action = { id: newId(), type: 'launch', enabled: true, path: '', arguments: '' }; break;
-      case 'command': action = { id: newId(), type: 'command', enabled: true, command: '', workingDirectory: '' }; break;
-      case 'text': action = { id: newId(), type: 'text', enabled: true, text: '' }; break;
-    }
-    onChange({ ...macro, actions: [...macro.actions, action] });
+  const updateAutoClickerOptions = (updates: Partial<AutoClickerPresetOptions>) => {
+    setAutoClickerOptions(prev => ({ ...prev, ...updates }));
   };
 
-  const updateAction = (idx: number, updated: MacroAction) => {
-    const actions = macro.actions.map((a: MacroAction, i: number) => i === idx ? updated : a);
-    onChange({ ...macro, actions });
+  const updatePlayback = (updates: Partial<MacroPlaybackOptions>) => {
+    onChange({ ...macro, playback: normalizeMacroPlayback({ ...playback, ...updates }) });
+  };
+
+  const addAction = (type: MacroAction['type']) => {
+    onChange({ ...macro, actions: [...macro.actions, blankAction(type)] });
+  };
+
+  const insertPreset = () => {
+    if (!selectedPreset) return;
+    onChange({ ...macro, actions: [...macro.actions, ...selectedPreset.createActions({ autoClicker: autoClickerOptions })] });
+  };
+
+  const updateAction = (idx: number, updated: MacroAction, insertAfter?: MacroAction[]) => {
+    onChange({ ...macro, actions: updateActionAt(macro.actions, idx, updated, insertAfter) });
   };
 
   const deleteAction = (idx: number) => {
@@ -785,16 +1177,134 @@ function MacroEditor({
         )}
       </div>
 
+      <div className="macro-playback-row">
+        <label className="macro-label">Playback Option</label>
+        <select
+          className="macro-select macro-playback-select"
+          value={playback.mode}
+          onChange={e => updatePlayback({ mode: e.target.value as MacroPlaybackMode })}
+          title={macroPlaybackDescriptions[playback.mode]}
+        >
+          {macroPlaybackModes.map(mode => (
+            <option key={mode} value={mode}>{macroPlaybackLabels[mode]}</option>
+          ))}
+        </select>
+
+        {playback.mode === 'multiple' ? (
+          <>
+            <label className="macro-label">Runs</label>
+            <input
+              type="number"
+              className="macro-input macro-input--short"
+              value={playback.repeatCount}
+              min={1}
+              max={10000}
+              onChange={e => updatePlayback({ repeatCount: Number(e.target.value) })}
+              title="How many whole macro runs this hotkey press should start."
+            />
+          </>
+        ) : null}
+
+      </div>
+
       {/* Actions list */}
       <div className="macro-actions-header">
         <span>Actions ({macro.actions.length})</span>
         <div className="macro-add-actions">
-          {(['delay', 'keyboard', 'mouse', 'text', 'launch', 'command'] as MacroAction['type'][]).map(t => (
+          {actionTypes.map(t => (
             <button key={t} type="button" className="ghost-button ghost-button--xs" onClick={() => addAction(t)} title={macroActionDescriptions[t]}>
               +{t}
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="macro-preset-panel">
+        <div className="macro-preset-row">
+          <label className="macro-label">Preset</label>
+          <select
+            className="macro-select macro-preset-select"
+            value={selectedPresetId}
+            onChange={e => setSelectedPresetId(e.target.value)}
+            title="Choose a common macro preset to insert into this macro."
+          >
+            {macroPresets.map(preset => (
+              <option key={preset.id} value={preset.id}>{preset.label}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="ghost-button ghost-button--sm"
+            onClick={insertPreset}
+            title={selectedPreset?.description ?? 'Insert the selected preset.'}
+          >
+            Insert Preset
+          </button>
+        </div>
+
+        {selectedPresetId === 'auto-clicker' ? (
+          <div className="macro-preset-options">
+            <label className="macro-label">Clicks</label>
+            <input
+              type="number"
+              className="macro-input macro-input--short"
+              value={autoClickerOptions.repeatCount}
+              min={1}
+              max={10000}
+              onChange={e => updateAutoClickerOptions({ repeatCount: Number(e.target.value) })}
+              title="How many clicks the inserted repeat block should contain."
+            />
+            <div className="macro-preset-mode" role="group" aria-label="Auto Clicker timing mode">
+              <button
+                type="button"
+                className={`macro-preset-mode-button${autoClickerOptions.timingMode === 'delay' ? ' macro-preset-mode-button--active' : ''}`}
+                onClick={() => updateAutoClickerOptions({ timingMode: 'delay' })}
+                title="Use an explicit delay after each click."
+              >
+                Delay
+              </button>
+              <button
+                type="button"
+                className={`macro-preset-mode-button${autoClickerOptions.timingMode === 'cps' ? ' macro-preset-mode-button--active' : ''}`}
+                onClick={() => updateAutoClickerOptions({ timingMode: 'cps' })}
+                title="Calculate the delay from a target clicks-per-second rate."
+              >
+                Target CPS
+              </button>
+            </div>
+            {autoClickerOptions.timingMode === 'delay' ? (
+              <>
+                <label className="macro-label">Delay (ms)</label>
+                <input
+                  type="number"
+                  className="macro-input macro-input--short"
+                  value={autoClickerOptions.delayMs}
+                  min={0}
+                  max={60000}
+                  onChange={e => updateAutoClickerOptions({ delayMs: Number(e.target.value) })}
+                  title="Delay after each click. Use 0 for the fastest inserted preset."
+                />
+              </>
+            ) : (
+              <>
+                <label className="macro-label">CPS</label>
+                <input
+                  type="number"
+                  className="macro-input macro-input--short"
+                  value={autoClickerOptions.clicksPerSecond}
+                  min={0.1}
+                  max={10000}
+                  step={0.1}
+                  onChange={e => updateAutoClickerOptions({ clicksPerSecond: Number(e.target.value) })}
+                  title="Target clicks per second for the inserted repeat block."
+                />
+                <span className="macro-preset-calculated" title="Target interval between click starts for this preset.">
+                  {calculatedAutoClickerDelay} ms interval
+                </span>
+              </>
+            )}
+          </div>
+        ) : null}
       </div>
 
       <div className="macro-actions-list">
@@ -839,7 +1349,7 @@ function MacroEditor({
             </div>
             <ActionEditor
               action={action}
-              onChange={updated => updateAction(idx, updated)}
+              onChange={(updated, insertAfter) => updateAction(idx, updated, insertAfter)}
               onDelete={() => deleteAction(idx)}
             />
           </div>

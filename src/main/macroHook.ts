@@ -1,18 +1,47 @@
 /**
- * Global hotkey registration backed by Electron's globalShortcut.
- * This is more reliable than low-level scan-code hooks for synthetic vendor keys
- * (for example Razer keys mapped to F13-F24).
+ * Global hotkey registration backed by Electron's globalShortcut for press events,
+ * with uiohook-napi used for release tracking when a macro needs hold behavior.
  */
 
 import { app, globalShortcut } from 'electron';
+import { createRequire } from 'node:module';
+import type { UiohookKeyboardEvent } from 'uiohook-napi';
+
+type UiohookModule = typeof import('uiohook-napi');
+
+export interface HotkeyCallbacks {
+  down: () => void;
+  up?: () => void;
+}
+
+interface UiohookCombo {
+  hotkey: string;
+  keycode: number;
+  ctrl: boolean;
+  alt: boolean;
+  shift: boolean;
+  meta: boolean;
+  modifierKeycodes: number[];
+}
+
+const nodeRequire = createRequire(import.meta.url);
 
 let hooked = false;
+let uiohookModule: UiohookModule | null | undefined;
+let uiohookRunning = false;
 
-const callbacks = new Map<string, () => void>();
+const callbacks = new Map<string, HotkeyCallbacks>();
 const registeredAccelerators = new Set<string>();
+const electronRegisteredHotkeys = new Set<string>();
+const uiohookCombos = new Map<string, UiohookCombo>();
+const pressedHotkeys = new Set<string>();
 
 function normalizeHotkey(raw: string): string {
   return raw.trim().toLowerCase().replace(/\s+/g, '');
+}
+
+function toCallbacks(callback: (() => void) | HotkeyCallbacks): HotkeyCallbacks {
+  return typeof callback === 'function' ? { down: callback } : callback;
 }
 
 function toElectronAccelerator(hotkey: string): string | null {
@@ -87,19 +116,19 @@ function toElectronAccelerator(hotkey: string): string | null {
       key = 'Insert';
       continue;
     }
-    if (token === 'left') {
+    if (token === 'left' || token === 'arrowleft') {
       key = 'Left';
       continue;
     }
-    if (token === 'right') {
+    if (token === 'right' || token === 'arrowright') {
       key = 'Right';
       continue;
     }
-    if (token === 'up') {
+    if (token === 'up' || token === 'arrowup') {
       key = 'Up';
       continue;
     }
-    if (token === 'down') {
+    if (token === 'down' || token === 'arrowdown') {
       key = 'Down';
       continue;
     }
@@ -164,18 +193,23 @@ function registerAllHotkeys(): void {
   const hotkeys = new Set(callbacks.keys());
   const attemptedAccelerators = new Set<string>();
 
-  for (const [hotkey, cb] of callbacks) {
+  for (const hotkey of callbacks.keys()) {
     for (const accelerator of toElectronAccelerators(hotkey, hotkeys)) {
       const registrationKey = accelerator.toLowerCase();
       if (attemptedAccelerators.has(registrationKey)) continue;
       attemptedAccelerators.add(registrationKey);
 
       const registered = globalShortcut.register(accelerator, () => {
-        try { cb(); } catch { /* ignore callback crash */ }
+        fireHotkeyDown(hotkey, true);
       });
-      if (registered) registeredAccelerators.add(accelerator);
+      if (registered) {
+        registeredAccelerators.add(accelerator);
+        electronRegisteredHotkeys.add(hotkey);
+      }
     }
   }
+
+  syncUiohook();
 }
 
 function unregisterRegisteredHotkeys(): void {
@@ -183,6 +217,7 @@ function unregisterRegisteredHotkeys(): void {
     try { globalShortcut.unregister(accelerator); } catch { /* ignore stale shortcut */ }
   }
   registeredAccelerators.clear();
+  electronRegisteredHotkeys.clear();
 }
 
 function toElectronAccelerators(hotkey: string, hotkeys: Set<string>): string[] {
@@ -225,19 +260,277 @@ function isModifierToken(token: string): boolean {
   return token === 'ctrl' || token === 'control' || token === 'alt' || token === 'shift' || token === 'win' || token === 'meta' || token === 'super';
 }
 
-export function registerHotkey(hotkey: string, callback: () => void): void {
-  callbacks.set(normalizeHotkey(hotkey), callback);
+function getUiohookModule(): UiohookModule | null {
+  if (uiohookModule !== undefined) return uiohookModule;
+
+  try {
+    uiohookModule = nodeRequire('uiohook-napi') as UiohookModule;
+  } catch {
+    uiohookModule = null;
+  }
+
+  return uiohookModule;
+}
+
+function syncUiohook(): void {
+  uiohookCombos.clear();
+
+  const module = getUiohookModule();
+  if (!module) {
+    stopUiohook();
+    return;
+  }
+
+  for (const hotkey of callbacks.keys()) {
+    const combo = toUiohookCombo(hotkey, module.UiohookKey as unknown as Record<string, number>);
+    if (combo) uiohookCombos.set(hotkey, combo);
+  }
+
+  if (uiohookCombos.size > 0) {
+    startUiohook(module);
+  } else {
+    stopUiohook();
+  }
+}
+
+function startUiohook(module: UiohookModule): void {
+  if (uiohookRunning) return;
+
+  try {
+    module.uIOhook.on('keydown', handleUiohookKeyDown);
+    module.uIOhook.on('keyup', handleUiohookKeyUp);
+    module.uIOhook.start();
+    uiohookRunning = true;
+  } catch {
+    try { module.uIOhook.removeListener('keydown', handleUiohookKeyDown); } catch { /* ignore cleanup */ }
+    try { module.uIOhook.removeListener('keyup', handleUiohookKeyUp); } catch { /* ignore cleanup */ }
+    uiohookRunning = false;
+  }
+}
+
+function stopUiohook(): void {
+  const module = getUiohookModule();
+  if (!module || !uiohookRunning) return;
+
+  releaseAllPressedHotkeys();
+  try { module.uIOhook.removeListener('keydown', handleUiohookKeyDown); } catch { /* ignore stale listener */ }
+  try { module.uIOhook.removeListener('keyup', handleUiohookKeyUp); } catch { /* ignore stale listener */ }
+  try { module.uIOhook.stop(); } catch { /* ignore stale hook */ }
+  uiohookRunning = false;
+}
+
+function toUiohookCombo(hotkey: string, keys: Record<string, number>): UiohookCombo | null {
+  const tokens = normalizeHotkey(hotkey).split('+').filter(Boolean);
+  if (tokens.length === 0) return null;
+
+  let ctrl = false;
+  let alt = false;
+  let shift = false;
+  let meta = false;
+  let keycode: number | null = null;
+
+  for (const token of tokens) {
+    if (token === 'ctrl' || token === 'control') {
+      ctrl = true;
+      continue;
+    }
+    if (token === 'alt') {
+      alt = true;
+      continue;
+    }
+    if (token === 'shift') {
+      shift = true;
+      continue;
+    }
+    if (token === 'win' || token === 'meta' || token === 'super') {
+      meta = true;
+      continue;
+    }
+
+    const mapped = toUiohookKeycode(token, keys);
+    if (mapped !== null) keycode = mapped;
+  }
+
+  if (keycode === null) return null;
+
+  const modifierKeycodes = [
+    ctrl ? keys.Ctrl : null,
+    ctrl ? keys.CtrlRight : null,
+    alt ? keys.Alt : null,
+    alt ? keys.AltRight : null,
+    shift ? keys.Shift : null,
+    shift ? keys.ShiftRight : null,
+    meta ? keys.Meta : null,
+    meta ? keys.MetaRight : null,
+  ].filter((value): value is number => typeof value === 'number');
+
+  return { hotkey, keycode, ctrl, alt, shift, meta, modifierKeycodes };
+}
+
+function toUiohookKeycode(token: string, keys: Record<string, number>): number | null {
+  const letter = token.match(/^[a-z]$/)?.[0];
+  if (letter) return keys[letter.toUpperCase()] ?? null;
+
+  const digit = token.match(/^[0-9]$/)?.[0];
+  if (digit) return keys[digit] ?? null;
+
+  const functionKey = token.match(/^f(\d{1,2})$/)?.[1];
+  if (functionKey) return keys[`F${functionKey}`] ?? null;
+
+  const numpadDigit = token.match(/^(?:num|numpad)([0-9])$/)?.[1];
+  if (numpadDigit) return keys[`Numpad${numpadDigit}`] ?? null;
+
+  switch (token) {
+    case 'space': return keys.Space ?? null;
+    case 'escape':
+    case 'esc': return keys.Escape ?? null;
+    case 'enter':
+    case 'return': return keys.Enter ?? null;
+    case 'tab': return keys.Tab ?? null;
+    case 'backspace': return keys.Backspace ?? null;
+    case 'delete':
+    case 'del': return keys.Delete ?? null;
+    case 'insert':
+    case 'ins': return keys.Insert ?? null;
+    case 'left':
+    case 'arrowleft': return keys.ArrowLeft ?? null;
+    case 'right':
+    case 'arrowright': return keys.ArrowRight ?? null;
+    case 'up':
+    case 'arrowup': return keys.ArrowUp ?? null;
+    case 'down':
+    case 'arrowdown': return keys.ArrowDown ?? null;
+    case 'home': return keys.Home ?? null;
+    case 'end': return keys.End ?? null;
+    case 'pageup':
+    case 'pgup': return keys.PageUp ?? null;
+    case 'pagedown':
+    case 'pgdn': return keys.PageDown ?? null;
+    case 'numlock':
+    case 'num-lock': return keys.NumLock ?? null;
+    case 'scrolllock':
+    case 'scroll-lock': return keys.ScrollLock ?? null;
+    case 'printscreen':
+    case 'print-screen': return keys.PrintScreen ?? null;
+    case 'numdec':
+    case 'numdecimal':
+    case 'numpaddecimal': return keys.NumpadDecimal ?? null;
+    case 'numadd':
+    case 'numpadadd': return keys.NumpadAdd ?? null;
+    case 'numsub':
+    case 'numsubtract':
+    case 'numpadsubtract': return keys.NumpadSubtract ?? null;
+    case 'nummult':
+    case 'nummultiply':
+    case 'numpadmultiply': return keys.NumpadMultiply ?? null;
+    case 'numdiv':
+    case 'numdivide':
+    case 'numpaddivide': return keys.NumpadDivide ?? null;
+    case 'semicolon':
+    case ';': return keys.Semicolon ?? null;
+    case 'equal':
+    case '=': return keys.Equal ?? null;
+    case 'comma':
+    case ',': return keys.Comma ?? null;
+    case 'minus':
+    case '-': return keys.Minus ?? null;
+    case 'period':
+    case '.': return keys.Period ?? null;
+    case 'slash':
+    case '/': return keys.Slash ?? null;
+    case 'backquote':
+    case '`': return keys.Backquote ?? null;
+    case 'bracketleft':
+    case '[': return keys.BracketLeft ?? null;
+    case 'backslash':
+    case '\\': return keys.Backslash ?? null;
+    case 'bracketright':
+    case ']': return keys.BracketRight ?? null;
+    case 'quote':
+    case "'": return keys.Quote ?? null;
+    default: return null;
+  }
+}
+
+function handleUiohookKeyDown(event: UiohookKeyboardEvent): void {
+  for (const combo of uiohookCombos.values()) {
+    if (!matchesCombo(event, combo)) continue;
+    if (pressedHotkeys.has(combo.hotkey)) return;
+
+    if (!electronRegisteredHotkeys.has(combo.hotkey)) {
+      pressedHotkeys.add(combo.hotkey);
+      fireHotkeyDown(combo.hotkey, false);
+    }
+    return;
+  }
+}
+
+function handleUiohookKeyUp(event: UiohookKeyboardEvent): void {
+  for (const combo of uiohookCombos.values()) {
+    if (!pressedHotkeys.has(combo.hotkey)) continue;
+    if (event.keycode !== combo.keycode && !combo.modifierKeycodes.includes(event.keycode)) continue;
+    releaseHotkey(combo.hotkey);
+  }
+}
+
+function matchesCombo(event: UiohookKeyboardEvent, combo: UiohookCombo): boolean {
+  return event.keycode === combo.keycode
+    && event.ctrlKey === combo.ctrl
+    && event.altKey === combo.alt
+    && event.shiftKey === combo.shift
+    && event.metaKey === combo.meta;
+}
+
+function fireHotkeyDown(hotkey: string, fromElectron: boolean): void {
+  const callback = callbacks.get(hotkey);
+  if (!callback) return;
+  const canTrackRelease = uiohookRunning && uiohookCombos.has(hotkey);
+
+  if (fromElectron && canTrackRelease) {
+    if (pressedHotkeys.has(hotkey)) return;
+    pressedHotkeys.add(hotkey);
+  }
+
+  try { callback.down(); } catch { /* ignore callback crash */ }
+
+  if (callback.up && !canTrackRelease) {
+    setTimeout(() => releaseHotkey(hotkey), 0);
+  }
+}
+
+function releaseHotkey(hotkey: string): void {
+  const callback = callbacks.get(hotkey);
+  pressedHotkeys.delete(hotkey);
+  if (!callback?.up) return;
+  try { callback.up(); } catch { /* ignore callback crash */ }
+}
+
+function releaseAllPressedHotkeys(): void {
+  for (const hotkey of [...pressedHotkeys]) {
+    releaseHotkey(hotkey);
+  }
+  pressedHotkeys.clear();
+}
+
+export function registerHotkey(hotkey: string, callback: (() => void) | HotkeyCallbacks): void {
+  callbacks.set(normalizeHotkey(hotkey), toCallbacks(callback));
   if (hooked) registerAllHotkeys();
 }
 
 export function unregisterHotkey(hotkey: string): void {
-  callbacks.delete(normalizeHotkey(hotkey));
+  const normalized = normalizeHotkey(hotkey);
+  releaseHotkey(normalized);
+  callbacks.delete(normalized);
   if (hooked) registerAllHotkeys();
 }
 
 export function clearHotkeys(): void {
+  releaseAllPressedHotkeys();
   callbacks.clear();
-  if (hooked) unregisterRegisteredHotkeys();
+  if (hooked) {
+    unregisterRegisteredHotkeys();
+    syncUiohook();
+  }
 }
 
 export async function startHook(): Promise<void> {
@@ -259,6 +552,8 @@ export async function startHook(): Promise<void> {
 
 export function stopHook(): void {
   if (!hooked) return;
+  releaseAllPressedHotkeys();
   unregisterRegisteredHotkeys();
+  stopUiohook();
   hooked = false;
 }

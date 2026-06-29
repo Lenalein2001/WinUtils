@@ -10,17 +10,33 @@ import type {
   MacroAction,
   MacroConfig,
   MacroFolder,
+  MacroPlaybackOptions,
   MacroProfile,
   MacroState,
 } from '../shared/macro';
+import { normalizeMacroPlayback } from '../shared/macro';
 import { executeMacro, stopMacroExecutor, warmMacroExecutor } from './macroExecutor';
 import { clearHotkeys, registerHotkey, startHook, stopHook } from './macroHook';
 import { MacroStore } from './macroStore';
+
+interface MacroPlaybackState {
+  running: boolean;
+  queue: number;
+  toggleActive: boolean;
+  holdActive: boolean;
+  cancelRequested: boolean;
+}
+
+function boundedRunCount(value: number): number {
+  const count = Math.trunc(Number(value));
+  return Number.isFinite(count) ? Math.max(1, Math.min(10_000, count)) : 1;
+}
 
 export class MacroManager {
   private readonly store = new MacroStore();
   private initialized = false;
   private logPath = path.join(tmpdir(), 'winutils-focus-debug.log');
+  private readonly playbackStates = new Map<string, MacroPlaybackState>();
 
   private log(msg: string): void {
     appendFileSync(this.logPath, `[${new Date().toISOString()}] ${msg}\n`);
@@ -459,15 +475,170 @@ while ($true) {
   }
 
   private rebuildHotkeys(): void {
+    this.stopAllHotkeyPlayback();
     clearHotkeys();
     const profile = this.store.getActiveProfile();
     const allMacros = [...profile.macros, ...profile.folders.flatMap(f => f.macros)];
     for (const macro of allMacros) {
       if (macro.enabled && macro.hotkey.trim()) {
-        registerHotkey(macro.hotkey, () => {
-          executeMacro(macro).catch(() => {});
+        const registeredMacro: Macro = { ...macro, playback: normalizeMacroPlayback(macro.playback) };
+        registerHotkey(registeredMacro.hotkey, {
+          down: () => {
+            this.handleHotkeyDown(registeredMacro);
+          },
+          up: registeredMacro.playback.mode === 'while-pressed'
+            ? () => {
+              this.handleHotkeyUp(registeredMacro.id);
+            }
+            : undefined,
         });
       }
+    }
+  }
+
+  private getPlaybackState(macroId: string): MacroPlaybackState {
+    const existing = this.playbackStates.get(macroId);
+    if (existing) return existing;
+
+    const state: MacroPlaybackState = {
+      running: false,
+      queue: 0,
+      toggleActive: false,
+      holdActive: false,
+      cancelRequested: false,
+    };
+    this.playbackStates.set(macroId, state);
+    return state;
+  }
+
+  private handleHotkeyDown(macro: Macro): void {
+    const playback = normalizeMacroPlayback(macro.playback);
+    const state = this.getPlaybackState(macro.id);
+    if (state.cancelRequested && state.running) return;
+    state.cancelRequested = false;
+
+    switch (playback.mode) {
+      case 'once':
+        if (!state.running) void this.runSingleHotkeyMacro(macro, state);
+        break;
+
+      case 'multiple':
+        if (!state.running) void this.runMacroMultipleTimes(macro, state, playback);
+        break;
+
+      case 'toggle':
+        state.toggleActive = !state.toggleActive;
+        if (state.toggleActive && !state.running) void this.runToggleLoop(macro, state);
+        break;
+
+      case 'while-pressed':
+        state.holdActive = true;
+        if (!state.running) void this.runWhileHeldLoop(macro, state);
+        break;
+
+      case 'queue':
+        state.queue = Math.min(10_000, state.queue + 1);
+        if (!state.running) void this.runQueuedMacros(macro, state);
+        break;
+    }
+  }
+
+  private handleHotkeyUp(macroId: string): void {
+    const state = this.playbackStates.get(macroId);
+    if (!state) return;
+    state.holdActive = false;
+    this.cleanupPlaybackState(macroId, state);
+  }
+
+  private async runSingleHotkeyMacro(macro: Macro, state: MacroPlaybackState): Promise<void> {
+    state.running = true;
+    try {
+      await executeMacro(macro);
+    } catch (error) {
+      this.log(`Macro "${macro.name}" failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      state.running = false;
+      this.cleanupPlaybackState(macro.id, state);
+    }
+  }
+
+  private async runMacroMultipleTimes(macro: Macro, state: MacroPlaybackState, playback: MacroPlaybackOptions): Promise<void> {
+    state.running = true;
+    try {
+      const count = boundedRunCount(playback.repeatCount);
+      for (let index = 0; index < count && !state.cancelRequested; index++) {
+        await executeMacro(macro);
+      }
+    } catch (error) {
+      state.queue = 0;
+      this.log(`Macro "${macro.name}" failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      state.running = false;
+      this.cleanupPlaybackState(macro.id, state);
+    }
+  }
+
+  private async runToggleLoop(macro: Macro, state: MacroPlaybackState): Promise<void> {
+    state.running = true;
+    try {
+      while (state.toggleActive && !state.cancelRequested) {
+        await executeMacro(macro);
+      }
+    } catch (error) {
+      this.log(`Macro "${macro.name}" failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      state.running = false;
+      state.toggleActive = false;
+      this.cleanupPlaybackState(macro.id, state);
+    }
+  }
+
+  private async runWhileHeldLoop(macro: Macro, state: MacroPlaybackState): Promise<void> {
+    state.running = true;
+    try {
+      while (state.holdActive && !state.cancelRequested) {
+        await executeMacro(macro);
+      }
+    } catch (error) {
+      this.log(`Macro "${macro.name}" failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      state.running = false;
+      state.holdActive = false;
+      this.cleanupPlaybackState(macro.id, state);
+    }
+  }
+
+  private async runQueuedMacros(macro: Macro, state: MacroPlaybackState): Promise<void> {
+    state.running = true;
+    try {
+      while (state.queue > 0 && !state.cancelRequested) {
+        state.queue -= 1;
+        await executeMacro(macro);
+      }
+    } catch (error) {
+      this.log(`Macro "${macro.name}" failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      state.running = false;
+      this.cleanupPlaybackState(macro.id, state);
+    }
+  }
+
+  private stopAllHotkeyPlayback(): void {
+    for (const [macroId, state] of this.playbackStates) {
+      state.queue = 0;
+      state.toggleActive = false;
+      state.holdActive = false;
+      state.cancelRequested = true;
+      if (!state.running) {
+        this.playbackStates.delete(macroId);
+      }
+    }
+  }
+
+  private cleanupPlaybackState(macroId: string, state: MacroPlaybackState): void {
+    if (state.running || state.queue > 0 || state.toggleActive || state.holdActive) return;
+    if (this.playbackStates.get(macroId) === state) {
+      this.playbackStates.delete(macroId);
     }
   }
 
@@ -478,21 +649,22 @@ while ($true) {
   // ─── Mutations ──────────────────────────────────────────────────────────
 
   async upsertMacro(macro: Macro, profileName?: string): Promise<MacroState> {
+    const normalizedMacro: Macro = { ...macro, playback: normalizeMacroPlayback(macro.playback) };
     const cfg = this.store['_config'] as MacroConfig;
     const profile = profileName
       ? cfg.profiles.find(p => p.name === profileName) ?? this.store.getActiveProfile()
       : this.store.getActiveProfile();
 
-    const rootIdx = profile.macros.findIndex(m => m.id === macro.id);
+    const rootIdx = profile.macros.findIndex(m => m.id === normalizedMacro.id);
     if (rootIdx >= 0) {
-      profile.macros[rootIdx] = macro;
+      profile.macros[rootIdx] = normalizedMacro;
     } else {
       let found = false;
       for (const folder of profile.folders) {
-        const fi = folder.macros.findIndex(m => m.id === macro.id);
-        if (fi >= 0) { folder.macros[fi] = macro; found = true; break; }
+        const fi = folder.macros.findIndex(m => m.id === normalizedMacro.id);
+        if (fi >= 0) { folder.macros[fi] = normalizedMacro; found = true; break; }
       }
-      if (!found) profile.macros.push(macro);
+      if (!found) profile.macros.push(normalizedMacro);
     }
 
     await this.store.save();
@@ -650,6 +822,7 @@ while ($true) {
 
   destroy(): void {
     this.stopFocusMonitor();
+    this.stopAllHotkeyPlayback();
     stopMacroExecutor();
     stopHook();
   }

@@ -2809,6 +2809,11 @@ code {
   flex: none;
 }
 
+.macro-input--short {
+  width: 92px;
+  flex: 0 0 92px;
+}
+
 .macro-select {
   background: var(--panel-strong);
   border: 1px solid var(--panel-border);
@@ -2849,6 +2854,81 @@ code {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
+}
+
+.macro-preset-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(141, 210, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(141, 210, 255, 0.04);
+}
+
+.macro-preset-row,
+.macro-preset-options {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  width: 100%;
+  min-width: 0;
+}
+
+.macro-preset-select {
+  flex: 1;
+  min-width: 170px;
+}
+
+.macro-preset-mode {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--panel-border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--panel-strong);
+}
+
+.macro-preset-mode-button {
+  border: none;
+  border-right: 1px solid var(--panel-border);
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 5px 10px;
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.macro-preset-mode-button:last-child {
+  border-right: none;
+}
+
+.macro-preset-mode-button:hover,
+.macro-preset-mode-button--active {
+  background: rgba(141, 210, 255, 0.14);
+  color: var(--text);
+}
+
+.macro-preset-calculated {
+  color: var(--accent);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.macro-playback-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.macro-playback-select {
+  flex: 1 1 230px;
+  min-width: 190px;
+  max-width: 100%;
 }
 
 .ghost-button--xs {
@@ -3297,6 +3377,72 @@ code {
   min-width: 100px;
 }
 
+.action-nested-editor {
+  display: grid;
+  gap: 10px;
+}
+
+.macro-condition-grid {
+  display: grid;
+  grid-template-columns: auto minmax(130px, 1fr) auto minmax(130px, 1fr) auto minmax(160px, 1.4fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.macro-check-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.nested-actions {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(141, 210, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(5, 14, 26, 0.28);
+}
+
+.nested-actions-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.nested-actions-list {
+  display: grid;
+  gap: 8px;
+}
+
+.nested-action-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.nested-action-index {
+  flex: 0 0 auto;
+  min-width: 20px;
+  padding-top: 10px;
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-align: center;
+}
+
+.empty-state--compact {
+  padding: 10px;
+  font-size: 0.78rem;
+}
+
 /* ─── Micro buttons ────────────────────────────────────────────────────── */
 
 .micro-button {
@@ -3339,6 +3485,10 @@ code {
   }
 
   .startup-add-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .macro-condition-grid {
     grid-template-columns: 1fr;
   }
 }

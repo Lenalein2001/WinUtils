@@ -2,7 +2,30 @@ import { app } from 'electron';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-import type { MacroConfig, MacroProfile, MacroState } from '../shared/macro';
+import { normalizeMacroPlayback, type Macro, type MacroConfig, type MacroProfile, type MacroState } from '../shared/macro';
+
+function normalizeStoredMacro(macro: Macro): Macro {
+  return { ...macro, playback: normalizeMacroPlayback(macro.playback) };
+}
+
+function normalizeStoredProfile(profile: MacroProfile): MacroProfile {
+  return {
+    ...profile,
+    macros: profile.macros.map(normalizeStoredMacro),
+    folders: profile.folders.map(folder => ({
+      ...folder,
+      macros: folder.macros.map(normalizeStoredMacro),
+    })),
+  };
+}
+
+function normalizeStoredConfig(config: MacroConfig): MacroConfig {
+  return {
+    ...config,
+    profiles: config.profiles.map(normalizeStoredProfile),
+    recordToggleHotkey: config.recordToggleHotkey || 'Ctrl+R',
+  };
+}
 
 function defaultConfig(): MacroConfig {
   return {
@@ -46,7 +69,10 @@ export class MacroStore {
         const raw = await readFile(tryPath, 'utf8');
         const parsed = JSON.parse(raw) as MacroConfig;
         if (parsed && Array.isArray(parsed.profiles)) {
-          this._config = parsed;
+          this._config = normalizeStoredConfig(parsed);
+          if (JSON.stringify(this._config) !== JSON.stringify(parsed)) {
+            await this.save();
+          }
           return this._config;
         }
       } catch {

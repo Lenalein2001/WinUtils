@@ -1,7 +1,9 @@
 import { execFile, spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { promisify } from 'node:util';
-import type { Macro, MacroAction } from '../shared/macro';
+import { clipboard } from 'electron';
+import type { IfAction, Macro, MacroAction, MacroCondition, RepeatAction } from '../shared/macro';
 
 const execFileAsync = promisify(execFile);
 
@@ -58,6 +60,10 @@ function keysForString(keyStr: string): number[] {
   return keyStr.split('+').map(p => parseKey(p)).filter(k => k !== 0);
 }
 
+function buildVkArray(vks: number[]): string {
+  return `[System.UInt16[]]@(${vks.join(',')})`;
+}
+
 function buildSendTextPwsh(text: string): string {
   // Unicode character injection via SendInput
   const escaped = text.replace(/'/g, "''");
@@ -69,11 +75,20 @@ function buildSendTextPwsh(text: string): string {
 const PS_HELPER = `
 Add-Type -TypeDefinition @"
 using System;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 public static class WinAPI {
   [DllImport("user32.dll")] public static extern uint SendInput(uint n, INPUT[] i, int cb);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
-  [DllImport("user32.dll")] public static extern void mouse_event(uint f, uint x, uint y, uint d, int e);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern uint MapVirtualKeyW(uint code, uint mapType);
+  [DllImport("winmm.dll")] private static extern uint timeBeginPeriod(uint period);
+  [DllImport("winmm.dll")] private static extern uint timeEndPeriod(uint period);
+
+  private const uint MAPVK_VK_TO_VSC_EX = 4;
+  private const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
+  private const uint KEYEVENTF_KEYUP = 0x0002;
+  private const uint KEYEVENTF_SCANCODE = 0x0008;
+  private static bool timerResolutionRaised;
 
   [StructLayout(LayoutKind.Sequential)] public struct INPUT {
     public uint type; public INPUTUNION u;
@@ -89,13 +104,112 @@ public static class WinAPI {
     public int dx; public int dy; public uint data; public uint flags; public uint time; public IntPtr extra;
   }
 
-  public static void SendKey(ushort vk, uint flags) {
+  static WinAPI() {
+    try {
+      timerResolutionRaised = timeBeginPeriod(1) == 0;
+      if (timerResolutionRaised) {
+        AppDomain.CurrentDomain.ProcessExit += delegate { try { timeEndPeriod(1); } catch {} };
+      }
+    } catch {
+      timerResolutionRaised = false;
+    }
+  }
+
+  public static void Delay(int milliseconds) {
+    if (milliseconds <= 0) return;
+    if (milliseconds <= 2) {
+      var sw = Stopwatch.StartNew();
+      while (sw.ElapsedMilliseconds < milliseconds) {
+        System.Threading.Thread.SpinWait(64);
+      }
+      return;
+    }
+    System.Threading.Thread.Sleep(milliseconds);
+  }
+
+  private static bool IsExtendedKey(ushort vk, uint scanCode) {
+    if ((scanCode & 0xFF00) != 0) return true;
+
+    switch (vk) {
+      case 0x21: // Page Up
+      case 0x22: // Page Down
+      case 0x23: // End
+      case 0x24: // Home
+      case 0x25: // Left
+      case 0x26: // Up
+      case 0x27: // Right
+      case 0x28: // Down
+      case 0x2D: // Insert
+      case 0x2E: // Delete
+      case 0x5B: // Left Win
+      case 0x5C: // Right Win
+      case 0x6F: // Numpad Divide
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  private static INPUT CreateKeyInput(ushort vk, bool keyUp) {
+    var scanCode = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC_EX);
     var inp = new INPUT[1];
     inp[0].type = 1;
-    inp[0].u.ki.wVk = vk;
-    inp[0].u.ki.dwFlags = flags;
+    if (scanCode != 0) {
+      inp[0].u.ki.wScan = (ushort)(scanCode & 0xFF);
+      inp[0].u.ki.dwFlags = KEYEVENTF_SCANCODE | (keyUp ? KEYEVENTF_KEYUP : 0) | (IsExtendedKey(vk, scanCode) ? KEYEVENTF_EXTENDEDKEY : 0);
+    } else {
+      inp[0].u.ki.wVk = vk;
+      inp[0].u.ki.dwFlags = keyUp ? KEYEVENTF_KEYUP : 0;
+    }
+
+    return inp[0];
+  }
+
+  private static void SendInputBatch(INPUT[] inputs) {
+    if (inputs == null || inputs.Length == 0) return;
+    SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+  }
+
+  public static void SendKey(ushort vk, uint flags) {
+    var isKeyUp = (flags & KEYEVENTF_KEYUP) != 0;
+    var inp = new INPUT[1];
+    inp[0] = CreateKeyInput(vk, isKeyUp);
+    SendInputBatch(inp);
+  }
+
+  public static void SendKeyCombo(ushort[] vks, int mode, int holdMs) {
+    if (vks == null || vks.Length == 0) return;
+
+    if (mode == 1) {
+      var inputs = new INPUT[vks.Length];
+      for (int i = 0; i < vks.Length; i++) inputs[i] = CreateKeyInput(vks[i], false);
+      SendInputBatch(inputs);
+      return;
+    }
+
+    if (mode == 2) {
+      var inputs = new INPUT[vks.Length];
+      for (int i = 0; i < vks.Length; i++) inputs[i] = CreateKeyInput(vks[vks.Length - 1 - i], true);
+      SendInputBatch(inputs);
+      return;
+    }
+
+    var downInputs = new INPUT[vks.Length];
+    var upInputs = new INPUT[vks.Length];
+    for (int i = 0; i < vks.Length; i++) {
+      downInputs[i] = CreateKeyInput(vks[i], false);
+      upInputs[i] = CreateKeyInput(vks[vks.Length - 1 - i], true);
+    }
+    SendInputBatch(downInputs);
+    Delay(holdMs);
+    SendInputBatch(upInputs);
+  }
+
+  public static void SendMouse(uint flags) {
+    var inp = new INPUT[1];
+    inp[0].type = 0;
+    inp[0].u.mi.flags = flags;
     SendInput(1, inp, Marshal.SizeOf(typeof(INPUT)));
-    System.Threading.Thread.Sleep(1);
   }
   public static void InjectText(string text) {
     foreach (char c in text) {
@@ -103,18 +217,48 @@ public static class WinAPI {
       inps[0].type = 1; inps[0].u.ki.wScan = c; inps[0].u.ki.dwFlags = 4;
       inps[1].type = 1; inps[1].u.ki.wScan = c; inps[1].u.ki.dwFlags = 6;
       SendInput(2, inps, Marshal.SizeOf(typeof(INPUT)));
-      System.Threading.Thread.Sleep(1);
+      Delay(1);
     }
   }
   public static void MouseClick(uint down, uint up) {
-    mouse_event(down, 0, 0, 0, 0);
-    System.Threading.Thread.Sleep(10);
-    mouse_event(up, 0, 0, 0, 0);
+    var inps = new INPUT[2];
+    inps[0].type = 0;
+    inps[0].u.mi.flags = down;
+    inps[1].type = 0;
+    inps[1].u.mi.flags = up;
+    SendInput(2, inps, Marshal.SizeOf(typeof(INPUT)));
   }
   public static void MouseDoubleClick(uint down, uint up) {
     MouseClick(down, up);
-    System.Threading.Thread.Sleep(50);
+    Delay(50);
     MouseClick(down, up);
+  }
+  private static void DelayUntil(Stopwatch stopwatch, long targetTicks) {
+    for (;;) {
+      var remainingTicks = targetTicks - stopwatch.ElapsedTicks;
+      if (remainingTicks <= 0) return;
+
+      var remainingMs = (remainingTicks * 1000) / Stopwatch.Frequency;
+      if (remainingMs > 2) {
+        Delay((int)remainingMs - 1);
+      } else {
+        System.Threading.Thread.SpinWait(64);
+      }
+    }
+  }
+
+  public static void MouseClickLoop(uint down, uint up, int times, int delayMs) {
+    if (delayMs <= 0) {
+      for (int i = 0; i < times; i++) MouseClick(down, up);
+      return;
+    }
+
+    var stopwatch = Stopwatch.StartNew();
+    var intervalTicks = (long)delayMs * Stopwatch.Frequency / 1000;
+    for (int i = 0; i < times; i++) {
+      if (i > 0) DelayUntil(stopwatch, intervalTicks * i);
+      MouseClick(down, up);
+    }
   }
 }
 "@
@@ -317,6 +461,11 @@ class MacroInputWorker {
   }
 }
 
+interface ForegroundWindowInfo {
+  processName: string;
+  title: string;
+}
+
 const inputWorker = new MacroInputWorker();
 
 export async function warmMacroExecutor(): Promise<void> {
@@ -345,6 +494,98 @@ function mouseFlags(button: string): { down: number; up: number } {
   }
 }
 
+async function getForegroundWindowInfo(): Promise<ForegroundWindowInfo> {
+  const script = String.raw`
+Add-Type -TypeDefinition @'
+using System;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class ForegroundHelper {
+  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] public static extern int GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+  [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
+  public static string GetInfo() {
+    IntPtr hwnd = GetForegroundWindow();
+    if (hwnd == IntPtr.Zero) return "\t";
+    uint pid = 0;
+    GetWindowThreadProcessId(hwnd, out pid);
+    string processName = "";
+    if (pid > 0) {
+      try { processName = Process.GetProcessById((int)pid).ProcessName; } catch {}
+    }
+    string title = "";
+    try {
+      int length = GetWindowTextLength(hwnd);
+      if (length > 0) {
+        var sb = new StringBuilder(length + 1);
+        GetWindowText(hwnd, sb, sb.Capacity);
+        title = sb.ToString();
+      }
+    } catch {}
+    return processName + "\t" + title;
+  }
+}
+'@
+[ForegroundHelper]::GetInfo()
+`;
+
+  const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script]);
+  const [processName = '', title = ''] = stdout.trimEnd().split('\t');
+  return { processName, title };
+}
+
+function compareConditionText(actual: string, condition: MacroCondition): boolean {
+  if (!condition.value) return false;
+
+  const expected = condition.caseSensitive ? condition.value : condition.value.toLowerCase();
+  const candidate = condition.caseSensitive ? actual : actual.toLowerCase();
+
+  switch (condition.operator) {
+    case 'contains': return candidate.includes(expected);
+    case 'not-contains': return !candidate.includes(expected);
+    case 'equals': return candidate === expected;
+    case 'not-equals': return candidate !== expected;
+    case 'matches': {
+      try {
+        return new RegExp(condition.value, condition.caseSensitive ? '' : 'i').test(actual);
+      } catch {
+        return false;
+      }
+    }
+    case 'not-matches': {
+      try {
+        return !new RegExp(condition.value, condition.caseSensitive ? '' : 'i').test(actual);
+      } catch {
+        return true;
+      }
+    }
+    default:
+      return false;
+  }
+}
+
+async function evaluateCondition(condition: MacroCondition): Promise<boolean> {
+  if (condition.source === 'file-exists') {
+    const path = condition.value.trim();
+    if (!path) return condition.operator === 'not-exists';
+    const exists = existsSync(path);
+    return condition.operator === 'not-exists' ? !exists : exists;
+  }
+
+  if (condition.source === 'clipboard-text') {
+    return compareConditionText(clipboard.readText(), condition);
+  }
+
+  const foreground = await getForegroundWindowInfo();
+  if (condition.source === 'active-process') {
+    return compareConditionText(foreground.processName, condition);
+  }
+
+  return compareConditionText(foreground.title, condition);
+}
+
 // ─── Action executor ───────────────────────────────────────────────────────
 
 function delayMilliseconds(value: number): number {
@@ -355,20 +596,14 @@ function delayMilliseconds(value: number): number {
 function appendInputAction(action: MacroAction, parts: string[]): boolean {
   switch (action.type) {
     case 'delay':
-      parts.push(`[System.Threading.Thread]::Sleep(${delayMilliseconds(action.milliseconds)})`);
+      parts.push(`[void][WinAPI]::Delay(${delayMilliseconds(action.milliseconds)})`);
       return true;
 
     case 'keyboard': {
       const vks = keysForString(action.key);
       if (vks.length === 0) return true;
-      let script = '';
-      if (action.pressType === 'press' || action.pressType === 'down') {
-        script += vks.map(v => `[void][WinAPI]::SendKey(${v}, 0)`).join('; ') + '; ';
-      }
-      if (action.pressType === 'press' || action.pressType === 'up') {
-        script += [...vks].reverse().map(v => `[void][WinAPI]::SendKey(${v}, 2)`).join('; ');
-      }
-      parts.push(script);
+      const mode = action.pressType === 'down' ? 1 : action.pressType === 'up' ? 2 : 0;
+      parts.push(`[void][WinAPI]::SendKeyCombo((${buildVkArray(vks)}), ${mode}, 16)`);
       return true;
     }
 
@@ -381,9 +616,9 @@ function appendInputAction(action: MacroAction, parts: string[]): boolean {
       } else if (action.actionType === 'double-click') {
         parts.push(`[void][WinAPI]::MouseDoubleClick(${down}, ${up})`);
       } else if (action.actionType === 'down') {
-        parts.push(`[void][WinAPI]::mouse_event(${down}, 0, 0, 0, 0)`);
+        parts.push(`[void][WinAPI]::SendMouse(${down})`);
       } else if (action.actionType === 'up') {
-        parts.push(`[void][WinAPI]::mouse_event(${up}, 0, 0, 0, 0)`);
+        parts.push(`[void][WinAPI]::SendMouse(${up})`);
       }
       return true;
     }
@@ -403,6 +638,8 @@ async function executeNonInputAction(action: MacroAction): Promise<void> {
     case 'keyboard':
     case 'mouse':
     case 'text':
+    case 'repeat':
+    case 'if':
       break;
 
     case 'launch': {
@@ -433,18 +670,65 @@ async function executeNonInputAction(action: MacroAction): Promise<void> {
   }
 }
 
-// ─── Public executor ───────────────────────────────────────────────────────
+function repeatTimes(value: number): number {
+  const times = Math.trunc(Number(value));
+  return Number.isFinite(times) ? Math.max(0, Math.min(10_000, times)) : 0;
+}
 
-export async function executeMacro(macro: Macro): Promise<void> {
-  const inputBatch: string[] = [];
+function appendOptimizedRepeatAction(action: RepeatAction, parts: string[]): boolean {
+  const enabledActions = action.actions.filter(nestedAction => nestedAction.enabled);
+  if (enabledActions.length !== 1 && enabledActions.length !== 2) return false;
 
-  for (const action of macro.actions) {
+  const clickAction = enabledActions[0];
+  if (clickAction?.type !== 'mouse' || clickAction.actionType !== 'click') return false;
+
+  const delayAction = enabledActions[1];
+  if (delayAction && delayAction.type !== 'delay') return false;
+
+  const times = repeatTimes(action.times);
+  if (times <= 0) return true;
+
+  const { down, up } = mouseFlags(clickAction.button);
+  const delayMs = delayAction?.type === 'delay' ? delayMilliseconds(delayAction.milliseconds) : 0;
+  parts.push(`[void][WinAPI]::MouseClickLoop(${down}, ${up}, ${times}, ${delayMs})`);
+  return true;
+}
+
+async function executeActions(actions: MacroAction[], inputBatch: string[]): Promise<void> {
+  for (const action of actions) {
     if (!action.enabled) continue;
+
+    if (action.type === 'repeat') {
+      const repeatAction = action as RepeatAction;
+      if (appendOptimizedRepeatAction(repeatAction, inputBatch)) continue;
+
+      await runPwshBatch(inputBatch);
+      const times = repeatTimes(repeatAction.times);
+      for (let index = 0; index < times; index++) {
+        await executeActions(repeatAction.actions, inputBatch);
+      }
+      continue;
+    }
+
+    if (action.type === 'if') {
+      await runPwshBatch(inputBatch);
+      const ifAction = action as IfAction;
+      const branch = await evaluateCondition(ifAction.condition) ? ifAction.thenActions : ifAction.elseActions;
+      await executeActions(branch, inputBatch);
+      continue;
+    }
+
     if (appendInputAction(action, inputBatch)) continue;
 
     await runPwshBatch(inputBatch);
     await executeNonInputAction(action);
   }
+}
 
+// ─── Public executor ───────────────────────────────────────────────────────
+
+export async function executeMacro(macro: Macro): Promise<void> {
+  const inputBatch: string[] = [];
+  await executeActions(macro.actions, inputBatch);
   await runPwshBatch(inputBatch);
 }
