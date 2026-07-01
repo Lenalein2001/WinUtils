@@ -81,6 +81,7 @@ public static class WinAPI {
   [DllImport("user32.dll")] public static extern uint SendInput(uint n, INPUT[] i, int cb);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern uint MapVirtualKeyW(uint code, uint mapType);
+  [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vKey);
   [DllImport("winmm.dll")] private static extern uint timeBeginPeriod(uint period);
   [DllImport("winmm.dll")] private static extern uint timeEndPeriod(uint period);
 
@@ -211,6 +212,13 @@ public static class WinAPI {
     inp[0].u.mi.flags = flags;
     SendInput(1, inp, Marshal.SizeOf(typeof(INPUT)));
   }
+  public static bool AreKeysPressed(ushort[] keys) {
+    if (keys == null || keys.Length == 0) return false;
+    foreach (ushort key in keys) {
+      if ((GetAsyncKeyState(key) & unchecked((short)0x8000)) == 0) return false;
+    }
+    return true;
+  }
   public static void InjectText(string text) {
     foreach (char c in text) {
       var inps = new INPUT[2];
@@ -282,8 +290,10 @@ while ($true) {
   try {
     $bytes = [Convert]::FromBase64String($payload)
     $code = [System.Text.Encoding]::UTF8.GetString($bytes)
-    [scriptblock]::Create($code).Invoke() | Out-Null
-    [Console]::Out.WriteLine("OK " + $requestId)
+    $result = [scriptblock]::Create($code).Invoke()
+    $output = if ($null -eq $result) { "" } else { ($result | Out-String).TrimEnd() }
+    $encodedOutput = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($output))
+    [Console]::Out.WriteLine("OK " + $requestId + " " + $encodedOutput)
   } catch {
     $message = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($_.Exception.Message))
     [Console]::Out.WriteLine("ERR " + $requestId + " " + $message)
@@ -302,13 +312,17 @@ class MacroInputWorker {
   private starting: Promise<void> | null = null;
   private resolveReady: (() => void) | null = null;
   private rejectReady: ((error: Error) => void) | null = null;
-  private readonly pending = new Map<string, { resolve: () => void; reject: (error: Error) => void }>();
+  private readonly pending = new Map<string, { resolve: (output: string) => void; reject: (error: Error) => void }>();
 
   async warm(): Promise<void> {
     await this.ensureStarted();
   }
 
   async run(script: string): Promise<void> {
+    await this.runForOutput(script);
+  }
+
+  async runForOutput(script: string): Promise<string> {
     await this.ensureStarted();
 
     const child = this.child;
@@ -320,7 +334,7 @@ class MacroInputWorker {
     const requestId = String(this.nextRequestId++);
     const payload = Buffer.from(script, 'utf8').toString('base64');
 
-    await new Promise<void>((resolve, reject) => {
+    return new Promise<string>((resolve, reject) => {
       this.pending.set(requestId, { resolve, reject });
       child.stdin.write(`${requestId} ${payload}\n`, (error) => {
         if (!error) return;
@@ -445,7 +459,7 @@ class MacroInputWorker {
     this.pending.delete(requestId);
 
     if (status === 'OK') {
-      pending.resolve();
+      pending.resolve(encodedMessage ? Buffer.from(encodedMessage, 'base64').toString('utf8') : '');
       return;
     }
 
@@ -478,6 +492,10 @@ export function stopMacroExecutor(): void {
 
 async function runPwsh(script: string): Promise<void> {
   await inputWorker.run(script);
+}
+
+async function runPwshOutput(script: string): Promise<string> {
+  return inputWorker.runForOutput(script);
 }
 
 async function runPwshBatch(parts: string[]): Promise<void> {
@@ -570,26 +588,9 @@ async function isKeyPressed(key: string): Promise<boolean> {
   const vks = keysForString(key);
   if (vks.length === 0) return false;
 
-  const script = String.raw`
-Add-Type -TypeDefinition @'
-using System.Runtime.InteropServices;
-public static class KeyStateHelper {
-  [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vKey);
-  public static bool ArePressed(int[] keys) {
-    if (keys == null || keys.Length == 0) return false;
-    foreach (int key in keys) {
-      if ((GetAsyncKeyState(key) & unchecked((short)0x8000)) == 0) return false;
-    }
-    return true;
-  }
-}
-'@
-[KeyStateHelper]::ArePressed([int[]]@(${vks.join(',')}))
-`;
-
   try {
-    const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script]);
-    return stdout.trim().toLowerCase() === 'true';
+    const output = await runPwshOutput(`[WinAPI]::AreKeysPressed((${buildVkArray(vks)}))`);
+    return output.trim().toLowerCase() === 'true';
   } catch {
     return false;
   }
