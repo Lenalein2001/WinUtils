@@ -4,6 +4,7 @@
  */
 
 import { app, globalShortcut } from 'electron';
+import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createRequire } from 'node:module';
 import type { UiohookKeyboardEvent } from 'uiohook-napi';
 
@@ -30,6 +31,9 @@ const nodeRequire = createRequire(import.meta.url);
 let hooked = false;
 let uiohookModule: UiohookModule | null | undefined;
 let uiohookRunning = false;
+let modifierHotkeyWorker: ChildProcessWithoutNullStreams | null = null;
+let modifierHotkeyWorkerKey = '';
+let modifierHotkeyWorkerBuffer = '';
 
 const callbacks = new Map<string, HotkeyCallbacks>();
 const registeredAccelerators = new Set<string>();
@@ -212,6 +216,7 @@ function registerAllHotkeys(): void {
   }
 
   syncUiohook();
+  syncModifierHotkeyWorker();
 }
 
 function unregisterRegisteredHotkeys(): void {
@@ -276,25 +281,7 @@ function getUiohookModule(): UiohookModule | null {
 
 function syncUiohook(): void {
   uiohookCombos.clear();
-
-  const module = getUiohookModule();
-  if (!module) {
-    stopUiohook();
-    return;
-  }
-
-  for (const [hotkey, callback] of callbacks) {
-    if (!shouldUseNativeHook(hotkey, callback)) continue;
-
-    const combo = toUiohookCombo(hotkey, module.UiohookKey as unknown as Record<string, number>);
-    if (combo) uiohookCombos.set(hotkey, combo);
-  }
-
-  if (uiohookCombos.size > 0) {
-    startUiohook(module);
-  } else {
-    stopUiohook();
-  }
+  stopUiohook();
 }
 
 function shouldUseNativeHook(hotkey: string, callback: HotkeyCallbacks): boolean {
@@ -305,6 +292,168 @@ function shouldUseNativeHook(hotkey: string, callback: HotkeyCallbacks): boolean
 function isModifierOnlyHotkey(hotkey: string): boolean {
   const tokens = normalizeHotkey(hotkey).split('+').filter(Boolean);
   return tokens.length > 0 && tokens.every(isModifierToken);
+}
+
+function syncModifierHotkeyWorker(): void {
+  const definitions = [...callbacks.keys()]
+    .filter(isModifierOnlyHotkey)
+    .map(hotkey => ({ hotkey, groups: modifierVkGroupsForHotkey(hotkey) }))
+    .filter((definition): definition is { hotkey: string; groups: number[][] } => definition.groups !== null);
+
+  const nextKey = JSON.stringify(definitions);
+  if (nextKey === modifierHotkeyWorkerKey) return;
+
+  stopModifierHotkeyWorker();
+  modifierHotkeyWorkerKey = nextKey;
+  if (definitions.length === 0) return;
+
+  const script = buildModifierHotkeyWorkerScript(definitions);
+  const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script], {
+    windowsHide: true,
+    stdio: 'pipe',
+  });
+
+  modifierHotkeyWorker = child;
+  child.stdin.end();
+  modifierHotkeyWorkerBuffer = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', chunk => handleModifierHotkeyWorkerOutput(chunk));
+  child.once('exit', () => {
+    if (modifierHotkeyWorker === child) {
+      modifierHotkeyWorker = null;
+      modifierHotkeyWorkerKey = '';
+    }
+  });
+  child.once('error', () => {
+    if (modifierHotkeyWorker === child) {
+      modifierHotkeyWorker = null;
+      modifierHotkeyWorkerKey = '';
+    }
+  });
+}
+
+function stopModifierHotkeyWorker(): void {
+  const child = modifierHotkeyWorker;
+  modifierHotkeyWorker = null;
+  modifierHotkeyWorkerKey = '';
+  modifierHotkeyWorkerBuffer = '';
+  if (child && !child.killed) child.kill();
+}
+
+function handleModifierHotkeyWorkerOutput(chunk: string): void {
+  modifierHotkeyWorkerBuffer += chunk;
+
+  for (;;) {
+    const lineEnd = modifierHotkeyWorkerBuffer.indexOf('\n');
+    if (lineEnd < 0) return;
+
+    const line = modifierHotkeyWorkerBuffer.slice(0, lineEnd).trim();
+    modifierHotkeyWorkerBuffer = modifierHotkeyWorkerBuffer.slice(lineEnd + 1);
+    if (!line.startsWith('HOTKEY ')) continue;
+
+    try {
+      const hotkey = Buffer.from(line.slice('HOTKEY '.length), 'base64').toString('utf8');
+      fireHotkeyDown(hotkey, false);
+      releaseHotkey(hotkey);
+    } catch {
+      // Ignore malformed worker output.
+    }
+  }
+}
+
+function modifierVkGroupsForHotkey(hotkey: string): number[][] | null {
+  const groups = normalizeHotkey(hotkey).split('+').filter(Boolean).map(token => {
+    switch (token) {
+      case 'ctrl':
+      case 'control':
+        return [0x11];
+      case 'alt':
+        return [0x12];
+      case 'shift':
+        return [0x10];
+      case 'win':
+      case 'meta':
+      case 'super':
+        return [0x5b, 0x5c];
+      default:
+        return null;
+    }
+  });
+
+  return groups.length > 0 && groups.every((group): group is number[] => group !== null) ? groups : null;
+}
+
+function buildModifierHotkeyWorkerScript(definitions: Array<{ hotkey: string; groups: number[][] }>): string {
+  const encodedDefinitions = Buffer.from(JSON.stringify(definitions), 'utf8').toString('base64');
+  return String.raw`
+$ErrorActionPreference = "Stop"
+$defsJson = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedDefinitions}'))
+$definitions = @($defsJson | ConvertFrom-Json)
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class WinUtilsModifierKeys {
+  [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vKey);
+  public static bool AnyPressed(int[] keys) {
+    foreach (int key in keys) {
+      if ((GetAsyncKeyState(key) & unchecked((short)0x8000)) != 0) return true;
+    }
+    return false;
+  }
+  public static bool AnyNonModifierPressed() {
+    for (int key = 7; key <= 254; key++) {
+      if (key == 0x10 || key == 0x11 || key == 0x12 || key == 0x5B || key == 0x5C) continue;
+      if ((GetAsyncKeyState(key) & unchecked((short)0x8000)) != 0) return true;
+    }
+    return false;
+  }
+}
+'@
+
+$states = @{}
+foreach ($definition in $definitions) {
+  $states[$definition.hotkey.ToString()] = [pscustomobject]@{ Active = $false; Contaminated = $false }
+}
+
+function Test-DefinitionDown($definition) {
+  foreach ($group in @($definition.groups)) {
+    $keys = [int[]]@($group)
+    if (-not [WinUtilsModifierKeys]::AnyPressed($keys)) { return $false }
+  }
+  return $true
+}
+
+while ($true) {
+  $otherPressed = [WinUtilsModifierKeys]::AnyNonModifierPressed()
+  foreach ($definition in $definitions) {
+    $hotkey = $definition.hotkey.ToString()
+    $state = $states[$hotkey]
+    $isDown = Test-DefinitionDown $definition
+
+    if (-not $state.Active -and $isDown) {
+      $state.Active = $true
+      $state.Contaminated = $false
+      continue
+    }
+
+    if ($state.Active -and $isDown) {
+      if ($otherPressed) { $state.Contaminated = $true }
+      continue
+    }
+
+    if ($state.Active -and -not $isDown) {
+      if (-not $state.Contaminated) {
+        $encoded = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($hotkey))
+        [Console]::Out.WriteLine("HOTKEY " + $encoded)
+        [Console]::Out.Flush()
+      }
+      $state.Active = $false
+      $state.Contaminated = $false
+    }
+  }
+  Start-Sleep -Milliseconds 20
+}
+`;
 }
 
 function startUiohook(module: UiohookModule): void {
@@ -617,6 +766,7 @@ export function unregisterHotkey(hotkey: string): void {
 export function clearHotkeys(): void {
   releaseAllPressedHotkeys();
   callbacks.clear();
+  stopModifierHotkeyWorker();
   if (hooked) {
     unregisterRegisteredHotkeys();
     syncUiohook();
@@ -645,5 +795,6 @@ export function stopHook(): void {
   releaseAllPressedHotkeys();
   unregisterRegisteredHotkeys();
   stopUiohook();
+  stopModifierHotkeyWorker();
   hooked = false;
 }
