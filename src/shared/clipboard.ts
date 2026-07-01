@@ -41,6 +41,7 @@ export interface ClipboardSettings {
   captureImages: boolean;
   imageOcr: boolean;
   quickAccessHotkey: string;
+  retentionDays: number;
   maxEntries: number;
 }
 

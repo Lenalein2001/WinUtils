@@ -7,7 +7,7 @@ import type { AlwaysActiveMode, AlwaysActiveRuleUpdate, AlwaysActiveState } from
 import type { AppSettings } from '../../shared/settings';
 import type { RenameApplyResult, RenamePreview, RenameRule, RenameTransaction, RenameUndoResult, RenamerItem, RenamerLoadOptions, RenamerLoadPathsInput, RenamerPreviewInput } from '../../shared/renamer';
 import type { AppUpdateInfo, UpdateState } from '../../shared/updater';
-import type { ClipboardClearMode, ClipboardQuery, ClipboardState } from '../../shared/clipboard';
+import type { ClipboardClearMode, ClipboardQuery, ClipboardSettings, ClipboardState } from '../../shared/clipboard';
 import type { FileSyncAnalyzeResult, FileSyncApplyResult, FileSyncJobInput, FileSyncState } from '../../shared/fileSync';
 
 declare global {
@@ -100,6 +100,7 @@ declare global {
         setMonitoring: (enabled: boolean) => Promise<ClipboardState>;
         setCaptureImages: (enabled: boolean) => Promise<ClipboardState>;
         setImageOcr: (enabled: boolean) => Promise<ClipboardState>;
+        setRetention: (settings: Pick<ClipboardSettings, 'retentionDays' | 'maxEntries'>) => Promise<ClipboardState>;
         setPinned: (id: string, pinned: boolean) => Promise<ClipboardState>;
         copy: (id: string) => Promise<ClipboardState>;
         delete: (id: string) => Promise<ClipboardState>;

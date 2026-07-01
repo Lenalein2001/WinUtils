@@ -1,5 +1,5 @@
 import { ipcMain } from 'electron';
-import type { ClipboardClearMode, ClipboardQuery } from '../shared/clipboard';
+import type { ClipboardClearMode, ClipboardQuery, ClipboardSettings } from '../shared/clipboard';
 import type { ClipboardManager } from './clipboardManager';
 
 export function registerClipboardIpcHandlers(manager: ClipboardManager): void {
@@ -8,6 +8,7 @@ export function registerClipboardIpcHandlers(manager: ClipboardManager): void {
   ipcMain.handle('clipboard:setMonitoring', async (_event, enabled: boolean) => manager.setMonitoring(enabled));
   ipcMain.handle('clipboard:setCaptureImages', async (_event, enabled: boolean) => manager.setCaptureImages(enabled));
   ipcMain.handle('clipboard:setImageOcr', async (_event, enabled: boolean) => manager.setImageOcr(enabled));
+  ipcMain.handle('clipboard:setRetention', async (_event, settings: Pick<ClipboardSettings, 'retentionDays' | 'maxEntries'>) => manager.setRetention(settings));
   ipcMain.handle('clipboard:setPinned', async (_event, id: string, pinned: boolean) => manager.setPinned(id, pinned));
   ipcMain.handle('clipboard:copy', async (_event, id: string) => manager.copyEntry(id));
   ipcMain.handle('clipboard:delete', async (_event, id: string) => manager.deleteEntry(id));

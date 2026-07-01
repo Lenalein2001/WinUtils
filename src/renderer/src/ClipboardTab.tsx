@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactElement } from 'react';
-import type { ClipboardEntry, ClipboardFilter, ClipboardState } from '../../shared/clipboard';
+import type { ClipboardEntry, ClipboardFilter, ClipboardSettings, ClipboardState } from '../../shared/clipboard';
 
 const filterOptions: Array<{ value: ClipboardFilter; label: string; title: string }> = [
   { value: 'all', label: 'All', title: 'Show every saved clipboard item.' },
@@ -28,6 +28,7 @@ export function ClipboardTab(): ReactElement {
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [retentionDraft, setRetentionDraft] = useState({ maxEntries: '350', retentionDays: '0' });
 
   const entries = state?.entries ?? [];
   const visibleSummary = useMemo(() => {
@@ -56,6 +57,14 @@ export function ClipboardTab(): ReactElement {
 
     return unsubscribe;
   }, [search, filter]);
+
+  useEffect(() => {
+    if (!state) return;
+    setRetentionDraft({
+      maxEntries: String(state.settings.maxEntries),
+      retentionDays: String(state.settings.retentionDays),
+    });
+  }, [state?.settings.maxEntries, state?.settings.retentionDays]);
 
   const loadState = async (cancelled = false, showSpinner = true): Promise<void> => {
     if (showSpinner) setLoading(true);
@@ -106,6 +115,26 @@ export function ClipboardTab(): ReactElement {
   const handleClear = async (mode: 'all' | 'unpinned'): Promise<void> => {
     const label = mode === 'all' ? 'clear all items' : 'clear unpinned items';
     await runAction(label, () => window.winUtils.clipboard.clear(mode).then(() => undefined), mode === 'all' ? 'Clipboard history cleared.' : 'Unpinned clipboard history cleared.');
+  };
+
+  const updateRetention = async (patch: Partial<Pick<ClipboardSettings, 'retentionDays' | 'maxEntries'>>): Promise<void> => {
+    const current = state?.settings;
+    if (!current) return;
+    await runAction(
+      'update retention',
+      () => window.winUtils.clipboard.setRetention({
+        retentionDays: patch.retentionDays ?? current.retentionDays,
+        maxEntries: patch.maxEntries ?? current.maxEntries,
+      }).then(() => undefined),
+      'Clipboard retention updated.',
+    );
+  };
+
+  const applyRetentionDraft = async (): Promise<void> => {
+    await updateRetention({
+      maxEntries: Number(retentionDraft.maxEntries),
+      retentionDays: Number(retentionDraft.retentionDays),
+    });
   };
 
   const registeredHotkeys = state?.registeredQuickAccessHotkeys?.length
@@ -210,6 +239,34 @@ export function ClipboardTab(): ReactElement {
             disabled={busy !== null}
           />
           <span>Image OCR</span>
+        </label>
+        <label className="clipboard-retention-field" title="Maximum unpinned clipboard entries to keep. Use 0 for unlimited.">
+          <span>Max entries</span>
+          <input
+            type="number"
+            className="macro-input macro-input--short"
+            value={retentionDraft.maxEntries}
+            min={0}
+            max={10000}
+            onChange={(event) => setRetentionDraft((draft) => ({ ...draft, maxEntries: event.target.value }))}
+            onBlur={() => void applyRetentionDraft()}
+            onKeyDown={(event) => { if (event.key === 'Enter') void applyRetentionDraft(); }}
+            disabled={busy !== null || !state}
+          />
+        </label>
+        <label className="clipboard-retention-field" title="Delete unpinned clipboard entries older than this many days. Use 0 to keep by age indefinitely.">
+          <span>Max age days</span>
+          <input
+            type="number"
+            className="macro-input macro-input--short"
+            value={retentionDraft.retentionDays}
+            min={0}
+            max={3650}
+            onChange={(event) => setRetentionDraft((draft) => ({ ...draft, retentionDays: event.target.value }))}
+            onBlur={() => void applyRetentionDraft()}
+            onKeyDown={(event) => { if (event.key === 'Enter') void applyRetentionDraft(); }}
+            disabled={busy !== null || !state}
+          />
         </label>
         <div className="clipboard-clear-actions">
           <button className="micro-button" type="button" onClick={() => void handleClear('unpinned')} disabled={busy !== null || !state?.total} title="Delete unpinned clipboard entries while keeping pinned items.">

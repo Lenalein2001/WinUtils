@@ -2021,6 +2021,16 @@ code {
   height: 17px;
 }
 
+.clipboard-settings-strip .clipboard-retention-field {
+  gap: 8px;
+}
+
+.clipboard-retention-field .macro-input {
+  width: 86px;
+  flex: 0 0 86px;
+  min-height: 30px;
+}
+
 .clipboard-list-header {
   color: var(--muted);
 }
@@ -3326,6 +3336,7 @@ code {
   flex-direction: column;
   align-items: center;
   gap: 2px;
+  position: relative;
   padding-top: 4px;
   min-width: 24px;
   cursor: grab;
@@ -3356,28 +3367,28 @@ code {
   line-height: 1;
 }
 
-.action-wrapper--linked,
-.nested-action-row--linked {
-  background-image: linear-gradient(var(--action-link-color), var(--action-link-color));
-  background-repeat: no-repeat;
-  background-size: 2px 100%;
-  background-position: var(--action-link-x, 21px) center;
+.action-wrapper--linked .action-reorder::before,
+.nested-action-row--linked .nested-action-index::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: -12px;
+  bottom: -12px;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: var(--action-link-color);
+  opacity: 0.9;
 }
 
-.nested-action-row--linked {
-  --action-link-x: 24px;
+.action-wrapper--linked-start .action-reorder::before,
+.nested-action-row--linked-start .nested-action-index::before {
+  top: 50%;
 }
 
-.action-wrapper--linked-start,
-.nested-action-row--linked-start {
-  background-size: 2px 50%;
-  background-position: var(--action-link-x, 21px) bottom;
-}
-
-.action-wrapper--linked-end,
-.nested-action-row--linked-end {
-  background-size: 2px 50%;
-  background-position: var(--action-link-x, 21px) top;
+.action-wrapper--linked-end .action-reorder::before,
+.nested-action-row--linked-end .nested-action-index::before {
+  bottom: 50%;
 }
 
 .action-row {
@@ -3504,6 +3515,7 @@ code {
 
 .nested-action-index {
   flex: 0 0 auto;
+  position: relative;
   min-width: 20px;
   padding-top: 10px;
   color: var(--muted);

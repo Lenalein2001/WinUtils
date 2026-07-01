@@ -28,6 +28,7 @@ const DEFAULT_SETTINGS: ClipboardSettings = {
   captureImages: true,
   imageOcr: true,
   quickAccessHotkey: 'Ctrl+Alt+V',
+  retentionDays: 0,
   maxEntries: 350,
 };
 const QUICK_ACCESS_FALLBACK_HOTKEY = 'Ctrl+Shift+Alt+V';
@@ -400,6 +401,15 @@ export class ClipboardManager {
       await this.save(file);
     }
 
+    this.notifyStateChanged();
+    return this.getState();
+  }
+
+  async setRetention(settings: Pick<ClipboardSettings, 'retentionDays' | 'maxEntries'>): Promise<ClipboardState> {
+    const file = await this.load();
+    file.settings = normalizeSettings({ ...file.settings, ...settings });
+    await this.pruneEntries(file);
+    await this.save(file);
     this.notifyStateChanged();
     return this.getState();
   }
@@ -833,8 +843,10 @@ export class ClipboardManager {
 
   private async pruneEntries(file: ClipboardHistoryFile): Promise<void> {
     const pinned = file.entries.filter((entry) => entry.pinned);
-    const unpinned = file.entries.filter((entry) => !entry.pinned);
-    const keep = [...pinned, ...unpinned.slice(0, file.settings.maxEntries)];
+    const retentionCutoff = retentionCutoffTime(file.settings.retentionDays);
+    const unpinned = file.entries.filter((entry) => !entry.pinned && (retentionCutoff === null || Date.parse(entry.copiedAt) >= retentionCutoff));
+    const limitedUnpinned = file.settings.maxEntries > 0 ? unpinned.slice(0, file.settings.maxEntries) : unpinned;
+    const keep = [...pinned, ...limitedUnpinned];
     const keepIds = new Set(keep.map((entry) => entry.id));
     const removed = file.entries.filter((entry) => !keepIds.has(entry.id));
 
@@ -888,6 +900,11 @@ export class ClipboardManager {
         entries,
       };
       this.cache = loadedFile;
+      const originalEntryCount = this.cache.entries.length;
+      await this.pruneEntries(this.cache);
+      if (this.cache.entries.length !== originalEntryCount) {
+        await this.save(this.cache);
+      }
       return this.cache;
     } catch {
       this.cache = { version: 1, settings: DEFAULT_SETTINGS, entries: [] };
@@ -913,8 +930,24 @@ function normalizeSettings(settings: Partial<ClipboardSettings> | undefined): Cl
     captureImages: settings?.captureImages ?? DEFAULT_SETTINGS.captureImages,
     imageOcr: settings?.imageOcr ?? DEFAULT_SETTINGS.imageOcr,
     quickAccessHotkey: normalizeQuickAccessHotkey(settings?.quickAccessHotkey),
-    maxEntries: Number.isFinite(settings?.maxEntries) ? Math.max(50, Math.min(Number(settings?.maxEntries), 1000)) : DEFAULT_SETTINGS.maxEntries,
+    retentionDays: normalizeRetentionDays(settings?.retentionDays),
+    maxEntries: normalizeMaxEntries(settings?.maxEntries),
   };
+}
+
+function normalizeRetentionDays(value: number | undefined): number {
+  const days = Math.trunc(Number(value));
+  return Number.isFinite(days) ? Math.max(0, Math.min(days, 3650)) : DEFAULT_SETTINGS.retentionDays;
+}
+
+function normalizeMaxEntries(value: number | undefined): number {
+  const entries = Math.trunc(Number(value));
+  return Number.isFinite(entries) ? Math.max(0, Math.min(entries, 10_000)) : DEFAULT_SETTINGS.maxEntries;
+}
+
+function retentionCutoffTime(retentionDays: number): number | null {
+  if (retentionDays <= 0) return null;
+  return Date.now() - retentionDays * 24 * 60 * 60 * 1000;
 }
 
 function buildQuickAccessCandidates(preferredHotkey: string): string[] {
