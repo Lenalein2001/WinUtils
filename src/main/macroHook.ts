@@ -36,6 +36,7 @@ const registeredAccelerators = new Set<string>();
 const electronRegisteredHotkeys = new Set<string>();
 const uiohookCombos = new Map<string, UiohookCombo>();
 const pressedHotkeys = new Set<string>();
+const pendingStandaloneModifierHotkeys = new Set<string>();
 
 function normalizeHotkey(raw: string): string {
   return raw.trim().toLowerCase().replace(/\s+/g, '');
@@ -473,15 +474,30 @@ function toUiohookKeycode(token: string, keys: Record<string, number>): number |
 }
 
 function handleUiohookKeyDown(event: UiohookKeyboardEvent): void {
+  let matchedStandaloneModifier = false;
+
   for (const combo of uiohookCombos.values()) {
     if (!matchesCombo(event, combo)) continue;
+
+    if (isStandaloneModifierCombo(combo)) {
+      pendingStandaloneModifierHotkeys.add(combo.hotkey);
+      matchedStandaloneModifier = true;
+      continue;
+    }
+
     if (pressedHotkeys.has(combo.hotkey)) return;
+
+    pendingStandaloneModifierHotkeys.clear();
 
     if (!electronRegisteredHotkeys.has(combo.hotkey)) {
       pressedHotkeys.add(combo.hotkey);
       fireHotkeyDown(combo.hotkey, false);
     }
     return;
+  }
+
+  if (!matchedStandaloneModifier && pendingStandaloneModifierHotkeys.size > 0 && !isKnownModifierKeycode(event.keycode)) {
+    pendingStandaloneModifierHotkeys.clear();
   }
 }
 
@@ -491,6 +507,31 @@ function handleUiohookKeyUp(event: UiohookKeyboardEvent): void {
     if (!combo.keycodes.includes(event.keycode) && !combo.modifierKeycodes.includes(event.keycode)) continue;
     releaseHotkey(combo.hotkey);
   }
+
+  for (const combo of uiohookCombos.values()) {
+    if (!pendingStandaloneModifierHotkeys.has(combo.hotkey)) continue;
+    if (!combo.keycodes.includes(event.keycode)) continue;
+
+    pendingStandaloneModifierHotkeys.delete(combo.hotkey);
+    if (electronRegisteredHotkeys.has(combo.hotkey)) continue;
+
+    pressedHotkeys.add(combo.hotkey);
+    fireHotkeyDown(combo.hotkey, false);
+    releaseHotkey(combo.hotkey);
+  }
+}
+
+function isStandaloneModifierCombo(combo: UiohookCombo): boolean {
+  return combo.triggerModifier !== null;
+}
+
+function isKnownModifierKeycode(keycode: number): boolean {
+  for (const combo of uiohookCombos.values()) {
+    if (combo.modifierKeycodes.includes(keycode)) return true;
+    if (isStandaloneModifierCombo(combo) && combo.keycodes.includes(keycode)) return true;
+  }
+
+  return false;
 }
 
 function matchesCombo(event: UiohookKeyboardEvent, combo: UiohookCombo): boolean {
@@ -530,6 +571,7 @@ function releaseHotkey(hotkey: string): void {
 }
 
 function releaseAllPressedHotkeys(): void {
+  pendingStandaloneModifierHotkeys.clear();
   for (const hotkey of [...pressedHotkeys]) {
     releaseHotkey(hotkey);
   }
@@ -543,6 +585,7 @@ export function registerHotkey(hotkey: string, callback: (() => void) | HotkeyCa
 
 export function unregisterHotkey(hotkey: string): void {
   const normalized = normalizeHotkey(hotkey);
+  pendingStandaloneModifierHotkeys.delete(normalized);
   releaseHotkey(normalized);
   callbacks.delete(normalized);
   if (hooked) registerAllHotkeys();
