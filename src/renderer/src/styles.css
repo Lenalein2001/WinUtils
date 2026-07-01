@@ -3356,6 +3356,30 @@ code {
   line-height: 1;
 }
 
+.action-wrapper--linked,
+.nested-action-row--linked {
+  background-image: linear-gradient(var(--action-link-color), var(--action-link-color));
+  background-repeat: no-repeat;
+  background-size: 2px 100%;
+  background-position: var(--action-link-x, 21px) center;
+}
+
+.nested-action-row--linked {
+  --action-link-x: 24px;
+}
+
+.action-wrapper--linked-start,
+.nested-action-row--linked-start {
+  background-size: 2px 50%;
+  background-position: var(--action-link-x, 21px) bottom;
+}
+
+.action-wrapper--linked-end,
+.nested-action-row--linked-end {
+  background-size: 2px 50%;
+  background-position: var(--action-link-x, 21px) top;
+}
+
 .action-row {
   flex: 1;
   position: relative;
@@ -3369,26 +3393,6 @@ code {
 .action-row--linked {
   border-left-color: var(--action-link-color);
   box-shadow: inset 2px 0 0 var(--action-link-color);
-}
-
-.action-row--linked::before {
-  content: '';
-  position: absolute;
-  left: -9px;
-  top: -10px;
-  bottom: -10px;
-  width: 2px;
-  border-radius: 999px;
-  background: var(--action-link-color);
-  opacity: 0.85;
-}
-
-.action-row--linked-start::before {
-  top: 50%;
-}
-
-.action-row--linked-end::before {
-  bottom: 50%;
 }
 
 .action-row--linked::after {

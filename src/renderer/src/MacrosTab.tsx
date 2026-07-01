@@ -522,6 +522,22 @@ function HotkeyInput({
   allowModifierKeys?: boolean;
 }): ReactElement {
   const [capturing, setCapturing] = useState(false);
+  const [pendingModifierHotkey, setPendingModifierHotkey] = useState<string | null>(null);
+
+  const finishCapture = (nextValue: string) => {
+    onChange(nextValue);
+    setPendingModifierHotkey(null);
+    setCapturing(false);
+  };
+
+  const modifierPartsForEvent = (event: React.KeyboardEvent<HTMLInputElement>, capturedKey: string): string[] => {
+    const parts: string[] = [];
+    if (event.ctrlKey || capturedKey === 'Ctrl') parts.push('Ctrl');
+    if (event.altKey || capturedKey === 'Alt') parts.push('Alt');
+    if (event.shiftKey || capturedKey === 'Shift') parts.push('Shift');
+    if (event.metaKey || capturedKey === 'Win') parts.push('Win');
+    return parts;
+  };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
     e.preventDefault();
@@ -530,27 +546,41 @@ function HotkeyInput({
     const capturedKey = captureKeyName(e);
     if (isCapturedModifierKey(capturedKey) && !allowModifierKeys) return;
 
-    const parts: string[] = [];
-    if (e.ctrlKey && capturedKey !== 'Ctrl') parts.push('Ctrl');
-    if (e.altKey && capturedKey !== 'Alt') parts.push('Alt');
-    if (e.shiftKey && capturedKey !== 'Shift') parts.push('Shift');
-    if (e.metaKey && capturedKey !== 'Win') parts.push('Win');
+    if (isCapturedModifierKey(capturedKey)) {
+      setPendingModifierHotkey(modifierPartsForEvent(e, capturedKey).join('+'));
+      return;
+    }
 
+    const parts = modifierPartsForEvent(e, capturedKey);
     parts.push(capturedKey);
+    finishCapture(parts.join('+'));
+  };
 
-    onChange(parts.join('+'));
-    setCapturing(false);
+  const handleKeyUp = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (pendingModifierHotkey && isCapturedModifierKey(captureKeyName(e))) {
+      finishCapture(pendingModifierHotkey);
+    }
   };
 
   return (
     <input
       className={`macro-input${capturing ? ' macro-input--capturing' : ''}`}
-      value={capturing ? '' : value}
+      value={capturing ? pendingModifierHotkey ?? '' : value}
       placeholder={capturing ? 'Press keys…' : placeholder}
       readOnly={!capturing}
-      onFocus={() => setCapturing(true)}
-      onBlur={() => setCapturing(false)}
+      onFocus={() => {
+        setPendingModifierHotkey(null);
+        setCapturing(true);
+      }}
+      onBlur={() => {
+        setPendingModifierHotkey(null);
+        setCapturing(false);
+      }}
       onKeyDown={capturing ? handleKeyDown : undefined}
+      onKeyUp={capturing ? handleKeyUp : undefined}
       onChange={() => {}}
       title={title}
     />
@@ -602,10 +632,11 @@ function ActionEditor({
     patch({ pressType } as Partial<MacroAction>, insertAfter);
   };
 
-  const pairClass = pairDecoration ? ` action-row--linked action-row--linked-${pairDecoration.role}` : '';
+  const anchorDecoration = pairDecoration?.role === 'middle' ? undefined : pairDecoration;
+  const pairClass = anchorDecoration ? ` action-row--linked action-row--linked-${anchorDecoration.role}` : '';
 
   return (
-    <div className={`action-row${action.enabled ? '' : ' action-row--disabled'}${pairClass}`} style={actionPairStyle(pairDecoration)} title={pairDecoration?.label}>
+    <div className={`action-row${action.enabled ? '' : ' action-row--disabled'}${pairClass}`} style={actionPairStyle(anchorDecoration)} title={anchorDecoration?.label}>
       <div className="action-row-header">
         <span className="action-type-badge" title={macroActionDescriptions[action.type]}>{action.type}</span>
         <div className="action-row-controls">
@@ -903,13 +934,13 @@ function NestedActionsEditor({
       <div className="nested-actions-list">
         {actions.length === 0 ? <div className="empty-state empty-state--compact">{emptyText}</div> : null}
         {actions.map((nestedAction, index) => (
-          <div key={nestedAction.id} className={`nested-action-row${pairDecorations.has(nestedAction.id) ? ' nested-action-row--linked' : ''}`} style={actionPairStyle(pairDecorations.get(nestedAction.id))}>
+          <div key={nestedAction.id} className={`nested-action-row${pairDecorations.has(nestedAction.id) ? ` nested-action-row--linked nested-action-row--linked-${pairDecorations.get(nestedAction.id)?.role}` : ''}`} style={actionPairStyle(pairDecorations.get(nestedAction.id))}>
             <span className="nested-action-index">{index + 1}</span>
             <ActionEditor
               action={nestedAction}
               onChange={(updated, insertAfter) => updateAction(index, updated, insertAfter)}
               onDelete={() => deleteAction(index)}
-              pairDecoration={pairDecorations.get(nestedAction.id)}
+              pairDecoration={actionPairRole(nestedAction) ? pairDecorations.get(nestedAction.id) : undefined}
             />
           </div>
         ))}
@@ -1594,7 +1625,7 @@ function MacroEditor({
         {macro.actions.map((action, idx) => (
           <div
             key={action.id}
-            className={`action-wrapper${dropIndex === idx ? ' action-wrapper--drop-before' : ''}${dropIndex === idx + 1 ? ' action-wrapper--drop-after' : ''}${pairDecorations.has(action.id) ? ' action-wrapper--linked' : ''}`}
+            className={`action-wrapper${dropIndex === idx ? ' action-wrapper--drop-before' : ''}${dropIndex === idx + 1 ? ' action-wrapper--drop-after' : ''}${pairDecorations.has(action.id) ? ` action-wrapper--linked action-wrapper--linked-${pairDecorations.get(action.id)?.role}` : ''}`}
             style={actionPairStyle(pairDecorations.get(action.id))}
             draggable
             onDragStart={() => {
@@ -1632,7 +1663,7 @@ function MacroEditor({
               action={action}
               onChange={(updated, insertAfter) => updateAction(idx, updated, insertAfter)}
               onDelete={() => deleteAction(idx)}
-              pairDecoration={pairDecorations.get(action.id)}
+              pairDecoration={actionPairRole(action) ? pairDecorations.get(action.id) : undefined}
             />
           </div>
         ))}
