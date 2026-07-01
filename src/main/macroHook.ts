@@ -530,12 +530,13 @@ public static class WinUtilsModifierKeys {
     }
     return false;
   }
-  public static bool AnyNonModifierPressed() {
+  public static int[] PressedNonModifierKeys() {
+    System.Collections.Generic.List<int> keys = new System.Collections.Generic.List<int>();
     for (int key = 7; key <= 254; key++) {
       if (key == 0x10 || key == 0x11 || key == 0x12 || key == 0x5B || key == 0x5C) continue;
-      if ((GetAsyncKeyState(key) & unchecked((short)0x8000)) != 0) return true;
+      if ((GetAsyncKeyState(key) & unchecked((short)0x8000)) != 0) keys.Add(key);
     }
-    return false;
+    return keys.ToArray();
   }
 }
 '@
@@ -569,7 +570,7 @@ foreach ($definition in $definitions) {
 
 $states = @{}
 foreach ($definition in $resolvedDefinitions) {
-  $states[$definition.hotkey.ToString()] = [pscustomobject]@{ Active = $false; Contaminated = $false }
+  $states[$definition.hotkey.ToString()] = [pscustomobject]@{ Active = $false; Contaminated = $false; BaselineKeys = [int[]]@() }
 }
 
 function Test-DefinitionDown($definition) {
@@ -580,8 +581,18 @@ function Test-DefinitionDown($definition) {
   return $true
 }
 
+function Test-NewNonModifierPressed($baselineKeys) {
+  $baseline = @{}
+  foreach ($key in @($baselineKeys)) { $baseline[[int]$key] = $true }
+
+  foreach ($key in @([WinUtilsModifierKeys]::PressedNonModifierKeys())) {
+    if (-not $baseline.ContainsKey([int]$key)) { return $true }
+  }
+
+  return $false
+}
+
 while ($true) {
-  $otherPressed = [WinUtilsModifierKeys]::AnyNonModifierPressed()
   foreach ($definition in $resolvedDefinitions) {
     $hotkey = $definition.hotkey.ToString()
     $state = $states[$hotkey]
@@ -591,6 +602,7 @@ while ($true) {
     if (-not $state.Active -and $isDown) {
       $state.Active = $true
       $state.Contaminated = $false
+      $state.BaselineKeys = [int[]]@([WinUtilsModifierKeys]::PressedNonModifierKeys())
       if (-not $fireOnRelease) {
         $encoded = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($hotkey))
         [Console]::Out.WriteLine("HOTKEY " + $encoded)
@@ -600,7 +612,7 @@ while ($true) {
     }
 
     if ($state.Active -and $isDown) {
-      if ($fireOnRelease -and $otherPressed) { $state.Contaminated = $true }
+      if ($fireOnRelease -and (Test-NewNonModifierPressed $state.BaselineKeys)) { $state.Contaminated = $true }
       continue
     }
 
@@ -612,6 +624,7 @@ while ($true) {
       }
       $state.Active = $false
       $state.Contaminated = $false
+      $state.BaselineKeys = [int[]]@()
     }
   }
   Start-Sleep -Milliseconds 20
