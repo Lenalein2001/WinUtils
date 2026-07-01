@@ -3531,12 +3531,40 @@ code {
   gap: 8px;
 }
 
+.nested-actions-empty-drop {
+  border: 1px dashed transparent;
+}
+
+.nested-actions-empty-drop--active {
+  border-color: rgba(69, 184, 255, 0.6);
+  background: rgba(69, 184, 255, 0.08);
+}
+
 .nested-action-row {
   display: flex;
   align-items: flex-start;
   gap: 6px;
   min-width: 0;
   position: relative;
+}
+
+.nested-action-row--drop-before {
+  box-shadow: 0 -2px 0 var(--accent);
+}
+
+.nested-action-row--drop-after {
+  box-shadow: 0 2px 0 var(--accent);
+}
+
+.nested-action-drop-end {
+  height: 2px;
+  margin-left: 26px;
+  border-radius: 999px;
+}
+
+.nested-action-drop-end--active {
+  background: var(--accent);
+  box-shadow: 0 0 0 1px rgba(69, 184, 255, 0.2);
 }
 
 .nested-action-index {

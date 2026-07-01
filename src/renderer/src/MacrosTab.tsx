@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactElement } from 'react';
+import type { CSSProperties, DragEvent, ReactElement } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { normalizeMacroPlayback } from '../../shared/macro';
 import type {
@@ -236,6 +236,155 @@ interface MacroPreset {
   label: string;
   description: string;
   createActions: (options: MacroPresetOptions) => MacroAction[];
+}
+
+const ROOT_ACTION_LIST_ID = 'root';
+
+type NestedActionListBranch = 'actions' | 'then' | 'else';
+
+interface ActionDragSource {
+  actionId: string;
+  listId: string;
+  index: number;
+}
+
+interface ActionDropTarget {
+  listId: string;
+  index: number;
+}
+
+interface ActionDragController {
+  dragSource: ActionDragSource | null;
+  dropTarget: ActionDropTarget | null;
+  startDrag: (source: ActionDragSource) => void;
+  previewDrop: (target: ActionDropTarget | null) => void;
+  dropAction: (target: ActionDropTarget) => void;
+  endDrag: () => void;
+}
+
+function nestedActionListId(actionId: string, branch: NestedActionListBranch): string {
+  return `${actionId}:${branch}`;
+}
+
+function insertActionAt(actions: MacroAction[], index: number, action: MacroAction): MacroAction[] {
+  const next = [...actions];
+  next.splice(Math.max(0, Math.min(index, next.length)), 0, action);
+  return next;
+}
+
+function removeActionById(actions: MacroAction[], actionId: string): { actions: MacroAction[]; removed: MacroAction | null } {
+  const directIndex = actions.findIndex(action => action.id === actionId);
+  if (directIndex >= 0) {
+    const next = [...actions];
+    const [removed] = next.splice(directIndex, 1);
+    return { actions: next, removed };
+  }
+
+  for (let index = 0; index < actions.length; index += 1) {
+    const action = actions[index];
+    if (action.type === 'repeat') {
+      const result = removeActionById(action.actions, actionId);
+      if (result.removed) {
+        const next = [...actions];
+        next[index] = { ...action, actions: result.actions };
+        return { actions: next, removed: result.removed };
+      }
+    }
+
+    if (action.type === 'if') {
+      const thenResult = removeActionById(action.thenActions, actionId);
+      if (thenResult.removed) {
+        const next = [...actions];
+        next[index] = { ...action, thenActions: thenResult.actions };
+        return { actions: next, removed: thenResult.removed };
+      }
+
+      const elseResult = removeActionById(action.elseActions, actionId);
+      if (elseResult.removed) {
+        const next = [...actions];
+        next[index] = { ...action, elseActions: elseResult.actions };
+        return { actions: next, removed: elseResult.removed };
+      }
+    }
+  }
+
+  return { actions, removed: null };
+}
+
+function insertActionIntoList(actions: MacroAction[], listId: string, index: number, actionToInsert: MacroAction): { actions: MacroAction[]; inserted: boolean } {
+  if (listId === ROOT_ACTION_LIST_ID) return { actions: insertActionAt(actions, index, actionToInsert), inserted: true };
+
+  for (let actionIndex = 0; actionIndex < actions.length; actionIndex += 1) {
+    const action = actions[actionIndex];
+
+    if (action.type === 'repeat') {
+      if (listId === nestedActionListId(action.id, 'actions')) {
+        const next = [...actions];
+        next[actionIndex] = { ...action, actions: insertActionAt(action.actions, index, actionToInsert) };
+        return { actions: next, inserted: true };
+      }
+
+      const result = insertActionIntoList(action.actions, listId, index, actionToInsert);
+      if (result.inserted) {
+        const next = [...actions];
+        next[actionIndex] = { ...action, actions: result.actions };
+        return { actions: next, inserted: true };
+      }
+    }
+
+    if (action.type === 'if') {
+      if (listId === nestedActionListId(action.id, 'then')) {
+        const next = [...actions];
+        next[actionIndex] = { ...action, thenActions: insertActionAt(action.thenActions, index, actionToInsert) };
+        return { actions: next, inserted: true };
+      }
+
+      if (listId === nestedActionListId(action.id, 'else')) {
+        const next = [...actions];
+        next[actionIndex] = { ...action, elseActions: insertActionAt(action.elseActions, index, actionToInsert) };
+        return { actions: next, inserted: true };
+      }
+
+      const thenResult = insertActionIntoList(action.thenActions, listId, index, actionToInsert);
+      if (thenResult.inserted) {
+        const next = [...actions];
+        next[actionIndex] = { ...action, thenActions: thenResult.actions };
+        return { actions: next, inserted: true };
+      }
+
+      const elseResult = insertActionIntoList(action.elseActions, listId, index, actionToInsert);
+      if (elseResult.inserted) {
+        const next = [...actions];
+        next[actionIndex] = { ...action, elseActions: elseResult.actions };
+        return { actions: next, inserted: true };
+      }
+    }
+  }
+
+  return { actions, inserted: false };
+}
+
+function moveActionInTree(actions: MacroAction[], source: ActionDragSource, target: ActionDropTarget): MacroAction[] {
+  let targetIndex = target.index;
+  if (source.listId === target.listId && targetIndex > source.index) targetIndex -= 1;
+  if (source.listId === target.listId && targetIndex === source.index) return actions;
+
+  const removal = removeActionById(actions, source.actionId);
+  if (!removal.removed) return actions;
+
+  const insertion = insertActionIntoList(removal.actions, target.listId, targetIndex, removal.removed);
+  return insertion.inserted ? insertion.actions : actions;
+}
+
+function dropIndexForEvent(event: DragEvent<HTMLElement>, index: number): number {
+  const rect = event.currentTarget.getBoundingClientRect();
+  return event.clientY < rect.top + rect.height / 2 ? index : index + 1;
+}
+
+function actionDropClass(baseClass: string, listId: string, index: number, dropTarget: ActionDropTarget | null): string {
+  const before = dropTarget?.listId === listId && dropTarget.index === index;
+  const after = dropTarget?.listId === listId && dropTarget.index === index + 1;
+  return `${baseClass}${before ? ` ${baseClass}--drop-before` : ''}${after ? ` ${baseClass}--drop-after` : ''}`;
 }
 
 type AutoClickerTimingMode = 'delay' | 'cps';
@@ -667,11 +816,13 @@ function ActionEditor({
   onChange,
   onDelete,
   pairDecoration,
+  dragController,
 }: {
   action: MacroAction;
   onChange: (a: MacroAction, insertAfter?: MacroAction[]) => void;
   onDelete: () => void;
   pairDecoration?: ActionPairDecoration;
+  dragController: ActionDragController;
 }): ReactElement {
   const patch = (updates: Partial<MacroAction>, insertAfter?: MacroAction[]) =>
     onChange({ ...action, ...updates } as MacroAction, insertAfter);
@@ -871,8 +1022,10 @@ function ActionEditor({
           <NestedActionsEditor
             label="Repeated actions"
             emptyText="No repeated actions yet."
+            listId={nestedActionListId(action.id, 'actions')}
             actions={(action as RepeatAction).actions}
             onChange={actions => patch({ actions } as Partial<MacroAction>)}
+            dragController={dragController}
           />
         </div>
       )}
@@ -941,14 +1094,18 @@ function ActionEditor({
           <NestedActionsEditor
             label="Then"
             emptyText="No Then actions yet."
+            listId={nestedActionListId(action.id, 'then')}
             actions={(action as IfAction).thenActions}
             onChange={thenActions => patch({ thenActions } as Partial<MacroAction>)}
+            dragController={dragController}
           />
           <NestedActionsEditor
             label="Else"
             emptyText="No Else actions yet."
+            listId={nestedActionListId(action.id, 'else')}
             actions={(action as IfAction).elseActions}
             onChange={elseActions => patch({ elseActions } as Partial<MacroAction>)}
+            dragController={dragController}
           />
         </div>
       )}
@@ -959,16 +1116,21 @@ function ActionEditor({
 function NestedActionsEditor({
   label,
   emptyText,
+  listId,
   actions,
   onChange,
+  dragController,
 }: {
   label: string;
   emptyText: string;
+  listId: string;
   actions: MacroAction[];
   onChange: (actions: MacroAction[]) => void;
+  dragController: ActionDragController;
 }): ReactElement {
   const pairDecorations = buildActionPairDecorations(actions);
   const [hoveredPairIndex, setHoveredPairIndex] = useState<number | null>(null);
+  const listDropActive = dragController.dropTarget?.listId === listId;
 
   const updateAction = (index: number, updated: MacroAction, insertAfter?: MacroAction[]) => {
     onChange(updateActionAt(actions, index, updated, insertAfter));
@@ -991,16 +1153,51 @@ function NestedActionsEditor({
         </div>
       </div>
       <div className="nested-actions-list">
-        {actions.length === 0 ? <div className="empty-state empty-state--compact">{emptyText}</div> : null}
+        {actions.length === 0 ? (
+          <div
+            className={`empty-state empty-state--compact nested-actions-empty-drop${listDropActive ? ' nested-actions-empty-drop--active' : ''}`}
+            onDragOver={event => {
+              event.preventDefault();
+              event.stopPropagation();
+              dragController.previewDrop({ listId, index: 0 });
+            }}
+            onDrop={event => {
+              event.preventDefault();
+              event.stopPropagation();
+              dragController.dropAction({ listId, index: 0 });
+            }}
+          >{emptyText}</div>
+        ) : null}
         {actions.map((nestedAction, index) => {
           const decoration = pairDecorations.get(nestedAction.id);
           return (
           <div
             key={nestedAction.id}
-            className={`nested-action-row${decoration ? ` nested-action-row--linked nested-action-row--linked-${decoration.role}${hoveredPairIndex === decoration.pairIndex ? ' nested-action-row--linked-hover' : ''}` : ''}`}
+            className={`${actionDropClass('nested-action-row', listId, index, dragController.dropTarget)}${decoration ? ` nested-action-row--linked nested-action-row--linked-${decoration.role}${hoveredPairIndex === decoration.pairIndex ? ' nested-action-row--linked-hover' : ''}` : ''}`}
             style={actionPairStyle(decoration)}
+            draggable
             onMouseEnter={() => setHoveredPairIndex(decoration?.pairIndex ?? null)}
             onMouseLeave={() => setHoveredPairIndex(null)}
+            onDragStart={event => {
+              event.stopPropagation();
+              event.dataTransfer.effectAllowed = 'move';
+              event.dataTransfer.setData('text/plain', nestedAction.id);
+              dragController.startDrag({ actionId: nestedAction.id, listId, index });
+            }}
+            onDragOver={event => {
+              event.preventDefault();
+              event.stopPropagation();
+              dragController.previewDrop({ listId, index: dropIndexForEvent(event, index) });
+            }}
+            onDrop={event => {
+              event.preventDefault();
+              event.stopPropagation();
+              dragController.dropAction({ listId, index: dropIndexForEvent(event, index) });
+            }}
+            onDragEnd={event => {
+              event.stopPropagation();
+              dragController.endDrag();
+            }}
           >
             <span className="nested-action-index">{index + 1}</span>
             <ActionEditor
@@ -1008,10 +1205,26 @@ function NestedActionsEditor({
               onChange={(updated, insertAfter) => updateAction(index, updated, insertAfter)}
               onDelete={() => deleteAction(index)}
               pairDecoration={actionPairRole(nestedAction) ? decoration : undefined}
+              dragController={dragController}
             />
           </div>
           );
         })}
+        {actions.length > 0 ? (
+          <div
+            className={`nested-action-drop-end${listDropActive && dragController.dropTarget?.index === actions.length ? ' nested-action-drop-end--active' : ''}`}
+            onDragOver={event => {
+              event.preventDefault();
+              event.stopPropagation();
+              dragController.previewDrop({ listId, index: actions.length });
+            }}
+            onDrop={event => {
+              event.preventDefault();
+              event.stopPropagation();
+              dragController.dropAction({ listId, index: actions.length });
+            }}
+          />
+        ) : null}
       </div>
     </div>
   );
@@ -1421,8 +1634,8 @@ function MacroEditor({
   onRun: () => Promise<void>;
   running: boolean;
 }): ReactElement {
-  const [dragIndex, setDragIndex] = useState<number | null>(null);
-  const [dropIndex, setDropIndex] = useState<number | null>(null);
+  const [dragSource, setDragSource] = useState<ActionDragSource | null>(null);
+  const [dropTarget, setDropTarget] = useState<ActionDropTarget | null>(null);
   const [selectedPresetId, setSelectedPresetId] = useState(macroPresets[0]?.id ?? '');
   const [autoClickerOptions, setAutoClickerOptions] = useState<AutoClickerPresetOptions>(DEFAULT_AUTO_CLICKER_OPTIONS);
   const [targetRunTimeMs, setTargetRunTimeMs] = useState(100);
@@ -1467,12 +1680,27 @@ function MacroEditor({
     onChange({ ...macro, actions: convertActionPairsToPress(macro.actions) });
   };
 
-  const moveAction = (from: number, to: number) => {
-    if (to < 0 || to >= macro.actions.length || from === to) return;
-    const actions = [...macro.actions];
-    const [item] = actions.splice(from, 1);
-    actions.splice(to, 0, item);
-    onChange({ ...macro, actions });
+  const endActionDrag = () => {
+    setDragSource(null);
+    setDropTarget(null);
+  };
+
+  const dragController: ActionDragController = {
+    dragSource,
+    dropTarget,
+    startDrag: source => {
+      setDragSource(source);
+      setDropTarget({ listId: source.listId, index: source.index });
+    },
+    previewDrop: target => setDropTarget(target),
+    dropAction: target => {
+      if (dragSource) {
+        const actions = moveActionInTree(macro.actions, dragSource, target);
+        if (actions !== macro.actions) onChange({ ...macro, actions });
+      }
+      endActionDrag();
+    },
+    endDrag: endActionDrag,
   };
 
   return (
@@ -1690,44 +1918,42 @@ function MacroEditor({
 
       <div className="macro-actions-list">
         {macro.actions.length === 0 && (
-          <div className="empty-state">No actions yet. Add one above.</div>
+          <div
+            className={`empty-state nested-actions-empty-drop${dropTarget?.listId === ROOT_ACTION_LIST_ID ? ' nested-actions-empty-drop--active' : ''}`}
+            onDragOver={event => {
+              event.preventDefault();
+              dragController.previewDrop({ listId: ROOT_ACTION_LIST_ID, index: 0 });
+            }}
+            onDrop={event => {
+              event.preventDefault();
+              dragController.dropAction({ listId: ROOT_ACTION_LIST_ID, index: 0 });
+            }}
+          >No actions yet. Add one above.</div>
         )}
         {macro.actions.map((action, idx) => {
           const decoration = pairDecorations.get(action.id);
           return (
           <div
             key={action.id}
-            className={`action-wrapper${dropIndex === idx ? ' action-wrapper--drop-before' : ''}${dropIndex === idx + 1 ? ' action-wrapper--drop-after' : ''}${decoration ? ` action-wrapper--linked action-wrapper--linked-${decoration.role}${hoveredPairIndex === decoration.pairIndex ? ' action-wrapper--linked-hover' : ''}` : ''}`}
+            className={`${actionDropClass('action-wrapper', ROOT_ACTION_LIST_ID, idx, dropTarget)}${decoration ? ` action-wrapper--linked action-wrapper--linked-${decoration.role}${hoveredPairIndex === decoration.pairIndex ? ' action-wrapper--linked-hover' : ''}` : ''}`}
             style={actionPairStyle(decoration)}
             draggable
             onMouseEnter={() => setHoveredPairIndex(decoration?.pairIndex ?? null)}
             onMouseLeave={() => setHoveredPairIndex(null)}
-            onDragStart={() => {
-              setDragIndex(idx);
-              setDropIndex(idx);
+            onDragStart={event => {
+              event.dataTransfer.effectAllowed = 'move';
+              event.dataTransfer.setData('text/plain', action.id);
+              dragController.startDrag({ actionId: action.id, listId: ROOT_ACTION_LIST_ID, index: idx });
             }}
             onDragOver={(event) => {
               event.preventDefault();
-              const rect = event.currentTarget.getBoundingClientRect();
-              const before = event.clientY < rect.top + rect.height / 2;
-              setDropIndex(before ? idx : idx + 1);
+              dragController.previewDrop({ listId: ROOT_ACTION_LIST_ID, index: dropIndexForEvent(event, idx) });
             }}
             onDrop={(event) => {
               event.preventDefault();
-              if (dragIndex !== null && dropIndex !== null) {
-                let target = dropIndex;
-                if (target > dragIndex) {
-                  target -= 1;
-                }
-                moveAction(dragIndex, target);
-              }
-              setDragIndex(null);
-              setDropIndex(null);
+              dragController.dropAction({ listId: ROOT_ACTION_LIST_ID, index: dropIndexForEvent(event, idx) });
             }}
-            onDragEnd={() => {
-              setDragIndex(null);
-              setDropIndex(null);
-            }}
+            onDragEnd={dragController.endDrag}
           >
             <div className="action-reorder" title="Drag to reorder">
               <span className="action-drag-handle">⋮⋮</span>
@@ -1738,11 +1964,24 @@ function MacroEditor({
               onChange={(updated, insertAfter) => updateAction(idx, updated, insertAfter)}
               onDelete={() => deleteAction(idx)}
               pairDecoration={actionPairRole(action) ? decoration : undefined}
+              dragController={dragController}
             />
           </div>
           );
         })}
-        {macro.actions.length > 0 ? <div className={`action-drop-end${dropIndex === macro.actions.length ? ' action-drop-end--active' : ''}`} /> : null}
+        {macro.actions.length > 0 ? (
+          <div
+            className={`action-drop-end${dropTarget?.listId === ROOT_ACTION_LIST_ID && dropTarget.index === macro.actions.length ? ' action-drop-end--active' : ''}`}
+            onDragOver={event => {
+              event.preventDefault();
+              dragController.previewDrop({ listId: ROOT_ACTION_LIST_ID, index: macro.actions.length });
+            }}
+            onDrop={event => {
+              event.preventDefault();
+              dragController.dropAction({ listId: ROOT_ACTION_LIST_ID, index: macro.actions.length });
+            }}
+          />
+        ) : null}
       </div>
     </div>
   );
