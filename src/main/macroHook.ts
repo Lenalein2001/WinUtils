@@ -26,6 +26,8 @@ interface UiohookCombo {
   triggerModifier: 'ctrl' | 'alt' | 'shift' | 'meta' | null;
 }
 
+type HotkeyVkGroup = number[] | { char: string };
+
 const nodeRequire = createRequire(import.meta.url);
 
 let hooked = false;
@@ -89,7 +91,13 @@ function toElectronAccelerator(hotkey: string): string | null {
       continue;
     }
 
-    if (token.length === 1) {
+    const physicalKey = toPhysicalAcceleratorKey(token);
+    if (physicalKey) {
+      key = physicalKey;
+      continue;
+    }
+
+    if (/^[a-z0-9]$/.test(token)) {
       key = token.toUpperCase();
       continue;
     }
@@ -193,6 +201,23 @@ function toNumpadAcceleratorKey(token: string): string | null {
   }
 }
 
+function toPhysicalAcceleratorKey(token: string): string | null {
+  switch (token) {
+    case 'semicolon': return ';';
+    case 'equal': return '=';
+    case 'comma': return ',';
+    case 'minus': return '-';
+    case 'period': return '.';
+    case 'slash': return '/';
+    case 'backquote': return '`';
+    case 'bracketleft': return '[';
+    case 'backslash': return '\\';
+    case 'bracketright': return ']';
+    case 'quote': return "'";
+    default: return null;
+  }
+}
+
 function registerAllHotkeys(): void {
   unregisterRegisteredHotkeys();
 
@@ -205,9 +230,15 @@ function registerAllHotkeys(): void {
       if (attemptedAccelerators.has(registrationKey)) continue;
       attemptedAccelerators.add(registrationKey);
 
-      const registered = globalShortcut.register(accelerator, () => {
-        fireHotkeyDown(hotkey, true);
-      });
+      let registered = false;
+      try {
+        registered = globalShortcut.register(accelerator, () => {
+          fireHotkeyDown(hotkey, true);
+        });
+      } catch {
+        continue;
+      }
+
       if (registered) {
         registeredAccelerators.add(accelerator);
         electronRegisteredHotkeys.add(hotkey);
@@ -296,9 +327,9 @@ function isModifierOnlyHotkey(hotkey: string): boolean {
 
 function syncModifierHotkeyWorker(): void {
   const definitions = [...callbacks.keys()]
-    .filter(isModifierOnlyHotkey)
-    .map(hotkey => ({ hotkey, groups: modifierVkGroupsForHotkey(hotkey) }))
-    .filter((definition): definition is { hotkey: string; groups: number[][] } => definition.groups !== null);
+    .filter(hotkey => isModifierOnlyHotkey(hotkey) || !electronRegisteredHotkeys.has(hotkey))
+    .map(hotkey => ({ hotkey, groups: hotkeyVkGroupsForHotkey(hotkey), fireOnRelease: isModifierOnlyHotkey(hotkey) }))
+    .filter((definition): definition is { hotkey: string; groups: HotkeyVkGroup[]; fireOnRelease: boolean } => definition.groups !== null);
 
   const nextKey = JSON.stringify(definitions);
   if (nextKey === modifierHotkeyWorkerKey) return;
@@ -361,8 +392,17 @@ function handleModifierHotkeyWorkerOutput(chunk: string): void {
   }
 }
 
-function modifierVkGroupsForHotkey(hotkey: string): number[][] | null {
+function hotkeyVkGroupsForHotkey(hotkey: string): HotkeyVkGroup[] | null {
   const groups = normalizeHotkey(hotkey).split('+').filter(Boolean).map(token => {
+    const letter = token.match(/^[a-z]$/)?.[0];
+    if (letter) return [letter.toUpperCase().charCodeAt(0)];
+
+    const digit = token.match(/^[0-9]$/)?.[0];
+    if (digit) return [digit.charCodeAt(0)];
+
+    const functionKey = token.match(/^f(\d{1,2})$/)?.[1];
+    if (functionKey) return [0x6f + Number(functionKey)];
+
     switch (token) {
       case 'ctrl':
       case 'control':
@@ -375,15 +415,88 @@ function modifierVkGroupsForHotkey(hotkey: string): number[][] | null {
       case 'meta':
       case 'super':
         return [0x5b, 0x5c];
+      case 'enter':
+      case 'return':
+        return [0x0d];
+      case 'space':
+        return [0x20];
+      case 'escape':
+      case 'esc':
+        return [0x1b];
+      case 'tab':
+        return [0x09];
+      case 'backspace':
+        return [0x08];
+      case 'delete':
+      case 'del':
+        return [0x2e];
+      case 'insert':
+        return [0x2d];
+      case 'left':
+      case 'arrowleft':
+        return [0x25];
+      case 'right':
+      case 'arrowright':
+        return [0x27];
+      case 'up':
+      case 'arrowup':
+        return [0x26];
+      case 'down':
+      case 'arrowdown':
+        return [0x28];
+      case 'home':
+        return [0x24];
+      case 'end':
+        return [0x23];
+      case 'pageup':
+      case 'pgup':
+        return [0x21];
+      case 'pagedown':
+      case 'pgdn':
+        return [0x22];
+      case 'semicolon':
+      case ';':
+        return [0xba];
+      case 'equal':
+      case '=':
+        return [0xbb];
+      case 'comma':
+      case ',':
+        return [0xbc];
+      case 'minus':
+      case '-':
+        return [0xbd];
+      case 'period':
+      case '.':
+        return [0xbe];
+      case 'slash':
+      case '/':
+        return [0xbf];
+      case 'backquote':
+      case '`':
+        return [0xc0];
+      case 'bracketleft':
+      case '[':
+        return [0xdb];
+      case 'backslash':
+      case '\\':
+        return [0xdc];
+      case 'bracketright':
+      case ']':
+        return [0xdd];
+      case 'quote':
+      case "'":
+        return [0xde];
       default:
+        if (token.length === 1) return { char: token };
         return null;
     }
   });
 
-  return groups.length > 0 && groups.every((group): group is number[] => group !== null) ? groups : null;
+  return groups.length > 0 && groups.every((group): group is HotkeyVkGroup => group !== null) ? groups : null;
 }
 
-function buildModifierHotkeyWorkerScript(definitions: Array<{ hotkey: string; groups: number[][] }>): string {
+function buildModifierHotkeyWorkerScript(definitions: Array<{ hotkey: string; groups: HotkeyVkGroup[]; fireOnRelease: boolean }>): string {
   const encodedDefinitions = Buffer.from(JSON.stringify(definitions), 'utf8').toString('base64');
   return String.raw`
 $ErrorActionPreference = "Stop"
@@ -394,6 +507,23 @@ using System;
 using System.Runtime.InteropServices;
 public static class WinUtilsModifierKeys {
   [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vKey);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern short VkKeyScan(char ch);
+
+  public static int[][] ChordForChar(string text) {
+    if (String.IsNullOrEmpty(text)) return null;
+    short chord = VkKeyScan(text[0]);
+    if (chord == -1) return null;
+
+    int vk = chord & 0xff;
+    int shiftState = (chord >> 8) & 0xff;
+    System.Collections.Generic.List<int[]> groups = new System.Collections.Generic.List<int[]>();
+    if ((shiftState & 1) != 0) groups.Add(new int[] { 0x10 });
+    if ((shiftState & 2) != 0) groups.Add(new int[] { 0x11 });
+    if ((shiftState & 4) != 0) groups.Add(new int[] { 0x12 });
+    groups.Add(new int[] { vk });
+    return groups.ToArray();
+  }
+
   public static bool AnyPressed(int[] keys) {
     foreach (int key in keys) {
       if ((GetAsyncKeyState(key) & unchecked((short)0x8000)) != 0) return true;
@@ -410,8 +540,35 @@ public static class WinUtilsModifierKeys {
 }
 '@
 
-$states = @{}
+function Resolve-DefinitionGroups($definition) {
+  $resolved = New-Object System.Collections.ArrayList
+  foreach ($group in @($definition.groups)) {
+    if ($null -ne $group.char) {
+      $chordGroups = [WinUtilsModifierKeys]::ChordForChar($group.char.ToString())
+      if ($null -eq $chordGroups) { return $null }
+      foreach ($chordGroup in @($chordGroups)) { [void]$resolved.Add([int[]]@($chordGroup)) }
+      continue
+    }
+
+    [void]$resolved.Add([int[]]@($group))
+  }
+
+  return @($resolved)
+}
+
+$resolvedDefinitions = @()
 foreach ($definition in $definitions) {
+  $resolvedGroups = Resolve-DefinitionGroups $definition
+  if ($null -eq $resolvedGroups) { continue }
+  $resolvedDefinitions += [pscustomobject]@{
+    hotkey = $definition.hotkey.ToString()
+    groups = $resolvedGroups
+    fireOnRelease = [bool]$definition.fireOnRelease
+  }
+}
+
+$states = @{}
+foreach ($definition in $resolvedDefinitions) {
   $states[$definition.hotkey.ToString()] = [pscustomobject]@{ Active = $false; Contaminated = $false }
 }
 
@@ -425,24 +582,30 @@ function Test-DefinitionDown($definition) {
 
 while ($true) {
   $otherPressed = [WinUtilsModifierKeys]::AnyNonModifierPressed()
-  foreach ($definition in $definitions) {
+  foreach ($definition in $resolvedDefinitions) {
     $hotkey = $definition.hotkey.ToString()
     $state = $states[$hotkey]
     $isDown = Test-DefinitionDown $definition
+    $fireOnRelease = [bool]$definition.fireOnRelease
 
     if (-not $state.Active -and $isDown) {
       $state.Active = $true
       $state.Contaminated = $false
+      if (-not $fireOnRelease) {
+        $encoded = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($hotkey))
+        [Console]::Out.WriteLine("HOTKEY " + $encoded)
+        [Console]::Out.Flush()
+      }
       continue
     }
 
     if ($state.Active -and $isDown) {
-      if ($otherPressed) { $state.Contaminated = $true }
+      if ($fireOnRelease -and $otherPressed) { $state.Contaminated = $true }
       continue
     }
 
     if ($state.Active -and -not $isDown) {
-      if (-not $state.Contaminated) {
+      if ($fireOnRelease -and -not $state.Contaminated) {
         $encoded = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($hotkey))
         [Console]::Out.WriteLine("HOTKEY " + $encoded)
         [Console]::Out.Flush()

@@ -99,6 +99,49 @@ function captureKeyName(event: React.KeyboardEvent<HTMLInputElement>): string {
   return event.key;
 }
 
+function capturePhysicalKeyName(code: string): string | null {
+  const letter = code.match(/^Key([A-Z])$/)?.[1];
+  if (letter) return letter;
+
+  const digit = code.match(/^Digit([0-9])$/)?.[1];
+  if (digit) return digit;
+
+  const functionKey = code.match(/^F(\d{1,2})$/)?.[1];
+  if (functionKey) return `F${functionKey}`;
+
+  switch (code) {
+    case 'Space': return 'Space';
+    case 'Enter':
+    case 'NumpadEnter': return 'Enter';
+    case 'Escape': return 'Escape';
+    case 'Tab': return 'Tab';
+    case 'Backspace': return 'Backspace';
+    case 'Delete': return 'Delete';
+    case 'Insert': return 'Insert';
+    case 'ArrowLeft': return 'Left';
+    case 'ArrowRight': return 'Right';
+    case 'ArrowUp': return 'Up';
+    case 'ArrowDown': return 'Down';
+    case 'Home': return 'Home';
+    case 'End': return 'End';
+    case 'PageUp': return 'PageUp';
+    case 'PageDown': return 'PageDown';
+    case 'Semicolon': return 'Semicolon';
+    case 'Equal': return 'Equal';
+    case 'Comma': return 'Comma';
+    case 'Minus': return 'Minus';
+    case 'Period': return 'Period';
+    case 'Slash': return 'Slash';
+    case 'Backquote': return 'Backquote';
+    case 'BracketLeft': return 'BracketLeft';
+    case 'Backslash':
+    case 'IntlBackslash': return 'Backslash';
+    case 'BracketRight': return 'BracketRight';
+    case 'Quote': return 'Quote';
+    default: return null;
+  }
+}
+
 function isCapturedModifierKey(key: string): boolean {
   return key === 'Ctrl' || key === 'Alt' || key === 'Shift' || key === 'Win';
 }
@@ -518,12 +561,14 @@ function HotkeyInput({
   placeholder = 'Click and press keys…',
   title = 'Click here, then press the key combination that should trigger this macro globally.',
   allowModifierKeys = false,
+  allowNonAsciiKeys = true,
 }: {
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   title?: string;
   allowModifierKeys?: boolean;
+  allowNonAsciiKeys?: boolean;
 }): ReactElement {
   const [capturing, setCapturing] = useState(false);
   const [pendingModifierHotkey, setPendingModifierHotkey] = useState<string | null>(null);
@@ -547,8 +592,12 @@ function HotkeyInput({
     e.preventDefault();
     e.stopPropagation();
 
-    const capturedKey = captureKeyName(e);
+    const rawCapturedKey = captureKeyName(e);
+    const capturedKey = !allowNonAsciiKeys && !isCapturedModifierKey(rawCapturedKey) && !isElectronHotkeyKey(rawCapturedKey)
+      ? capturePhysicalKeyName(e.code) ?? rawCapturedKey
+      : rawCapturedKey;
     if (isCapturedModifierKey(capturedKey) && !allowModifierKeys) return;
+    if (!allowNonAsciiKeys && !isCapturedModifierKey(capturedKey) && !isElectronHotkeyKey(capturedKey)) return;
 
     if (isCapturedModifierKey(capturedKey)) {
       setPendingModifierHotkey(modifierPartsForEvent(e, capturedKey).join('+'));
@@ -589,6 +638,11 @@ function HotkeyInput({
       title={title}
     />
   );
+}
+
+function isElectronHotkeyKey(key: string): boolean {
+  return /^[A-Z0-9]$/.test(key)
+    || /^(F\d{1,2}|Num\d|NumDec|NumAdd|NumSub|NumMult|NumDiv|Enter|Space|Escape|Esc|Tab|Backspace|Delete|Del|Insert|Left|Right|Up|Down|Home|End|PageUp|PageDown|PgUp|PgDn|NumLock|Semicolon|Equal|Comma|Minus|Period|Slash|Backquote|BracketLeft|Backslash|BracketRight|Quote)$/i.test(key);
 }
 
 function conditionOperatorsForSource(source: MacroConditionSource): MacroConditionOperator[] {
@@ -1465,6 +1519,7 @@ function MacroEditor({
           onChange={hk => onChange({ ...macro, hotkey: hk })}
           placeholder="Click and press key combination…"
           allowModifierKeys
+          allowNonAsciiKeys={false}
         />
         {macro.hotkey && (
           <button type="button" className="micro-button" onClick={() => onChange({ ...macro, hotkey: '' })} title="Clear this macro hotkey.">✕</button>
