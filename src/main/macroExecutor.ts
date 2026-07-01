@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
-import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { ChildProcess, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { clipboard } from 'electron';
@@ -482,11 +482,109 @@ interface ForegroundWindowInfo {
 
 const inputWorker = new MacroInputWorker();
 
+const KEY_STATE_MONITOR_SCRIPT = String.raw`
+$ErrorActionPreference = "Stop"
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class WinUtilsKeyStateMonitor {
+  [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vKey);
+  public static string GetPressedKeys() {
+    StringBuilder builder = new StringBuilder();
+    for (int key = 1; key <= 254; key++) {
+      if ((GetAsyncKeyState(key) & unchecked((short)0x8000)) == 0) continue;
+      if (builder.Length > 0) builder.Append(',');
+      builder.Append(key);
+    }
+    return builder.ToString();
+  }
+}
+'@
+
+while ($true) {
+  [Console]::Out.WriteLine("KEYS " + [WinUtilsKeyStateMonitor]::GetPressedKeys())
+  [Console]::Out.Flush()
+  Start-Sleep -Milliseconds 20
+}
+`;
+
+class MacroKeyStateMonitor {
+  private child: ChildProcess | null = null;
+  private stdoutBuffer = '';
+  private readonly pressedKeys = new Set<number>();
+  private updatedAt = 0;
+
+  start(): void {
+    if (this.child && !this.child.killed) return;
+
+    this.stdoutBuffer = '';
+    this.updatedAt = 0;
+    this.pressedKeys.clear();
+
+    const child = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', KEY_STATE_MONITOR_SCRIPT], {
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+
+    this.child = child;
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', chunk => this.handleStdout(chunk));
+    child.once('exit', () => {
+      if (this.child === child) this.child = null;
+    });
+    child.once('error', () => {
+      if (this.child === child) this.child = null;
+    });
+  }
+
+  stop(): void {
+    const child = this.child;
+    this.child = null;
+    this.stdoutBuffer = '';
+    this.updatedAt = 0;
+    this.pressedKeys.clear();
+    if (child && !child.killed) child.kill();
+  }
+
+  arePressed(vks: number[]): boolean | null {
+    if (Date.now() - this.updatedAt > 250) return null;
+    return vks.length > 0 && vks.every(vk => this.pressedKeys.has(vk));
+  }
+
+  private handleStdout(chunk: string): void {
+    this.stdoutBuffer += chunk;
+
+    for (;;) {
+      const lineEnd = this.stdoutBuffer.indexOf('\n');
+      if (lineEnd < 0) return;
+
+      const line = this.stdoutBuffer.slice(0, lineEnd).trim();
+      this.stdoutBuffer = this.stdoutBuffer.slice(lineEnd + 1);
+      if (!line.startsWith('KEYS')) continue;
+
+      this.pressedKeys.clear();
+      const keys = line.slice('KEYS'.length).trim();
+      if (keys) {
+        for (const rawKey of keys.split(',')) {
+          const key = Number(rawKey);
+          if (Number.isFinite(key)) this.pressedKeys.add(key);
+        }
+      }
+      this.updatedAt = Date.now();
+    }
+  }
+}
+
+const keyStateMonitor = new MacroKeyStateMonitor();
+
 export async function warmMacroExecutor(): Promise<void> {
+  keyStateMonitor.start();
   await inputWorker.warm();
 }
 
 export function stopMacroExecutor(): void {
+  keyStateMonitor.stop();
   inputWorker.stop();
 }
 
@@ -587,6 +685,9 @@ function compareConditionText(actual: string, condition: MacroCondition): boolea
 async function isKeyPressed(key: string): Promise<boolean> {
   const vks = keysForString(key);
   if (vks.length === 0) return false;
+
+  const monitoredState = keyStateMonitor.arePressed(vks);
+  if (monitoredState === true) return true;
 
   try {
     const output = await runPwshOutput(`[WinAPI]::AreKeysPressed((${buildVkArray(vks)}))`);
