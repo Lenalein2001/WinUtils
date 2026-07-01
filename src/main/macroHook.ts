@@ -570,7 +570,7 @@ foreach ($definition in $definitions) {
 
 $states = @{}
 foreach ($definition in $resolvedDefinitions) {
-  $states[$definition.hotkey.ToString()] = [pscustomobject]@{ Active = $false; Contaminated = $false; BaselineKeys = [int[]]@() }
+  $states[$definition.hotkey.ToString()] = [pscustomobject]@{ Active = $false; Contaminated = $false; BaselineKeys = [int[]]@(); SuppressUntil = [int64]0; RequireUp = $false }
 }
 
 function Test-DefinitionDown($definition) {
@@ -593,11 +593,20 @@ function Test-NewNonModifierPressed($baselineKeys) {
 }
 
 while ($true) {
+  $now = [int64][Environment]::TickCount
   foreach ($definition in $resolvedDefinitions) {
     $hotkey = $definition.hotkey.ToString()
     $state = $states[$hotkey]
     $isDown = Test-DefinitionDown $definition
     $fireOnRelease = [bool]$definition.fireOnRelease
+
+    if (-not $state.Active -and $state.RequireUp) {
+      if (-not $isDown -and $now -ge [int64]$state.SuppressUntil) {
+        $state.RequireUp = $false
+      } else {
+        continue
+      }
+    }
 
     if (-not $state.Active -and $isDown) {
       $state.Active = $true
@@ -621,6 +630,8 @@ while ($true) {
         $encoded = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($hotkey))
         [Console]::Out.WriteLine("HOTKEY " + $encoded)
         [Console]::Out.Flush()
+        $state.SuppressUntil = $now + 500
+        $state.RequireUp = $true
       }
       $state.Active = $false
       $state.Contaminated = $false
