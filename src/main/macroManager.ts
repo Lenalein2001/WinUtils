@@ -16,7 +16,7 @@ import type {
 } from '../shared/macro';
 import { normalizeMacroPlayback } from '../shared/macro';
 import { executeMacro, stopMacroExecutor, warmMacroExecutor } from './macroExecutor';
-import { clearHotkeys, registerHotkey, startHook, stopHook } from './macroHook';
+import { replaceHotkeys, startHook, stopHook } from './macroHook';
 import { MacroStore } from './macroStore';
 
 interface MacroPlaybackState {
@@ -476,24 +476,30 @@ while ($true) {
 
   private rebuildHotkeys(): void {
     this.stopAllHotkeyPlayback();
-    clearHotkeys();
     const profile = this.store.getActiveProfile();
     const allMacros = [...profile.macros, ...profile.folders.flatMap(f => f.macros)];
+    const hotkeys = [];
+
     for (const macro of allMacros) {
       if (macro.enabled && macro.hotkey.trim()) {
         const registeredMacro: Macro = { ...macro, playback: normalizeMacroPlayback(macro.playback) };
-        registerHotkey(registeredMacro.hotkey, {
-          down: () => {
-            this.handleHotkeyDown(registeredMacro);
+        hotkeys.push({
+          hotkey: registeredMacro.hotkey,
+          callback: {
+            down: () => {
+              this.handleHotkeyDown(registeredMacro);
+            },
+            up: registeredMacro.playback.mode === 'while-pressed'
+              ? () => {
+                this.handleHotkeyUp(registeredMacro.id);
+              }
+              : undefined,
           },
-          up: registeredMacro.playback.mode === 'while-pressed'
-            ? () => {
-              this.handleHotkeyUp(registeredMacro.id);
-            }
-            : undefined,
         });
       }
     }
+
+    replaceHotkeys(hotkeys);
   }
 
   private getPlaybackState(macroId: string): MacroPlaybackState {

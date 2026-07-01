@@ -283,7 +283,9 @@ function syncUiohook(): void {
     return;
   }
 
-  for (const hotkey of callbacks.keys()) {
+  for (const [hotkey, callback] of callbacks) {
+    if (!shouldUseNativeHook(hotkey, callback)) continue;
+
     const combo = toUiohookCombo(hotkey, module.UiohookKey as unknown as Record<string, number>);
     if (combo) uiohookCombos.set(hotkey, combo);
   }
@@ -293,6 +295,16 @@ function syncUiohook(): void {
   } else {
     stopUiohook();
   }
+}
+
+function shouldUseNativeHook(hotkey: string, callback: HotkeyCallbacks): boolean {
+  if (isModifierOnlyHotkey(hotkey)) return true;
+  return Boolean(callback.up) && !electronRegisteredHotkeys.has(hotkey);
+}
+
+function isModifierOnlyHotkey(hotkey: string): boolean {
+  const tokens = normalizeHotkey(hotkey).split('+').filter(Boolean);
+  return tokens.length > 0 && tokens.every(isModifierToken);
 }
 
 function startUiohook(module: UiohookModule): void {
@@ -580,6 +592,17 @@ function releaseAllPressedHotkeys(): void {
 
 export function registerHotkey(hotkey: string, callback: (() => void) | HotkeyCallbacks): void {
   callbacks.set(normalizeHotkey(hotkey), toCallbacks(callback));
+  if (hooked) registerAllHotkeys();
+}
+
+export function replaceHotkeys(entries: Array<{ hotkey: string; callback: (() => void) | HotkeyCallbacks }>): void {
+  releaseAllPressedHotkeys();
+  callbacks.clear();
+
+  for (const entry of entries) {
+    callbacks.set(normalizeHotkey(entry.hotkey), toCallbacks(entry.callback));
+  }
+
   if (hooked) registerAllHotkeys();
 }
 
