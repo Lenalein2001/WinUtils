@@ -16,12 +16,13 @@ export interface HotkeyCallbacks {
 
 interface UiohookCombo {
   hotkey: string;
-  keycode: number;
+  keycodes: number[];
   ctrl: boolean;
   alt: boolean;
   shift: boolean;
   meta: boolean;
   modifierKeycodes: number[];
+  triggerModifier: 'ctrl' | 'alt' | 'shift' | 'meta' | null;
 }
 
 const nodeRequire = createRequire(import.meta.url);
@@ -327,7 +328,7 @@ function toUiohookCombo(hotkey: string, keys: Record<string, number>): UiohookCo
   let alt = false;
   let shift = false;
   let meta = false;
-  let keycode: number | null = null;
+  let keycodes: number[] = [];
 
   for (const token of tokens) {
     if (token === 'ctrl' || token === 'control') {
@@ -348,10 +349,29 @@ function toUiohookCombo(hotkey: string, keys: Record<string, number>): UiohookCo
     }
 
     const mapped = toUiohookKeycode(token, keys);
-    if (mapped !== null) keycode = mapped;
+    if (mapped !== null) keycodes = [mapped];
   }
 
-  if (keycode === null) return null;
+  let triggerModifier: UiohookCombo['triggerModifier'] = null;
+  if (keycodes.length === 0) {
+    const modifierTriggers: Array<{ name: NonNullable<UiohookCombo['triggerModifier']>; codes: number[] }> = [
+      { name: 'ctrl', codes: [keys.Ctrl, keys.CtrlRight].filter((value): value is number => typeof value === 'number') },
+      { name: 'alt', codes: [keys.Alt, keys.AltRight].filter((value): value is number => typeof value === 'number') },
+      { name: 'shift', codes: [keys.Shift, keys.ShiftRight].filter((value): value is number => typeof value === 'number') },
+      { name: 'meta', codes: [keys.Meta, keys.MetaRight].filter((value): value is number => typeof value === 'number') },
+    ];
+
+    const requestedTriggers = modifierTriggers.filter(item => (
+      (item.name === 'ctrl' && ctrl)
+      || (item.name === 'alt' && alt)
+      || (item.name === 'shift' && shift)
+      || (item.name === 'meta' && meta)
+    ));
+
+    if (requestedTriggers.length !== 1 || requestedTriggers[0].codes.length === 0) return null;
+    triggerModifier = requestedTriggers[0].name;
+    keycodes = requestedTriggers[0].codes;
+  }
 
   const modifierKeycodes = [
     ctrl ? keys.Ctrl : null,
@@ -364,7 +384,7 @@ function toUiohookCombo(hotkey: string, keys: Record<string, number>): UiohookCo
     meta ? keys.MetaRight : null,
   ].filter((value): value is number => typeof value === 'number');
 
-  return { hotkey, keycode, ctrl, alt, shift, meta, modifierKeycodes };
+  return { hotkey, keycodes, ctrl, alt, shift, meta, modifierKeycodes, triggerModifier };
 }
 
 function toUiohookKeycode(token: string, keys: Record<string, number>): number | null {
@@ -468,17 +488,21 @@ function handleUiohookKeyDown(event: UiohookKeyboardEvent): void {
 function handleUiohookKeyUp(event: UiohookKeyboardEvent): void {
   for (const combo of uiohookCombos.values()) {
     if (!pressedHotkeys.has(combo.hotkey)) continue;
-    if (event.keycode !== combo.keycode && !combo.modifierKeycodes.includes(event.keycode)) continue;
+    if (!combo.keycodes.includes(event.keycode) && !combo.modifierKeycodes.includes(event.keycode)) continue;
     releaseHotkey(combo.hotkey);
   }
 }
 
 function matchesCombo(event: UiohookKeyboardEvent, combo: UiohookCombo): boolean {
-  return event.keycode === combo.keycode
-    && event.ctrlKey === combo.ctrl
-    && event.altKey === combo.alt
-    && event.shiftKey === combo.shift
-    && event.metaKey === combo.meta;
+  return combo.keycodes.includes(event.keycode)
+    && modifierStateMatches(event.ctrlKey, combo.ctrl, combo.triggerModifier === 'ctrl')
+    && modifierStateMatches(event.altKey, combo.alt, combo.triggerModifier === 'alt')
+    && modifierStateMatches(event.shiftKey, combo.shift, combo.triggerModifier === 'shift')
+    && modifierStateMatches(event.metaKey, combo.meta, combo.triggerModifier === 'meta');
+}
+
+function modifierStateMatches(actual: boolean, expected: boolean, isTriggerKey: boolean): boolean {
+  return isTriggerKey ? true : actual === expected;
 }
 
 function fireHotkeyDown(hotkey: string, fromElectron: boolean): void {

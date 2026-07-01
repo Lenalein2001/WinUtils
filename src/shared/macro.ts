@@ -3,8 +3,8 @@
 export type KeyPressType = 'press' | 'down' | 'up';
 export type MouseButton = 'left' | 'right' | 'middle';
 export type MouseActionType = 'click' | 'double-click' | 'down' | 'up' | 'move';
-export type MacroConditionSource = 'active-process' | 'active-window-title' | 'clipboard-text' | 'file-exists';
-export type MacroConditionOperator = 'contains' | 'equals' | 'matches' | 'not-contains' | 'not-equals' | 'not-matches' | 'exists' | 'not-exists';
+export type MacroConditionSource = 'active-process' | 'active-window-title' | 'clipboard-text' | 'file-exists' | 'key-state';
+export type MacroConditionOperator = 'contains' | 'equals' | 'matches' | 'not-contains' | 'not-equals' | 'not-matches' | 'exists' | 'not-exists' | 'is-pressed' | 'is-not-pressed';
 export type MacroPlaybackMode = 'once' | 'multiple' | 'toggle' | 'while-pressed' | 'queue';
 
 export interface MacroPlaybackOptions {

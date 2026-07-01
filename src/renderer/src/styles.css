@@ -2793,6 +2793,9 @@ code {
   border-radius: 6px;
   padding: 5px 10px;
   font-size: 0.85rem;
+  line-height: 1.2;
+  min-height: 32px;
+  box-sizing: border-box;
   flex: 1;
   min-width: 0;
   transition: border-color 0.15s;
@@ -2821,6 +2824,9 @@ code {
   border-radius: 6px;
   padding: 5px 10px;
   font-size: 0.85rem;
+  line-height: 1.2;
+  min-height: 32px;
+  box-sizing: border-box;
 }
 
 .macro-textarea {
@@ -2848,6 +2854,23 @@ code {
   color: var(--muted);
   border-top: 1px solid var(--panel-border);
   padding-top: 12px;
+}
+
+.macro-tools-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 9px 12px;
+  border: 1px solid rgba(141, 210, 255, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.macro-tool-hint {
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
 }
 
 .macro-add-actions {
@@ -2888,6 +2911,8 @@ code {
   border-radius: 6px;
   overflow: hidden;
   background: var(--panel-strong);
+  min-height: 32px;
+  box-sizing: border-box;
 }
 
 .macro-preset-mode-button {
@@ -2897,6 +2922,8 @@ code {
   color: var(--text-secondary);
   padding: 5px 10px;
   font-size: 0.78rem;
+  line-height: 1.2;
+  min-height: 30px;
   cursor: pointer;
 }
 
@@ -2939,6 +2966,8 @@ code {
 .ghost-button--sm {
   padding: 4px 10px;
   font-size: 0.78rem;
+  min-height: 32px;
+  box-sizing: border-box;
 }
 
 .macro-actions-list {
@@ -3329,11 +3358,50 @@ code {
 
 .action-row {
   flex: 1;
+  position: relative;
   background: var(--panel-strong);
   border: 1px solid var(--panel-border);
   border-radius: 8px;
   padding: 10px 12px;
   min-width: 0;
+}
+
+.action-row--linked {
+  border-left-color: var(--action-link-color);
+  box-shadow: inset 2px 0 0 var(--action-link-color);
+}
+
+.action-row--linked::before {
+  content: '';
+  position: absolute;
+  left: -9px;
+  top: -10px;
+  bottom: -10px;
+  width: 2px;
+  border-radius: 999px;
+  background: var(--action-link-color);
+  opacity: 0.85;
+}
+
+.action-row--linked-start::before {
+  top: 50%;
+}
+
+.action-row--linked-end::before {
+  bottom: 50%;
+}
+
+.action-row--linked::after {
+  content: '';
+  position: absolute;
+  left: -13px;
+  top: calc(50% - 4px);
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--panel-strong);
+  border: 2px solid var(--action-link-color);
+  box-sizing: border-box;
 }
 
 .action-row--disabled {
@@ -3427,6 +3495,7 @@ code {
   align-items: flex-start;
   gap: 6px;
   min-width: 0;
+  position: relative;
 }
 
 .nested-action-index {

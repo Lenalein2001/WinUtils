@@ -566,7 +566,41 @@ function compareConditionText(actual: string, condition: MacroCondition): boolea
   }
 }
 
+async function isKeyPressed(key: string): Promise<boolean> {
+  const vks = keysForString(key);
+  if (vks.length === 0) return false;
+
+  const script = String.raw`
+Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+public static class KeyStateHelper {
+  [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vKey);
+  public static bool ArePressed(int[] keys) {
+    if (keys == null || keys.Length == 0) return false;
+    foreach (int key in keys) {
+      if ((GetAsyncKeyState(key) & unchecked((short)0x8000)) == 0) return false;
+    }
+    return true;
+  }
+}
+'@
+[KeyStateHelper]::ArePressed([int[]]@(${vks.join(',')}))
+`;
+
+  try {
+    const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script]);
+    return stdout.trim().toLowerCase() === 'true';
+  } catch {
+    return false;
+  }
+}
+
 async function evaluateCondition(condition: MacroCondition): Promise<boolean> {
+  if (condition.source === 'key-state') {
+    const pressed = await isKeyPressed(condition.value);
+    return condition.operator === 'is-not-pressed' ? !pressed : pressed;
+  }
+
   if (condition.source === 'file-exists') {
     const path = condition.value.trim();
     if (!path) return condition.operator === 'not-exists';

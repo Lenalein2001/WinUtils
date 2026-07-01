@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react';
+import type { CSSProperties, ReactElement } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { normalizeMacroPlayback } from '../../shared/macro';
 import type {
@@ -150,6 +150,7 @@ const conditionSourceLabels: Record<MacroConditionSource, string> = {
   'active-window-title': 'Active window title',
   'clipboard-text': 'Clipboard text',
   'file-exists': 'File path',
+  'key-state': 'Key state',
 };
 
 const conditionOperatorLabels: Record<MacroConditionOperator, string> = {
@@ -161,10 +162,13 @@ const conditionOperatorLabels: Record<MacroConditionOperator, string> = {
   'not-matches': 'Regex does not match',
   exists: 'Exists',
   'not-exists': 'Does not exist',
+  'is-pressed': 'Is pressed',
+  'is-not-pressed': 'Is not pressed',
 };
 
 const textConditionOperators: MacroConditionOperator[] = ['contains', 'equals', 'matches', 'not-contains', 'not-equals', 'not-matches'];
 const fileConditionOperators: MacroConditionOperator[] = ['exists', 'not-exists'];
+const keyConditionOperators: MacroConditionOperator[] = ['is-pressed', 'is-not-pressed'];
 
 const macroPlaybackModes: MacroPlaybackMode[] = ['once', 'multiple', 'toggle', 'while-pressed', 'queue'];
 
@@ -222,6 +226,218 @@ function clampFloat(value: number, min: number, max: number, fallback: number): 
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
   return Math.max(min, Math.min(max, number));
+}
+
+type ActionPairRole = 'start' | 'middle' | 'end';
+
+interface ActionPairDecoration {
+  pairIndex: number;
+  role: ActionPairRole;
+  label: string;
+}
+
+const actionPairColors = ['#8dd2ff', '#f8c36a', '#7bd88f', '#ff8aa1', '#c59cff'];
+
+function normalizedActionKey(key: string): string {
+  return key.trim().toLowerCase();
+}
+
+function actionPairRole(action: MacroAction): 'down' | 'up' | null {
+  if (action.type === 'keyboard') {
+    if (action.pressType === 'down') return 'down';
+    if (action.pressType === 'up') return 'up';
+  }
+
+  if (action.type === 'mouse') {
+    if (action.actionType === 'down') return 'down';
+    if (action.actionType === 'up') return 'up';
+  }
+
+  return null;
+}
+
+function actionPairKey(action: MacroAction): string | null {
+  if (action.type === 'keyboard' && actionPairRole(action)) {
+    return `keyboard:${normalizedActionKey(action.key)}`;
+  }
+
+  if (action.type === 'mouse' && actionPairRole(action)) {
+    return `mouse:${action.button}`;
+  }
+
+  return null;
+}
+
+function actionPairLabel(action: MacroAction): string {
+  if (action.type === 'keyboard') return `Linked ${action.key}`;
+  if (action.type === 'mouse') return `Linked ${action.button} button`;
+  return 'Linked down/up pair';
+}
+
+function buildActionPairDecorations(actions: MacroAction[]): Map<string, ActionPairDecoration> {
+  const decorations = new Map<string, ActionPairDecoration>();
+  const stacks = new Map<string, number[]>();
+  let pairIndex = 0;
+
+  actions.forEach((action, index) => {
+    const key = actionPairKey(action);
+    const role = actionPairRole(action);
+    if (!key || !role) return;
+
+    if (role === 'down') {
+      const stack = stacks.get(key) ?? [];
+      stack.push(index);
+      stacks.set(key, stack);
+      return;
+    }
+
+    const stack = stacks.get(key);
+    const startIndex = stack?.pop();
+    if (startIndex === undefined) return;
+
+    const currentPairIndex = pairIndex++;
+    const label = actionPairLabel(actions[startIndex]);
+    for (let actionIndex = startIndex; actionIndex <= index; actionIndex++) {
+      const linkedAction = actions[actionIndex];
+      if (decorations.has(linkedAction.id)) continue;
+      decorations.set(linkedAction.id, {
+        pairIndex: currentPairIndex,
+        role: actionIndex === startIndex ? 'start' : actionIndex === index ? 'end' : 'middle',
+        label,
+      });
+    }
+  });
+
+  return decorations;
+}
+
+function actionPairStyle(decoration: ActionPairDecoration | undefined): CSSProperties | undefined {
+  if (!decoration) return undefined;
+  return { '--action-link-color': actionPairColors[decoration.pairIndex % actionPairColors.length] } as CSSProperties;
+}
+
+function countDelayActions(actions: MacroAction[]): number {
+  return actions.reduce((count, action) => {
+    if (action.type === 'delay') return count + 1;
+    if (action.type === 'repeat') return count + countDelayActions(action.actions);
+    if (action.type === 'if') return count + countDelayActions(action.thenActions) + countDelayActions(action.elseActions);
+    return count;
+  }, 0);
+}
+
+function countDelayExecutions(actions: MacroAction[], multiplier = 1): number {
+  return actions.reduce((count, action) => {
+    if (action.type === 'delay') return count + multiplier;
+    if (action.type === 'repeat') return count + countDelayExecutions(action.actions, multiplier * clampInteger(action.times, 0, 10_000, 0));
+    if (action.type === 'if') return count + countDelayExecutions(action.thenActions, multiplier) + countDelayExecutions(action.elseActions, multiplier);
+    return count;
+  }, 0);
+}
+
+function fitDelayActionsToRunTime(actions: MacroAction[], totalMs: number): MacroAction[] {
+  const delayExecutions = countDelayExecutions(actions);
+  if (delayExecutions === 0) return actions;
+
+  const total = clampInteger(totalMs, 0, 24 * 60 * 60 * 1000, 0);
+  const baseDelay = Math.floor(total / delayExecutions);
+  let remainder = total % delayExecutions;
+
+  const apply = (items: MacroAction[], multiplier = 1): MacroAction[] => items.map(action => {
+    if (action.type === 'delay') {
+      const milliseconds = baseDelay + (remainder >= multiplier ? 1 : 0);
+      if (remainder >= multiplier) remainder -= multiplier;
+      return { ...action, milliseconds };
+    }
+
+    if (action.type === 'repeat') return { ...action, actions: apply(action.actions, multiplier * clampInteger(action.times, 0, 10_000, 0)) };
+    if (action.type === 'if') return { ...action, thenActions: apply(action.thenActions, multiplier), elseActions: apply(action.elseActions, multiplier) };
+    return action;
+  });
+
+  return apply(actions);
+}
+
+function hasActionPair(actions: MacroAction[]): boolean {
+  const stacks = new Map<string, number[]>();
+
+  for (const action of actions) {
+    if (action.type === 'repeat' && hasActionPair(action.actions)) return true;
+    if (action.type === 'if' && (hasActionPair(action.thenActions) || hasActionPair(action.elseActions))) return true;
+
+    const key = actionPairKey(action);
+    const role = actionPairRole(action);
+    if (!key || !role) continue;
+
+    if (role === 'down') {
+      const stack = stacks.get(key) ?? [];
+      stack.push(1);
+      stacks.set(key, stack);
+      continue;
+    }
+
+    const stack = stacks.get(key);
+    if (stack?.length) return true;
+  }
+
+  return false;
+}
+
+function toPressAction(action: MacroAction): MacroAction {
+  if (action.type === 'keyboard') return { ...action, pressType: 'press' };
+  if (action.type === 'mouse') return { ...action, actionType: 'click' };
+  return action;
+}
+
+function convertFlatActionPairsToPress(actions: MacroAction[]): MacroAction[] {
+  const stacks = new Map<string, number[]>();
+  const replacements = new Map<string, MacroAction>();
+  const removeIds = new Set<string>();
+
+  actions.forEach((action, index) => {
+    const key = actionPairKey(action);
+    const role = actionPairRole(action);
+    if (!key || !role) return;
+
+    if (role === 'down') {
+      const stack = stacks.get(key) ?? [];
+      stack.push(index);
+      stacks.set(key, stack);
+      return;
+    }
+
+    const stack = stacks.get(key);
+    const startIndex = stack?.pop();
+    if (startIndex === undefined) return;
+
+    const startAction = actions[startIndex];
+    replacements.set(startAction.id, toPressAction(startAction));
+    removeIds.add(action.id);
+
+    const between = actions.slice(startIndex + 1, index);
+    if (between.length > 0 && between.every(item => item.type === 'delay')) {
+      between.forEach(item => removeIds.add(item.id));
+    }
+  });
+
+  return actions
+    .filter(action => !removeIds.has(action.id))
+    .map(action => replacements.get(action.id) ?? action);
+}
+
+function convertActionPairsToPress(actions: MacroAction[]): MacroAction[] {
+  const convertedNested = actions.map(action => {
+    if (action.type === 'repeat') return { ...action, actions: convertActionPairsToPress(action.actions) };
+    if (action.type === 'if') {
+      return {
+        ...action,
+        thenActions: convertActionPairsToPress(action.thenActions),
+        elseActions: convertActionPairsToPress(action.elseActions),
+      };
+    }
+    return action;
+  });
+
+  return convertFlatActionPairsToPress(convertedNested);
 }
 
 function autoClickerDelayMs(options: AutoClickerPresetOptions): number {
@@ -342,7 +558,9 @@ function HotkeyInput({
 }
 
 function conditionOperatorsForSource(source: MacroConditionSource): MacroConditionOperator[] {
-  return source === 'file-exists' ? fileConditionOperators : textConditionOperators;
+  if (source === 'file-exists') return fileConditionOperators;
+  if (source === 'key-state') return keyConditionOperators;
+  return textConditionOperators;
 }
 
 function normalizeConditionForSource(condition: MacroCondition, source: MacroConditionSource): MacroCondition {
@@ -360,10 +578,12 @@ function ActionEditor({
   action,
   onChange,
   onDelete,
+  pairDecoration,
 }: {
   action: MacroAction;
   onChange: (a: MacroAction, insertAfter?: MacroAction[]) => void;
   onDelete: () => void;
+  pairDecoration?: ActionPairDecoration;
 }): ReactElement {
   const patch = (updates: Partial<MacroAction>, insertAfter?: MacroAction[]) =>
     onChange({ ...action, ...updates } as MacroAction, insertAfter);
@@ -382,8 +602,10 @@ function ActionEditor({
     patch({ pressType } as Partial<MacroAction>, insertAfter);
   };
 
+  const pairClass = pairDecoration ? ` action-row--linked action-row--linked-${pairDecoration.role}` : '';
+
   return (
-    <div className={`action-row${action.enabled ? '' : ' action-row--disabled'}`}>
+    <div className={`action-row${action.enabled ? '' : ' action-row--disabled'}${pairClass}`} style={actionPairStyle(pairDecoration)} title={pairDecoration?.label}>
       <div className="action-row-header">
         <span className="action-type-badge" title={macroActionDescriptions[action.type]}>{action.type}</span>
         <div className="action-row-controls">
@@ -597,15 +819,25 @@ function ActionEditor({
             </select>
 
             <label className="macro-label">Value</label>
-            <input
-              className="macro-input"
-              value={(action as IfAction).condition.value}
-              placeholder={(action as IfAction).condition.source === 'file-exists' ? 'C:\\path\\to\\file.txt' : 'Text or regex'}
-              onChange={e => patchCondition({ value: e.target.value })}
-              title={(action as IfAction).condition.source === 'file-exists' ? 'Path to check for existence.' : 'Text or regular expression to compare against.'}
-            />
+            {(action as IfAction).condition.source === 'key-state' ? (
+              <HotkeyInput
+                value={(action as IfAction).condition.value}
+                placeholder="Click and press key…"
+                onChange={value => patchCondition({ value })}
+                title="Click here, then press the key or key combination this IF condition should check."
+                allowModifierKeys
+              />
+            ) : (
+              <input
+                className="macro-input"
+                value={(action as IfAction).condition.value}
+                placeholder={(action as IfAction).condition.source === 'file-exists' ? 'C:\\path\\to\\file.txt' : 'Text or regex'}
+                onChange={e => patchCondition({ value: e.target.value })}
+                title={(action as IfAction).condition.source === 'file-exists' ? 'Path to check for existence.' : 'Text or regular expression to compare against.'}
+              />
+            )}
 
-            {(action as IfAction).condition.source !== 'file-exists' ? (
+            {(action as IfAction).condition.source !== 'file-exists' && (action as IfAction).condition.source !== 'key-state' ? (
               <label className="macro-check-label" title="Make this text comparison case-sensitive.">
                 <input
                   type="checkbox"
@@ -646,6 +878,8 @@ function NestedActionsEditor({
   actions: MacroAction[];
   onChange: (actions: MacroAction[]) => void;
 }): ReactElement {
+  const pairDecorations = buildActionPairDecorations(actions);
+
   const updateAction = (index: number, updated: MacroAction, insertAfter?: MacroAction[]) => {
     onChange(updateActionAt(actions, index, updated, insertAfter));
   };
@@ -669,12 +903,13 @@ function NestedActionsEditor({
       <div className="nested-actions-list">
         {actions.length === 0 ? <div className="empty-state empty-state--compact">{emptyText}</div> : null}
         {actions.map((nestedAction, index) => (
-          <div key={nestedAction.id} className="nested-action-row">
+          <div key={nestedAction.id} className={`nested-action-row${pairDecorations.has(nestedAction.id) ? ' nested-action-row--linked' : ''}`} style={actionPairStyle(pairDecorations.get(nestedAction.id))}>
             <span className="nested-action-index">{index + 1}</span>
             <ActionEditor
               action={nestedAction}
               onChange={(updated, insertAfter) => updateAction(index, updated, insertAfter)}
               onDelete={() => deleteAction(index)}
+              pairDecoration={pairDecorations.get(nestedAction.id)}
             />
           </div>
         ))}
@@ -1091,9 +1326,13 @@ function MacroEditor({
   const [dropIndex, setDropIndex] = useState<number | null>(null);
   const [selectedPresetId, setSelectedPresetId] = useState(macroPresets[0]?.id ?? '');
   const [autoClickerOptions, setAutoClickerOptions] = useState<AutoClickerPresetOptions>(DEFAULT_AUTO_CLICKER_OPTIONS);
+  const [targetRunTimeMs, setTargetRunTimeMs] = useState(100);
   const playback = normalizeMacroPlayback(macro.playback);
   const selectedPreset = macroPresets.find(item => item.id === selectedPresetId) ?? macroPresets[0];
   const calculatedAutoClickerDelay = autoClickerDelayMs(autoClickerOptions);
+  const delayActionCount = countDelayActions(macro.actions);
+  const hasLinkedActionPairs = hasActionPair(macro.actions);
+  const pairDecorations = buildActionPairDecorations(macro.actions);
 
   const updateAutoClickerOptions = (updates: Partial<AutoClickerPresetOptions>) => {
     setAutoClickerOptions(prev => ({ ...prev, ...updates }));
@@ -1118,6 +1357,14 @@ function MacroEditor({
 
   const deleteAction = (idx: number) => {
     onChange({ ...macro, actions: macro.actions.filter((_: MacroAction, i: number) => i !== idx) });
+  };
+
+  const fitRunTime = () => {
+    onChange({ ...macro, actions: fitDelayActionsToRunTime(macro.actions, targetRunTimeMs) });
+  };
+
+  const convertPairsToPress = () => {
+    onChange({ ...macro, actions: convertActionPairsToPress(macro.actions) });
   };
 
   const moveAction = (from: number, to: number) => {
@@ -1171,6 +1418,7 @@ function MacroEditor({
           value={macro.hotkey}
           onChange={hk => onChange({ ...macro, hotkey: hk })}
           placeholder="Click and press key combination…"
+          allowModifierKeys
         />
         {macro.hotkey && (
           <button type="button" className="micro-button" onClick={() => onChange({ ...macro, hotkey: '' })} title="Clear this macro hotkey.">✕</button>
@@ -1217,6 +1465,38 @@ function MacroEditor({
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="macro-tools-row">
+        <label className="macro-label">Run time (ms)</label>
+        <input
+          type="number"
+          className="macro-input macro-input--short"
+          value={targetRunTimeMs}
+          min={0}
+          max={86400000}
+          onChange={e => setTargetRunTimeMs(Number(e.target.value))}
+          title="Target total delay time for this macro. Existing Delay nodes are evenly redistributed to match it."
+        />
+        <button
+          type="button"
+          className="ghost-button ghost-button--sm"
+          onClick={fitRunTime}
+          disabled={delayActionCount === 0}
+          title="Evenly split the target time across every Delay action in this macro, including nested actions."
+        >
+          Fit Delays
+        </button>
+        <span className="macro-tool-hint">{delayActionCount} delay node{delayActionCount === 1 ? '' : 's'}</span>
+        <button
+          type="button"
+          className="ghost-button ghost-button--sm"
+          onClick={convertPairsToPress}
+          disabled={!hasLinkedActionPairs}
+          title="Convert linked Key Down/Key Up and Mouse Down/Mouse Up pairs into single Press or Click actions."
+        >
+          Convert Pairs to Press
+        </button>
       </div>
 
       <div className="macro-preset-panel">
@@ -1314,7 +1594,8 @@ function MacroEditor({
         {macro.actions.map((action, idx) => (
           <div
             key={action.id}
-            className={`action-wrapper${dropIndex === idx ? ' action-wrapper--drop-before' : ''}${dropIndex === idx + 1 ? ' action-wrapper--drop-after' : ''}`}
+            className={`action-wrapper${dropIndex === idx ? ' action-wrapper--drop-before' : ''}${dropIndex === idx + 1 ? ' action-wrapper--drop-after' : ''}${pairDecorations.has(action.id) ? ' action-wrapper--linked' : ''}`}
+            style={actionPairStyle(pairDecorations.get(action.id))}
             draggable
             onDragStart={() => {
               setDragIndex(idx);
@@ -1351,6 +1632,7 @@ function MacroEditor({
               action={action}
               onChange={(updated, insertAfter) => updateAction(idx, updated, insertAfter)}
               onDelete={() => deleteAction(idx)}
+              pairDecoration={pairDecorations.get(action.id)}
             />
           </div>
         ))}
