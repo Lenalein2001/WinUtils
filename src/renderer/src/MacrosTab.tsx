@@ -313,7 +313,11 @@ function buildActionPairDecorations(actions: MacroAction[]): Map<string, ActionP
 
 function actionPairStyle(decoration: ActionPairDecoration | undefined): CSSProperties | undefined {
   if (!decoration) return undefined;
-  return { '--action-link-color': actionPairColors[decoration.pairIndex % actionPairColors.length] } as CSSProperties;
+  const offsetSteps = [0, 5, -5, 10, -10];
+  return {
+    '--action-link-color': actionPairColors[decoration.pairIndex % actionPairColors.length],
+    '--action-link-offset': `${offsetSteps[decoration.pairIndex % offsetSteps.length]}px`,
+  } as CSSProperties;
 }
 
 function countDelayActions(actions: MacroAction[]): number {
@@ -910,6 +914,7 @@ function NestedActionsEditor({
   onChange: (actions: MacroAction[]) => void;
 }): ReactElement {
   const pairDecorations = buildActionPairDecorations(actions);
+  const [hoveredPairIndex, setHoveredPairIndex] = useState<number | null>(null);
 
   const updateAction = (index: number, updated: MacroAction, insertAfter?: MacroAction[]) => {
     onChange(updateActionAt(actions, index, updated, insertAfter));
@@ -933,17 +938,26 @@ function NestedActionsEditor({
       </div>
       <div className="nested-actions-list">
         {actions.length === 0 ? <div className="empty-state empty-state--compact">{emptyText}</div> : null}
-        {actions.map((nestedAction, index) => (
-          <div key={nestedAction.id} className={`nested-action-row${pairDecorations.has(nestedAction.id) ? ` nested-action-row--linked nested-action-row--linked-${pairDecorations.get(nestedAction.id)?.role}` : ''}`} style={actionPairStyle(pairDecorations.get(nestedAction.id))}>
+        {actions.map((nestedAction, index) => {
+          const decoration = pairDecorations.get(nestedAction.id);
+          return (
+          <div
+            key={nestedAction.id}
+            className={`nested-action-row${decoration ? ` nested-action-row--linked nested-action-row--linked-${decoration.role}${hoveredPairIndex === decoration.pairIndex ? ' nested-action-row--linked-hover' : ''}` : ''}`}
+            style={actionPairStyle(decoration)}
+            onMouseEnter={() => setHoveredPairIndex(decoration?.pairIndex ?? null)}
+            onMouseLeave={() => setHoveredPairIndex(null)}
+          >
             <span className="nested-action-index">{index + 1}</span>
             <ActionEditor
               action={nestedAction}
               onChange={(updated, insertAfter) => updateAction(index, updated, insertAfter)}
               onDelete={() => deleteAction(index)}
-              pairDecoration={actionPairRole(nestedAction) ? pairDecorations.get(nestedAction.id) : undefined}
+              pairDecoration={actionPairRole(nestedAction) ? decoration : undefined}
             />
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );
@@ -1358,6 +1372,7 @@ function MacroEditor({
   const [selectedPresetId, setSelectedPresetId] = useState(macroPresets[0]?.id ?? '');
   const [autoClickerOptions, setAutoClickerOptions] = useState<AutoClickerPresetOptions>(DEFAULT_AUTO_CLICKER_OPTIONS);
   const [targetRunTimeMs, setTargetRunTimeMs] = useState(100);
+  const [hoveredPairIndex, setHoveredPairIndex] = useState<number | null>(null);
   const playback = normalizeMacroPlayback(macro.playback);
   const selectedPreset = macroPresets.find(item => item.id === selectedPresetId) ?? macroPresets[0];
   const calculatedAutoClickerDelay = autoClickerDelayMs(autoClickerOptions);
@@ -1622,12 +1637,16 @@ function MacroEditor({
         {macro.actions.length === 0 && (
           <div className="empty-state">No actions yet. Add one above.</div>
         )}
-        {macro.actions.map((action, idx) => (
+        {macro.actions.map((action, idx) => {
+          const decoration = pairDecorations.get(action.id);
+          return (
           <div
             key={action.id}
-            className={`action-wrapper${dropIndex === idx ? ' action-wrapper--drop-before' : ''}${dropIndex === idx + 1 ? ' action-wrapper--drop-after' : ''}${pairDecorations.has(action.id) ? ` action-wrapper--linked action-wrapper--linked-${pairDecorations.get(action.id)?.role}` : ''}`}
-            style={actionPairStyle(pairDecorations.get(action.id))}
+            className={`action-wrapper${dropIndex === idx ? ' action-wrapper--drop-before' : ''}${dropIndex === idx + 1 ? ' action-wrapper--drop-after' : ''}${decoration ? ` action-wrapper--linked action-wrapper--linked-${decoration.role}${hoveredPairIndex === decoration.pairIndex ? ' action-wrapper--linked-hover' : ''}` : ''}`}
+            style={actionPairStyle(decoration)}
             draggable
+            onMouseEnter={() => setHoveredPairIndex(decoration?.pairIndex ?? null)}
+            onMouseLeave={() => setHoveredPairIndex(null)}
             onDragStart={() => {
               setDragIndex(idx);
               setDropIndex(idx);
@@ -1663,10 +1682,11 @@ function MacroEditor({
               action={action}
               onChange={(updated, insertAfter) => updateAction(idx, updated, insertAfter)}
               onDelete={() => deleteAction(idx)}
-              pairDecoration={actionPairRole(action) ? pairDecorations.get(action.id) : undefined}
+              pairDecoration={actionPairRole(action) ? decoration : undefined}
             />
           </div>
-        ))}
+          );
+        })}
         {macro.actions.length > 0 ? <div className={`action-drop-end${dropIndex === macro.actions.length ? ' action-drop-end--active' : ''}`} /> : null}
       </div>
     </div>

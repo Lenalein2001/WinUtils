@@ -844,7 +844,7 @@ export class ClipboardManager {
   private async pruneEntries(file: ClipboardHistoryFile): Promise<void> {
     const pinned = file.entries.filter((entry) => entry.pinned);
     const retentionCutoff = retentionCutoffTime(file.settings.retentionDays);
-    const unpinned = file.entries.filter((entry) => !entry.pinned && (retentionCutoff === null || Date.parse(entry.copiedAt) >= retentionCutoff));
+    const unpinned = sortEntries(file.entries.filter((entry) => !entry.pinned && (retentionCutoff === null || Date.parse(entry.copiedAt) >= retentionCutoff)));
     const limitedUnpinned = file.settings.maxEntries > 0 ? unpinned.slice(0, file.settings.maxEntries) : unpinned;
     const keep = [...pinned, ...limitedUnpinned];
     const keepIds = new Set(keep.map((entry) => entry.id));

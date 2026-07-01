@@ -3371,14 +3371,14 @@ code {
 .nested-action-row--linked .nested-action-index::before {
   content: '';
   position: absolute;
-  left: 50%;
+  left: calc(50% + var(--action-link-offset, 0px));
   top: -12px;
   bottom: -12px;
   width: 2px;
   transform: translateX(-50%);
   border-radius: 999px;
   background: var(--action-link-color);
-  opacity: 0.9;
+  opacity: 0.62;
 }
 
 .action-wrapper--linked-start .action-reorder::before,
@@ -3389,6 +3389,36 @@ code {
 .action-wrapper--linked-end .action-reorder::before,
 .nested-action-row--linked-end .nested-action-index::before {
   bottom: 50%;
+}
+
+.action-wrapper--linked-start .action-reorder::after,
+.action-wrapper--linked-end .action-reorder::after,
+.nested-action-row--linked-start .nested-action-index::after,
+.nested-action-row--linked-end .nested-action-index::after {
+  content: '';
+  position: absolute;
+  left: calc(50% + var(--action-link-offset, 0px));
+  top: calc(50% - 4px);
+  width: 8px;
+  height: 8px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: var(--panel-strong);
+  border: 2px solid var(--action-link-color);
+  box-sizing: border-box;
+  z-index: 1;
+}
+
+.action-wrapper--linked-hover .action-reorder::before,
+.nested-action-row--linked-hover .nested-action-index::before {
+  opacity: 1;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.16), 0 0 10px color-mix(in srgb, var(--action-link-color) 70%, transparent);
+}
+
+.action-wrapper--linked-hover .action-reorder::after,
+.nested-action-row--linked-hover .nested-action-index::after {
+  background: color-mix(in srgb, var(--action-link-color) 20%, var(--panel-strong));
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.14), 0 0 14px color-mix(in srgb, var(--action-link-color) 80%, transparent);
 }
 
 .action-row {
@@ -3404,19 +3434,6 @@ code {
 .action-row--linked {
   border-left-color: var(--action-link-color);
   box-shadow: inset 2px 0 0 var(--action-link-color);
-}
-
-.action-row--linked::after {
-  content: '';
-  position: absolute;
-  left: -13px;
-  top: calc(50% - 4px);
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: var(--panel-strong);
-  border: 2px solid var(--action-link-color);
-  box-sizing: border-box;
 }
 
 .action-row--disabled {
