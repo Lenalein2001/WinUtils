@@ -21,4 +21,5 @@ This release focuses on macro reliability, editor usability, and clipboard reten
 - Fixed standalone modifier hotkeys retriggering from their own injected modifier actions.
 - Fixed IF key-state conditions so held keys are detected reliably during macro playback.
 - Fixed macro arrow-key actions saved as `ArrowUp`, `ArrowDown`, `ArrowLeft`, or `ArrowRight`.
+- Fixed Clipboard Manager search refreshing the full page while typing through larger histories.
 - Fixed macro action link rail placement and Clipboard retention pruning order.

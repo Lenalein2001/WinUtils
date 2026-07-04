@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactElement } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState, type ReactElement } from 'react';
 import type { ClipboardEntry, ClipboardFilter, ClipboardSettings, ClipboardState } from '../../shared/clipboard';
 
 const filterOptions: Array<{ value: ClipboardFilter; label: string; title: string }> = [
@@ -30,13 +30,30 @@ export function ClipboardTab(): ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [retentionDraft, setRetentionDraft] = useState({ maxEntries: '350', retentionDays: '0' });
 
-  const entries = state?.entries ?? [];
+  const loadState = useCallback(async (cancelled = false, showSpinner = true): Promise<void> => {
+    if (showSpinner) setLoading(true);
+    setError(null);
+
+    try {
+      const nextState = await window.winUtils.clipboard.getState({ limit: 500 });
+      if (!cancelled) setState(nextState);
+    } catch (caughtError) {
+      if (!cancelled) setError(getErrorMessage(caughtError, 'Unable to load clipboard history.'));
+    } finally {
+      if (!cancelled && showSpinner) setLoading(false);
+    }
+  }, []);
+
+  const deferredSearch = useDeferredValue(search);
+  const deferredFilter = useDeferredValue(filter);
+  const allEntries = state?.entries ?? [];
+  const entries = useMemo(() => filterClipboardEntries(allEntries, deferredSearch, deferredFilter), [allEntries, deferredSearch, deferredFilter]);
   const visibleSummary = useMemo(() => {
     if (!state) return 'No clipboard data loaded yet.';
     if (state.total === 0) return 'Clipboard history is empty.';
-    if (entries.length === state.total) return `${entries.length} saved items.`;
-    return `${entries.length} of ${state.total} saved items.`;
-  }, [entries.length, state]);
+    if (entries.length === allEntries.length && allEntries.length === state.total) return `${entries.length} saved items.`;
+    return `${entries.length} of ${allEntries.length} loaded items.`;
+  }, [allEntries.length, entries.length, state]);
 
   useEffect(() => {
     let cancelled = false;
@@ -48,7 +65,7 @@ export function ClipboardTab(): ReactElement {
       cancelled = true;
       window.clearTimeout(handle);
     };
-  }, [search, filter]);
+  }, [loadState]);
 
   useEffect(() => {
     const unsubscribe = window.winUtils.clipboard.onChanged(() => {
@@ -56,7 +73,7 @@ export function ClipboardTab(): ReactElement {
     });
 
     return unsubscribe;
-  }, [search, filter]);
+  }, [loadState]);
 
   useEffect(() => {
     if (!state) return;
@@ -66,21 +83,7 @@ export function ClipboardTab(): ReactElement {
     });
   }, [state?.settings.maxEntries, state?.settings.retentionDays]);
 
-  const loadState = async (cancelled = false, showSpinner = true): Promise<void> => {
-    if (showSpinner) setLoading(true);
-    setError(null);
-
-    try {
-      const nextState = await window.winUtils.clipboard.getState({ search, filter, limit: 160 });
-      if (!cancelled) setState(nextState);
-    } catch (caughtError) {
-      if (!cancelled) setError(getErrorMessage(caughtError, 'Unable to load clipboard history.'));
-    } finally {
-      if (!cancelled && showSpinner) setLoading(false);
-    }
-  };
-
-  const runAction = async (label: string, action: () => Promise<void>, success?: string): Promise<void> => {
+  const runAction = useCallback(async (label: string, action: () => Promise<void>, success?: string): Promise<void> => {
     setBusy(label);
     setError(null);
     setMessage(null);
@@ -94,30 +97,34 @@ export function ClipboardTab(): ReactElement {
     } finally {
       setBusy(null);
     }
-  };
+  }, [loadState]);
 
-  const handleCopy = async (entry: ClipboardEntry): Promise<void> => {
+  const handleCopy = useCallback(async (entry: ClipboardEntry): Promise<void> => {
     await runAction('copy item', () => window.winUtils.clipboard.copy(entry.id).then(() => undefined), 'Copied back to the clipboard.');
-  };
+  }, [runAction]);
 
-  const handlePinned = async (entry: ClipboardEntry): Promise<void> => {
+  const handlePinned = useCallback(async (entry: ClipboardEntry): Promise<void> => {
     await runAction(
       entry.pinned ? 'unpin item' : 'pin item',
       () => window.winUtils.clipboard.setPinned(entry.id, !entry.pinned).then(() => undefined),
       entry.pinned ? 'Clipboard item unpinned.' : 'Clipboard item pinned.',
     );
-  };
+  }, [runAction]);
 
-  const handleDelete = async (entry: ClipboardEntry): Promise<void> => {
+  const handleDelete = useCallback(async (entry: ClipboardEntry): Promise<void> => {
     await runAction('delete item', () => window.winUtils.clipboard.delete(entry.id).then(() => undefined), 'Clipboard item deleted.');
-  };
+  }, [runAction]);
 
-  const handleClear = async (mode: 'all' | 'unpinned'): Promise<void> => {
+  const handleRerunOcr = useCallback(async (entry: ClipboardEntry): Promise<void> => {
+    await runAction('run OCR', () => window.winUtils.clipboard.rerunOcr(entry.id).then(() => undefined), 'OCR started for this image.');
+  }, [runAction]);
+
+  const handleClear = useCallback(async (mode: 'all' | 'unpinned'): Promise<void> => {
     const label = mode === 'all' ? 'clear all items' : 'clear unpinned items';
     await runAction(label, () => window.winUtils.clipboard.clear(mode).then(() => undefined), mode === 'all' ? 'Clipboard history cleared.' : 'Unpinned clipboard history cleared.');
-  };
+  }, [runAction]);
 
-  const updateRetention = async (patch: Partial<Pick<ClipboardSettings, 'retentionDays' | 'maxEntries'>>): Promise<void> => {
+  const updateRetention = useCallback(async (patch: Partial<Pick<ClipboardSettings, 'retentionDays' | 'maxEntries'>>): Promise<void> => {
     const current = state?.settings;
     if (!current) return;
     await runAction(
@@ -128,14 +135,14 @@ export function ClipboardTab(): ReactElement {
       }).then(() => undefined),
       'Clipboard retention updated.',
     );
-  };
+  }, [runAction, state?.settings]);
 
-  const applyRetentionDraft = async (): Promise<void> => {
+  const applyRetentionDraft = useCallback(async (): Promise<void> => {
     await updateRetention({
       maxEntries: Number(retentionDraft.maxEntries),
       retentionDays: Number(retentionDraft.retentionDays),
     });
-  };
+  }, [retentionDraft.maxEntries, retentionDraft.retentionDays, updateRetention]);
 
   const registeredHotkeys = state?.registeredQuickAccessHotkeys?.length
     ? state.registeredQuickAccessHotkeys.map(formatHotkey)
@@ -294,7 +301,7 @@ export function ClipboardTab(): ReactElement {
             onCopy={handleCopy}
             onPinned={handlePinned}
             onDelete={handleDelete}
-            onRerunOcr={(imageEntry) => runAction('run OCR', () => window.winUtils.clipboard.rerunOcr(imageEntry.id).then(() => undefined), 'OCR started for this image.')}
+            onRerunOcr={handleRerunOcr}
           />
         )) : null}
       </div>
@@ -311,7 +318,7 @@ function ClipboardStat({ label, value, title }: { label: string; value: number; 
   );
 }
 
-function ClipboardEntryRow({ entry, busy, onCopy, onPinned, onDelete, onRerunOcr }: {
+const ClipboardEntryRow = memo(function ClipboardEntryRow({ entry, busy, onCopy, onPinned, onDelete, onRerunOcr }: {
   entry: ClipboardEntry;
   busy: boolean;
   onCopy: (entry: ClipboardEntry) => Promise<void>;
@@ -357,7 +364,7 @@ function ClipboardEntryRow({ entry, busy, onCopy, onPinned, onDelete, onRerunOcr
       </div>
     </article>
   );
-}
+});
 
 function renderEntryMedia(entry: ClipboardEntry): ReactElement {
   if (entry.type === 'image' && entry.image?.thumbnailDataUrl) {
@@ -409,6 +416,25 @@ function formatEntryMeta(entry: ClipboardEntry): string {
   const size = entry.sizeBytes ? `, ${formatBytes(entry.sizeBytes)}` : '';
   const used = entry.useCount > 0 ? `, used ${entry.useCount}x` : '';
   return `${entry.type}, copied ${copied}${size}${used}`;
+}
+
+function filterClipboardEntries(entries: ClipboardEntry[], search: string, filter: ClipboardFilter): ClipboardEntry[] {
+  const query = search.trim().toLowerCase();
+  return entries.filter((entry) => {
+    if (filter !== 'all' && (filter === 'pinned' ? !entry.pinned : !entry.categories.includes(filter))) return false;
+    return !query || searchableEntryText(entry).includes(query);
+  });
+}
+
+function searchableEntryText(entry: ClipboardEntry): string {
+  return [
+    entry.preview,
+    entry.text,
+    entry.ocrText,
+    ...(entry.filePaths ?? []),
+    ...entry.categories,
+    entry.type,
+  ].filter(Boolean).join('\n').toLowerCase();
 }
 
 function shortenTitle(value: string): string {
