@@ -93,6 +93,10 @@ function captureKeyName(event: React.KeyboardEvent<HTMLInputElement>): string {
   if (event.key === 'Shift') return 'Shift';
   if (event.key === 'Meta' || event.key === 'OS') return 'Win';
   if (event.key === 'Enter') return 'Enter';
+  if (event.key === 'ArrowLeft') return 'Left';
+  if (event.key === 'ArrowRight') return 'Right';
+  if (event.key === 'ArrowUp') return 'Up';
+  if (event.key === 'ArrowDown') return 'Down';
   if (event.key === ' ') return 'Space';
   if (event.key.length === 1) return event.key.toUpperCase();
 
