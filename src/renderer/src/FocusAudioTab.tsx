@@ -1,6 +1,38 @@
 import type { ReactElement } from 'react';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { FocusAudioConfig, FocusAudioState } from '../../shared/focusAudio';
+import type { FocusAudioConfig, FocusAudioDuckRule, FocusAudioState } from '../../shared/focusAudio';
+
+const normalizeAppName = (name: string): string => {
+  const trimmed = name.trim().toLowerCase();
+  return trimmed.endsWith('.exe') ? trimmed.slice(0, -4) : trimmed;
+};
+
+const parseAppList = (text: string): string[] => {
+  const seen = new Set<string>();
+  const apps: string[] = [];
+  for (const part of text.split(',')) {
+    const value = part.trim();
+    if (!value) continue;
+    const key = normalizeAppName(value);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    apps.push(value);
+  }
+  return apps;
+};
+
+const listIncludesApp = (list: string[], name: string): boolean => {
+  const target = normalizeAppName(name);
+  return list.some((entry) => normalizeAppName(entry) === target);
+};
+
+const createDuckRule = (): FocusAudioDuckRule => ({
+  id: crypto.randomUUID(),
+  enabled: true,
+  triggerApps: [],
+  targetApps: [],
+  duckPercent: 60,
+});
 
 export function FocusAudioTab(): ReactElement {
   const [state, setState] = useState<FocusAudioState | null>(null);
@@ -9,19 +41,41 @@ export function FocusAudioTab(): ReactElement {
   const [refreshing, setRefreshing] = useState(false);
   const [newWhitelistEntry, setNewWhitelistEntry] = useState('');
   const [newBlacklistEntry, setNewBlacklistEntry] = useState('');
+  const [duckRules, setDuckRules] = useState<FocusAudioDuckRule[]>([]);
+  const [duckDrafts, setDuckDrafts] = useState<Record<string, string>>({});
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Server polling must not clobber rule text while the user is still typing.
+  const duckDirtyRef = useRef(false);
+  const duckWriteRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const syncDuckRules = useCallback((rules: FocusAudioDuckRule[]) => {
+    if (duckDirtyRef.current) return;
+    setDuckRules(rules);
+  }, []);
+
+  const commitDuckRules = useCallback((next: FocusAudioDuckRule[]) => {
+    setDuckRules(next);
+    duckDirtyRef.current = true;
+    if (duckWriteRef.current) clearTimeout(duckWriteRef.current);
+    duckWriteRef.current = setTimeout(() => {
+      void window.winUtils.focusAudio.setDuckRules(next)
+        .then((config) => setState((prev) => (prev ? { ...prev, ...config } : prev)))
+        .finally(() => { duckDirtyRef.current = false; });
+    }, 450);
+  }, []);
 
   const loadState = useCallback(async () => {
     try {
       const s = await window.winUtils.focusAudio.getState();
       setState(s);
       setActiveApps(s.activeAudioApps);
+      syncDuckRules(s.duckRules);
     } catch {
       // ignore
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [syncDuckRules]);
 
   const refreshActiveApps = useCallback(async () => {
     setRefreshing(true);
@@ -40,12 +94,14 @@ export function FocusAudioTab(): ReactElement {
       void window.winUtils.focusAudio.getState().then((s) => {
         setState(s);
         setActiveApps(s.activeAudioApps);
+        syncDuckRules(s.duckRules);
       }).catch(() => undefined);
     }, 3000);
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
+      if (duckWriteRef.current) clearTimeout(duckWriteRef.current);
     };
-  }, [loadState]);
+  }, [loadState, syncDuckRules]);
 
   const applyConfig = (config: FocusAudioConfig) => {
     setState((prev) => (prev ? { ...prev, ...config } : null));
@@ -100,6 +156,38 @@ export function FocusAudioTab(): ReactElement {
     }
   };
 
+  const handleToggleDucking = async () => {
+    if (!state) return;
+    const config = await window.winUtils.focusAudio.setDuckingEnabled(!state.duckingEnabled);
+    applyConfig(config);
+  };
+
+  const updateDuckRule = (id: string, patch: Partial<FocusAudioDuckRule>) => {
+    commitDuckRules(duckRules.map((rule) => (rule.id === id ? { ...rule, ...patch } : rule)));
+  };
+
+  const duckFieldKey = (id: string, field: 'triggers' | 'targets') => `${id}:${field}`;
+
+  const duckFieldValue = (rule: FocusAudioDuckRule, field: 'triggers' | 'targets'): string => {
+    const draft = duckDrafts[duckFieldKey(rule.id, field)];
+    if (draft !== undefined) return draft;
+    return (field === 'triggers' ? rule.triggerApps : rule.targetApps).join(', ');
+  };
+
+  const handleDuckFieldChange = (rule: FocusAudioDuckRule, field: 'triggers' | 'targets', text: string) => {
+    setDuckDrafts((drafts) => ({ ...drafts, [duckFieldKey(rule.id, field)]: text }));
+    const apps = parseAppList(text);
+    updateDuckRule(rule.id, field === 'triggers' ? { triggerApps: apps } : { targetApps: apps });
+  };
+
+  const handleDuckFieldBlur = (rule: FocusAudioDuckRule, field: 'triggers' | 'targets') => {
+    setDuckDrafts((drafts) => {
+      const next = { ...drafts };
+      delete next[duckFieldKey(rule.id, field)];
+      return next;
+    });
+  };
+
   if (loading) {
     return (
       <div className="focus-audio-tab">
@@ -117,7 +205,7 @@ export function FocusAudioTab(): ReactElement {
   }
 
   return (
-    <div className="focus-audio-tab">
+    <div className="focus-audio-tab module-shell module-shell--focus-audio">
       {/* Header */}
       <div className="fa-header">
         <div className="fa-title-block">
@@ -137,6 +225,7 @@ export function FocusAudioTab(): ReactElement {
 
       {/* Mode selector */}
       <div className="fa-section">
+        <p className="section-kicker">Policy</p>
         <div className="fa-section-label">Muting Mode</div>
         <div className="fa-mode-row">
           <button
@@ -168,6 +257,7 @@ export function FocusAudioTab(): ReactElement {
         {/* Active Audio Apps */}
         <div className="fa-card">
           <div className="fa-card-header">
+            <p className="section-kicker">Sessions</p>
             <span>Active Audio Apps</span>
             <button className="fa-refresh-btn" onClick={() => void refreshActiveApps()} disabled={refreshing} title="Refresh the list of apps that currently have Windows audio sessions.">
               {refreshing ? '…' : '↻ Refresh'}
@@ -207,6 +297,7 @@ export function FocusAudioTab(): ReactElement {
         {/* Whitelist */}
         <div className="fa-card">
           <div className="fa-card-header">
+            <p className="section-kicker">Allow list</p>
             <span>Whitelist <small>(always play)</small></span>
           </div>
           <div className="fa-add-row">
@@ -251,6 +342,7 @@ export function FocusAudioTab(): ReactElement {
         {/* Blacklist */}
         <div className="fa-card">
           <div className="fa-card-header">
+            <p className="section-kicker">Block list</p>
             <span>Blacklist <small>(mute when unfocused)</small></span>
           </div>
           <div className="fa-add-row">
@@ -290,6 +382,119 @@ export function FocusAudioTab(): ReactElement {
               ))}
             </ul>
           )}
+        </div>
+      </div>
+
+      {/* Volume ducking */}
+      <div className="fa-section">
+        <div className="fa-duck-header">
+          <div>
+            <p className="section-kicker">Mixing</p>
+            <div className="fa-section-label">Volume Ducking</div>
+            <p className="fa-subtitle">
+              Lower one app while another is playing, then restore the original volume automatically.
+            </p>
+          </div>
+          <button
+            className={`fa-enable-btn ${state.duckingEnabled ? 'fa-enable-btn--on' : 'fa-enable-btn--off'}`}
+            onClick={() => void handleToggleDucking()}
+            title="Turn automatic volume ducking on or off."
+          >
+            {state.duckingEnabled ? 'Enabled' : 'Disabled'}
+          </button>
+        </div>
+
+        <datalist id="fa-audio-apps">
+          {activeApps.map((app) => <option key={app} value={app} />)}
+        </datalist>
+
+        {duckRules.length === 0 ? (
+          <div className="fa-empty">
+            No ducking rules yet. Add one to lower, for example, Spotify while Opera is playing.
+          </div>
+        ) : (
+          <div className="fa-duck-list">
+            {duckRules.map((rule) => {
+              const triggerPlaying = rule.triggerApps.some((app) => listIncludesApp(state.playingApps, app));
+              const targetDucked = rule.targetApps.some((app) => listIncludesApp(state.duckedApps, app));
+
+              return (
+                <div className={`fa-duck-rule ${rule.enabled ? '' : 'fa-duck-rule--off'}`} key={rule.id}>
+                  <label className="fa-duck-toggle" title="Enable or disable this ducking rule.">
+                    <input
+                      type="checkbox"
+                      checked={rule.enabled}
+                      onChange={(e) => updateDuckRule(rule.id, { enabled: e.target.checked })}
+                    />
+                  </label>
+
+                  <div className="fa-duck-fields">
+                    <label className="fa-duck-field">
+                      <span>While these play</span>
+                      <input
+                        className="fa-input"
+                        list="fa-audio-apps"
+                        placeholder="opera.exe, chrome.exe"
+                        title="Comma-separated apps that trigger ducking while they are playing audio."
+                        value={duckFieldValue(rule, 'triggers')}
+                        onChange={(e) => handleDuckFieldChange(rule, 'triggers', e.target.value)}
+                        onBlur={() => handleDuckFieldBlur(rule, 'triggers')}
+                      />
+                    </label>
+
+                    <label className="fa-duck-field">
+                      <span>Lower these apps</span>
+                      <input
+                        className="fa-input"
+                        list="fa-audio-apps"
+                        placeholder="spotify.exe"
+                        title="Comma-separated apps whose volume is reduced while a trigger app is playing."
+                        value={duckFieldValue(rule, 'targets')}
+                        onChange={(e) => handleDuckFieldChange(rule, 'targets', e.target.value)}
+                        onBlur={() => handleDuckFieldBlur(rule, 'targets')}
+                      />
+                    </label>
+
+                    <label className="fa-duck-field fa-duck-field--amount">
+                      <span>Reduce by {rule.duckPercent}%</span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={95}
+                        step={5}
+                        value={rule.duckPercent}
+                        title="How much of the original volume is removed while ducking is active."
+                        onChange={(e) => updateDuckRule(rule.id, { duckPercent: Number(e.target.value) })}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="fa-duck-side">
+                    <span className={`fa-duck-status ${targetDucked ? 'fa-duck-status--active' : ''}`}>
+                      {targetDucked ? 'Ducking' : triggerPlaying ? 'Trigger playing' : 'Idle'}
+                    </span>
+                    <button
+                      className="fa-remove-btn"
+                      onClick={() => commitDuckRules(duckRules.filter((item) => item.id !== rule.id))}
+                      title="Remove this ducking rule."
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="fa-duck-actions">
+          <button
+            className="fa-add-btn"
+            onClick={() => commitDuckRules([...duckRules, createDuckRule()])}
+            title="Add a new volume ducking rule."
+          >
+            + Add rule
+          </button>
         </div>
       </div>
 

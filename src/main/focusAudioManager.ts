@@ -4,7 +4,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import os from 'node:os';
 import { app } from 'electron';
-import type { FocusAudioConfig } from '../shared/focusAudio';
+import type { FocusAudioConfig, FocusAudioDuckRule } from '../shared/focusAudio';
 
 // ─── C# type definitions that work correctly with COM vtables ────────────────
 const CSHARP_TYPES = `
@@ -48,7 +48,8 @@ interface IAudioSessionControl2 {
     void RegisterAudioSessionNotification([MarshalAs(UnmanagedType.Interface)] object e);
     void UnregisterAudioSessionNotification([MarshalAs(UnmanagedType.Interface)] object e);
     [return: MarshalAs(UnmanagedType.BStr)] string GetSessionIdentifier();
-    [return: MarshalAs(UnmanagedType.BStr)] string GetSessionInstanceIdentifier();
+    // Returns LPWSTR (CoTaskMem), not BSTR: marshal by hand or the CLR frees it wrongly.
+    IntPtr GetSessionInstanceIdentifier();
     uint GetProcessId();
     [PreserveSig] int IsSystemSoundsSession();
     void SetDuckingPreference(bool b);
@@ -59,6 +60,31 @@ interface ISimpleAudioVolume {
     float GetMasterVolume();
     void SetMute(bool b, [In] ref Guid g);
     bool GetMute();
+}
+
+[ComImport, Guid("C02216F6-8C67-4B5B-9D00-D008E73E0064"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAudioMeterInformation {
+    float GetPeakValue();
+}
+
+class SessionInfo {
+    public int Pid;
+    public string Name;
+    public int State;
+    public bool Muted;
+    public bool Playing;
+    public float Peak;
+    public string InstanceId;
+    public object SessionObj;
+    public IAudioSessionControl2 Ctrl;
+    public ISimpleAudioVolume Volume;
+    public IAudioMeterInformation Meter;
+}
+
+class DuckRule {
+    public HashSet<string> Triggers;
+    public HashSet<string> Targets;
+    public float Factor;
 }
 
 public class WinAudio {
@@ -100,6 +126,23 @@ public class WinAudio {
 
     static HashSet<int> MutedByUs = new HashSet<int>();
     static HashSet<string> MutedProcessNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    // Session instance id -> volume captured before we ducked it.
+    static Dictionary<string, float> DuckedOriginals = new Dictionary<string, float>();
+    // Session instance id -> last tick the session actually emitted sound.
+    static Dictionary<string, long> LastAudibleTicks = new Dictionary<string, long>();
+    // Browsers keep a paused session Active for ~20s, so treat silence as stopped
+    // after a short hold that still bridges gaps between tracks.
+    const float PeakSilenceThreshold = 0.0005f;
+    const long PlayingHoldMs = 1500;
+
+    static string ReadCoTaskString(IntPtr ptr) {
+      if (ptr == IntPtr.Zero) return "";
+      try {
+        return Marshal.PtrToStringUni(ptr);
+      } finally {
+        Marshal.FreeCoTaskMem(ptr);
+      }
+    }
 
     static string NormalizeProcessName(string name) {
       if (name == null) return "";
@@ -151,6 +194,43 @@ public class WinAudio {
       return set;
     }
 
+    static HashSet<string> ParseCsvList(string text) {
+      var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+      if (String.IsNullOrEmpty(text)) return set;
+
+      var parts = text.Split(new char[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+      for (int i = 0; i < parts.Length; i++) {
+        var normalized = NormalizeProcessName(parts[i]);
+        if (!String.IsNullOrEmpty(normalized)) set.Add(normalized);
+      }
+      return set;
+    }
+
+    // One rule per line: "triggers,csv|targets,csv|reducePercent"
+    static List<DuckRule> ParseDuckRules(string text) {
+      var rules = new List<DuckRule>();
+      if (String.IsNullOrEmpty(text)) return rules;
+
+      var lines = text.Split(new char[] { '\\n' }, StringSplitOptions.RemoveEmptyEntries);
+      for (int i = 0; i < lines.Length; i++) {
+        var parts = lines[i].Split(new char[] { '|' });
+        if (parts.Length < 3) continue;
+
+        var rule = new DuckRule();
+        rule.Triggers = ParseCsvList(parts[0]);
+        rule.Targets = ParseCsvList(parts[1]);
+        if (rule.Triggers.Count == 0 || rule.Targets.Count == 0) continue;
+
+        int percent = 0;
+        Int32.TryParse(parts[2].Trim(), out percent);
+        if (percent < 0) percent = 0;
+        if (percent > 95) percent = 95;
+        rule.Factor = 1.0f - (percent / 100.0f);
+        rules.Add(rule);
+      }
+      return rules;
+    }
+
     static bool ShouldMuteProcess(string processName, bool isFocused, string mode, HashSet<string> whitelist, HashSet<string> blacklist) {
       if (mode == "blacklist") {
         return blacklist.Contains(processName) && !isFocused;
@@ -163,10 +243,11 @@ public class WinAudio {
       return !whitelist.Contains(processName);
     }
 
-    public static List<string> ApplyRules(string mode, string whitelistText, string blacklistText) {
+    public static List<string> ApplyRules(string mode, string whitelistText, string blacklistText, string duckRulesText, bool muteEnabled) {
       var results = new List<string>();
       var whitelist = ParseProcessList(whitelistText);
       var blacklist = ParseProcessList(blacklistText);
+      var duckRules = ParseDuckRules(duckRulesText);
       var focusedHwnd = GetForegroundWindow();
       int focusedPid = 0;
       try { GetWindowThreadProcessId(focusedHwnd, out focusedPid); } catch { focusedPid = 0; }
@@ -174,6 +255,237 @@ public class WinAudio {
       var focusedTitle = GetWindowTitle(focusedHwnd);
       var activeProcessIds = new HashSet<int>();
       results.Add("FOCUSED:" + focusedPid);
+
+      IMMDeviceEnumerator deviceEnum = null;
+      IMMDevice device = null;
+      IAudioSessionManager2 sessionManager = null;
+      IAudioSessionEnumerator sessionEnum = null;
+      var sessions = new List<SessionInfo>();
+
+      try {
+        deviceEnum = (IMMDeviceEnumerator)new CMMDeviceEnumerator();
+        device = (IMMDevice)deviceEnum.GetDefaultAudioEndpoint(0, 0);
+
+        var iid = new Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F");
+        sessionManager = (IAudioSessionManager2)device.Activate(ref iid, 1, IntPtr.Zero);
+        sessionEnum = (IAudioSessionEnumerator)sessionManager.GetSessionEnumerator();
+
+        int count = sessionEnum.GetCount();
+        var g = Guid.Empty;
+
+        for (int i = 0; i < count; i++) {
+          object sessionObj = null;
+          IAudioSessionControl2 ctrl = null;
+          bool retained = false;
+
+          try {
+            sessionObj = sessionEnum.GetSession(i);
+            ctrl = sessionObj as IAudioSessionControl2;
+            if (ctrl == null) continue;
+
+            int sessionPid = (int)ctrl.GetProcessId();
+            if (sessionPid == 0) continue;
+
+            string name = NormalizeProcessName(GetProcessNameByPid(sessionPid));
+            if (String.IsNullOrEmpty(name)) continue;
+
+            var info = new SessionInfo();
+            info.Pid = sessionPid;
+            info.Name = name;
+            info.SessionObj = sessionObj;
+            info.Ctrl = ctrl;
+            info.Volume = sessionObj as ISimpleAudioVolume;
+            info.Meter = sessionObj as IAudioMeterInformation;
+            try { info.State = ctrl.GetState(); } catch { info.State = 0; }
+            try { info.InstanceId = ReadCoTaskString(ctrl.GetSessionInstanceIdentifier()); } catch { info.InstanceId = ""; }
+            if (String.IsNullOrEmpty(info.InstanceId)) info.InstanceId = sessionPid + "#" + i;
+            try { info.Muted = info.Volume != null && info.Volume.GetMute(); } catch { info.Muted = false; }
+            info.Peak = -1.0f;
+            if (info.Meter != null) {
+              try { info.Peak = info.Meter.GetPeakValue(); } catch { info.Peak = -1.0f; }
+            }
+            info.Playing = IsSessionPlaying(info);
+
+            sessions.Add(info);
+            activeProcessIds.Add(sessionPid);
+            retained = true;
+          } finally {
+            if (!retained) {
+              if (ctrl != null && Marshal.IsComObject(ctrl)) Marshal.ReleaseComObject(ctrl);
+              if (sessionObj != null && Marshal.IsComObject(sessionObj)) Marshal.ReleaseComObject(sessionObj);
+            }
+          }
+        }
+
+        for (int i = 0; i < sessions.Count; i++) {
+          var s = sessions[i];
+          bool isFocused = ForegroundMatchesSession(s.Pid, s.Name, focusedPid, focusedName, focusedTitle);
+          bool focusUnknown = focusedPid <= 0 && String.IsNullOrEmpty(focusedName) && String.IsNullOrEmpty(focusedTitle);
+          bool wasManagedByUs = MutedByUs.Contains(s.Pid) || MutedProcessNames.Contains(s.Name);
+          // Fullscreen games can briefly make GetForegroundWindow return
+          // no usable process id after focus transitions. In that case,
+          // fail open for sessions we already muted, otherwise a game can
+          // remain stuck muted indefinitely even though the user returned
+          // to it.
+          bool shouldTreatAsFocused = isFocused || (focusUnknown && wasManagedByUs);
+          bool shouldMute = muteEnabled && ShouldMuteProcess(s.Name, shouldTreatAsFocused, mode, whitelist, blacklist);
+          bool currentMuted = s.Muted;
+
+          if (s.Volume != null && shouldMute) {
+            if (!currentMuted) {
+              try {
+                s.Volume.SetMute(true, ref g);
+                currentMuted = true;
+              } catch {}
+            }
+            if (currentMuted) {
+              MutedByUs.Add(s.Pid);
+              MutedProcessNames.Add(s.Name);
+            }
+          } else if (s.Volume != null && !shouldMute && currentMuted) {
+            if (wasManagedByUs || shouldTreatAsFocused) {
+              try {
+                s.Volume.SetMute(false, ref g);
+                currentMuted = false;
+                MutedByUs.Remove(s.Pid);
+              } catch {}
+            }
+          }
+
+          s.Muted = currentMuted;
+        }
+
+        ApplyDuckingRules(sessions, duckRules);
+
+        for (int i = 0; i < sessions.Count; i++) {
+          var s = sessions[i];
+          bool ducked = s.InstanceId != null && DuckedOriginals.ContainsKey(s.InstanceId);
+          results.Add("SESSION:" + s.Pid + "|" + s.Name + "|" + (s.Muted ? "1" : "0") + "|" + (s.Playing ? "1" : "0") + "|" + (ducked ? "1" : "0"));
+        }
+
+        var deadPids = new List<int>();
+        foreach (var pid in MutedByUs) {
+          if (!activeProcessIds.Contains(pid)) deadPids.Add(pid);
+        }
+        for (int i = 0; i < deadPids.Count; i++) MutedByUs.Remove(deadPids[i]);
+      } catch (Exception ex) {
+        results.Add("ERR:" + ex.Message);
+      } finally {
+        for (int i = 0; i < sessions.Count; i++) {
+          var s = sessions[i];
+          if (s.Meter != null && Marshal.IsComObject(s.Meter)) Marshal.ReleaseComObject(s.Meter);
+          if (s.Volume != null && Marshal.IsComObject(s.Volume)) Marshal.ReleaseComObject(s.Volume);
+          if (s.Ctrl != null && Marshal.IsComObject(s.Ctrl)) Marshal.ReleaseComObject(s.Ctrl);
+          if (s.SessionObj != null && Marshal.IsComObject(s.SessionObj)) Marshal.ReleaseComObject(s.SessionObj);
+        }
+        if (sessionEnum != null && Marshal.IsComObject(sessionEnum)) Marshal.ReleaseComObject(sessionEnum);
+        if (sessionManager != null && Marshal.IsComObject(sessionManager)) Marshal.ReleaseComObject(sessionManager);
+        if (device != null && Marshal.IsComObject(device)) Marshal.ReleaseComObject(device);
+        if (deviceEnum != null && Marshal.IsComObject(deviceEnum)) Marshal.ReleaseComObject(deviceEnum);
+      }
+
+      return results;
+    }
+
+    static bool IsSessionPlaying(SessionInfo info) {
+      if (info.State != 1) return false;
+
+      // No meter available: fall back to session state alone.
+      if (info.Peak < 0.0f) return true;
+
+      long nowTicks = DateTime.UtcNow.Ticks;
+      if (info.Peak > PeakSilenceThreshold) {
+        if (!String.IsNullOrEmpty(info.InstanceId)) LastAudibleTicks[info.InstanceId] = nowTicks;
+        return true;
+      }
+
+      if (String.IsNullOrEmpty(info.InstanceId)) return false;
+      if (!LastAudibleTicks.ContainsKey(info.InstanceId)) return false;
+
+      long elapsedMs = (nowTicks - LastAudibleTicks[info.InstanceId]) / TimeSpan.TicksPerMillisecond;
+      return elapsedMs < PlayingHoldMs;
+    }
+
+    static void ApplyDuckingRules(List<SessionInfo> sessions, List<DuckRule> rules) {
+      var g = Guid.Empty;
+      var liveIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+      for (int i = 0; i < sessions.Count; i++) {
+        if (!String.IsNullOrEmpty(sessions[i].InstanceId)) liveIds.Add(sessions[i].InstanceId);
+      }
+
+      // Sessions that vanished while ducked can never be restored; drop them
+      // so the map does not grow across the lifetime of the worker.
+      var staleIds = new List<string>();
+      foreach (var key in DuckedOriginals.Keys) {
+        if (!liveIds.Contains(key)) staleIds.Add(key);
+      }
+      for (int i = 0; i < staleIds.Count; i++) DuckedOriginals.Remove(staleIds[i]);
+
+      var staleMeterIds = new List<string>();
+      foreach (var key in LastAudibleTicks.Keys) {
+        if (!liveIds.Contains(key)) staleMeterIds.Add(key);
+      }
+      for (int i = 0; i < staleMeterIds.Count; i++) LastAudibleTicks.Remove(staleMeterIds[i]);
+
+      var wanted = new Dictionary<string, float>(StringComparer.OrdinalIgnoreCase);
+      for (int r = 0; r < rules.Count; r++) {
+        var rule = rules[r];
+
+        bool triggerPlaying = false;
+        for (int i = 0; i < sessions.Count; i++) {
+          var s = sessions[i];
+          if (s.Playing && !s.Muted && rule.Triggers.Contains(s.Name)) { triggerPlaying = true; break; }
+        }
+        if (!triggerPlaying) continue;
+
+        for (int i = 0; i < sessions.Count; i++) {
+          var s = sessions[i];
+          if (s.Volume == null || String.IsNullOrEmpty(s.InstanceId)) continue;
+          if (rule.Triggers.Contains(s.Name)) continue;
+          if (!rule.Targets.Contains(s.Name)) continue;
+
+          if (wanted.ContainsKey(s.InstanceId)) {
+            if (rule.Factor < wanted[s.InstanceId]) wanted[s.InstanceId] = rule.Factor;
+          } else {
+            wanted[s.InstanceId] = rule.Factor;
+          }
+        }
+      }
+
+      for (int i = 0; i < sessions.Count; i++) {
+        var s = sessions[i];
+        if (s.Volume == null || String.IsNullOrEmpty(s.InstanceId)) continue;
+
+        bool shouldDuck = wanted.ContainsKey(s.InstanceId);
+        bool isDucked = DuckedOriginals.ContainsKey(s.InstanceId);
+
+        if (shouldDuck) {
+          float original;
+          if (isDucked) {
+            original = DuckedOriginals[s.InstanceId];
+          } else {
+            try { original = s.Volume.GetMasterVolume(); } catch { continue; }
+            DuckedOriginals[s.InstanceId] = original;
+          }
+
+          float target = original * wanted[s.InstanceId];
+          if (target < 0.0f) target = 0.0f;
+          if (target > 1.0f) target = 1.0f;
+
+          try {
+            float current = s.Volume.GetMasterVolume();
+            if (Math.Abs(current - target) > 0.01f) s.Volume.SetMasterVolume(target, ref g);
+          } catch {}
+        } else if (isDucked) {
+          float original = DuckedOriginals[s.InstanceId];
+          try { s.Volume.SetMasterVolume(original, ref g); } catch {}
+          DuckedOriginals.Remove(s.InstanceId);
+        }
+      }
+    }
+
+    public static void ClearDucking() {
+      if (DuckedOriginals.Count == 0) return;
 
       IMMDeviceEnumerator deviceEnum = null;
       IMMDevice device = null;
@@ -201,71 +513,28 @@ public class WinAudio {
             ctrl = sessionObj as IAudioSessionControl2;
             if (ctrl == null) continue;
 
-            int sessionPid = (int)ctrl.GetProcessId();
-            if (sessionPid == 0) continue;
-
-            string name = NormalizeProcessName(GetProcessNameByPid(sessionPid));
-            if (String.IsNullOrEmpty(name)) continue;
-
-            activeProcessIds.Add(sessionPid);
-                    bool isFocused = ForegroundMatchesSession(sessionPid, name, focusedPid, focusedName, focusedTitle);
-                    bool focusUnknown = focusedPid <= 0 && String.IsNullOrEmpty(focusedName) && String.IsNullOrEmpty(focusedTitle);
-                    bool wasManagedByUs = MutedByUs.Contains(sessionPid) || MutedProcessNames.Contains(name);
-                    // Fullscreen games can briefly make GetForegroundWindow return
-                    // no usable process id after focus transitions. In that case,
-                    // fail open for sessions we already muted, otherwise a game can
-                    // remain stuck muted indefinitely even though the user returned
-                    // to it.
-                    bool shouldTreatAsFocused = isFocused || (focusUnknown && wasManagedByUs);
-                    bool shouldMute = ShouldMuteProcess(name, shouldTreatAsFocused, mode, whitelist, blacklist);
+            string instanceId = "";
+            try { instanceId = ReadCoTaskString(ctrl.GetSessionInstanceIdentifier()); } catch { instanceId = ""; }
+            if (String.IsNullOrEmpty(instanceId) || !DuckedOriginals.ContainsKey(instanceId)) continue;
 
             volume = sessionObj as ISimpleAudioVolume;
-            bool currentMuted = volume != null && volume.GetMute();
-
-            if (volume != null && shouldMute) {
-              if (!currentMuted) {
-                try {
-                  volume.SetMute(true, ref g);
-                  currentMuted = true;
-                } catch {}
-              }
-              if (currentMuted) {
-                MutedByUs.Add(sessionPid);
-                MutedProcessNames.Add(name);
-              }
-            } else if (volume != null && !shouldMute && currentMuted) {
-              if (wasManagedByUs || shouldTreatAsFocused) {
-                try {
-                  volume.SetMute(false, ref g);
-                  currentMuted = false;
-                  MutedByUs.Remove(sessionPid);
-                } catch {}
-              }
+            if (volume != null) {
+              try { volume.SetMasterVolume(DuckedOriginals[instanceId], ref g); } catch {}
             }
-
-            results.Add("SESSION:" + sessionPid + "|" + name + "|" + (currentMuted ? "1" : "0"));
           } finally {
             if (volume != null && Marshal.IsComObject(volume)) Marshal.ReleaseComObject(volume);
             if (ctrl != null && Marshal.IsComObject(ctrl)) Marshal.ReleaseComObject(ctrl);
             if (sessionObj != null && Marshal.IsComObject(sessionObj)) Marshal.ReleaseComObject(sessionObj);
           }
         }
-
-        var deadPids = new List<int>();
-        foreach (var pid in MutedByUs) {
-          if (!activeProcessIds.Contains(pid)) deadPids.Add(pid);
-        }
-        for (int i = 0; i < deadPids.Count; i++) MutedByUs.Remove(deadPids[i]);
-      } catch (Exception ex) {
-        results.Add("ERR:" + ex.Message);
-      } finally {
+      } catch {}
+      finally {
+        DuckedOriginals.Clear();
         if (sessionEnum != null && Marshal.IsComObject(sessionEnum)) Marshal.ReleaseComObject(sessionEnum);
         if (sessionManager != null && Marshal.IsComObject(sessionManager)) Marshal.ReleaseComObject(sessionManager);
         if (device != null && Marshal.IsComObject(device)) Marshal.ReleaseComObject(device);
         if (deviceEnum != null && Marshal.IsComObject(deviceEnum)) Marshal.ReleaseComObject(deviceEnum);
       }
-
-      return results;
     }
 
     public static void ClearManagedMutes(string mode, string whitelistText, string blacklistText) {
@@ -482,17 +751,25 @@ while ($true) {
             }
             [Console]::Out.WriteLine($reqId + ":END")
             [Console]::Out.Flush()
-        } elseif ($cmd -match "^APPLY:(whitelist|blacklist):([^:]*):([^:]*)$") {
+        } elseif ($cmd -match "^APPLY:(whitelist|blacklist):([^:]*):([^:]*):([^:]*):(true|false)$") {
           $mode = $Matches[1]
           $whitelistText = Decode-B64Text $Matches[2]
           $blacklistText = Decode-B64Text $Matches[3]
+          $duckText = Decode-B64Text $Matches[4]
+          $muteEnabled = $Matches[5] -eq "true"
           try {
-            $results = [WinAudio]::ApplyRules($mode, $whitelistText, $blacklistText)
+            $results = [WinAudio]::ApplyRules($mode, $whitelistText, $blacklistText, $duckText, $muteEnabled)
             foreach ($r in $results) { [Console]::Out.WriteLine($reqId + ":" + $r) }
           } catch {
             [Console]::Out.WriteLine($reqId + ":ERR:" + $_.Exception.Message)
           }
           [Console]::Out.WriteLine($reqId + ":END")
+          [Console]::Out.Flush()
+        } elseif ($cmd -eq "CLEARDUCK") {
+          try {
+            [WinAudio]::ClearDucking()
+          } catch {}
+          [Console]::Out.WriteLine($reqId + ":OK")
           [Console]::Out.Flush()
         } elseif ($cmd -match "^CLEAR:(whitelist|blacklist):([^:]*):([^:]*)$") {
           $mode = $Matches[1]
@@ -522,6 +799,8 @@ interface AudioSession {
   pid: number;
   processName: string;
   muted: boolean;
+  playing: boolean;
+  ducked: boolean;
 }
 
 interface PendingRequest {
@@ -558,6 +837,7 @@ export class FocusAudioManager {
   // timeout/restart doesn't blank the Active Audio Apps UI list.
   private lastSessions: AudioSession[] = [];
   private lastFocusedPid = 0;
+  private duckRuleCache: FocusAudioDuckRule[] = [];
 
   constructor() {
     this.configPath = path.join(app.getPath('userData'), 'focusAudio.json');
@@ -768,14 +1048,42 @@ export class FocusAudioManager {
       mode: 'whitelist',
       whitelist: ['Spotify.exe', 'Discord.exe'],
       blacklist: [],
+      duckingEnabled: false,
+      duckRules: [],
     };
     try {
       if (fs.existsSync(this.configPath)) {
         const raw = fs.readFileSync(this.configPath, 'utf8');
-        return { ...defaults, ...JSON.parse(raw) };
+        const parsed = { ...defaults, ...JSON.parse(raw) } as FocusAudioConfig;
+        parsed.duckingEnabled = Boolean(parsed.duckingEnabled);
+        parsed.duckRules = this._normalizeDuckRules(parsed.duckRules);
+        return parsed;
       }
     } catch { /* fall through */ }
     return defaults;
+  }
+
+  private _normalizeDuckRules(rules: unknown): FocusAudioDuckRule[] {
+    if (!Array.isArray(rules)) return [];
+    const normalized: FocusAudioDuckRule[] = [];
+
+    for (const entry of rules) {
+      if (!entry || typeof entry !== 'object') continue;
+      const rule = entry as Partial<FocusAudioDuckRule>;
+      const triggerApps = Array.isArray(rule.triggerApps) ? rule.triggerApps.filter((name) => typeof name === 'string' && name.trim()) : [];
+      const targetApps = Array.isArray(rule.targetApps) ? rule.targetApps.filter((name) => typeof name === 'string' && name.trim()) : [];
+      const percent = Number(rule.duckPercent);
+
+      normalized.push({
+        id: typeof rule.id === 'string' && rule.id ? rule.id : `duck-${normalized.length + 1}-${Date.now()}`,
+        enabled: rule.enabled !== false,
+        triggerApps,
+        targetApps,
+        duckPercent: Number.isFinite(percent) ? Math.max(0, Math.min(95, Math.round(percent))) : 60,
+      });
+    }
+
+    return normalized;
   }
 
   private _saveConfig(): void {
@@ -785,11 +1093,24 @@ export class FocusAudioManager {
   }
 
   getConfig(): FocusAudioConfig {
-    return { ...this.config };
+    return {
+      ...this.config,
+      whitelist: [...this.config.whitelist],
+      blacklist: [...this.config.blacklist],
+      duckRules: this.config.duckRules.map((rule) => ({ ...rule, triggerApps: [...rule.triggerApps], targetApps: [...rule.targetApps] })),
+    };
   }
 
   getCachedActiveAudioApps(): string[] {
     return [...new Set(this.lastSessions.map((s) => s.processName).filter(Boolean))];
+  }
+
+  getCachedPlayingApps(): string[] {
+    return [...new Set(this.lastSessions.filter((s) => s.playing).map((s) => s.processName).filter(Boolean))];
+  }
+
+  getCachedDuckedApps(): string[] {
+    return [...new Set(this.lastSessions.filter((s) => s.ducked).map((s) => s.processName).filter(Boolean))];
   }
 
   setEnabled(enabled: boolean): void {
@@ -797,9 +1118,28 @@ export class FocusAudioManager {
     this._saveConfig();
     if (!enabled) {
       void this._unmuteAll();
-    } else {
+    }
+    if (this._isActive()) void this._tick();
+  }
+
+  setDuckingEnabled(enabled: boolean): void {
+    this.config.duckingEnabled = enabled;
+    this._saveConfig();
+    if (!enabled) {
+      void this._clearDucking();
+    } else if (this._isActive()) {
       void this._tick();
     }
+  }
+
+  setDuckRules(rules: FocusAudioDuckRule[]): void {
+    this.config.duckRules = this._normalizeDuckRules(rules);
+    this._saveConfig();
+    this._updateCaches();
+    // Rules that no longer apply must hand volume back before the next pulse.
+    void this._clearDucking().then(() => {
+      if (this._isActive()) void this._tick();
+    });
   }
 
   setMode(mode: 'whitelist' | 'blacklist'): void {
@@ -845,6 +1185,26 @@ export class FocusAudioManager {
       const norm = this._normalizeName(name);
       if (norm) this.blacklistCache.add(norm);
     }
+    this.duckRuleCache = this.config.duckRules.filter(
+      (rule) => rule.enabled
+        && rule.triggerApps.some((name) => this._normalizeName(name))
+        && rule.targetApps.some((name) => this._normalizeName(name)),
+    );
+  }
+
+  private _isActive(): boolean {
+    return this.config.enabled || (this.config.duckingEnabled && this.duckRuleCache.length > 0);
+  }
+
+  private _encodeDuckRules(): string {
+    if (!this.config.duckingEnabled) return '';
+    const lines = this.duckRuleCache.map((rule) => {
+      const triggers = rule.triggerApps.map((name) => this._normalizeName(name)).filter(Boolean).join(',');
+      const targets = rule.targetApps.map((name) => this._normalizeName(name)).filter(Boolean).join(',');
+      const percent = Math.max(0, Math.min(95, Math.round(rule.duckPercent)));
+      return `${triggers}|${targets}|${percent}`;
+    });
+    return Buffer.from(lines.join('\n'), 'utf8').toString('base64');
   }
 
   private _encodeNameList(list: string[]): string {
@@ -856,7 +1216,9 @@ export class FocusAudioManager {
   }
 
   private _rulesCommand(command: 'APPLY' | 'CLEAR'): string {
-    return `${command}:${this.config.mode}:${this._encodeNameList(this.config.whitelist)}:${this._encodeNameList(this.config.blacklist)}`;
+    const base = `${command}:${this.config.mode}:${this._encodeNameList(this.config.whitelist)}:${this._encodeNameList(this.config.blacklist)}`;
+    if (command === 'CLEAR') return base;
+    return `${base}:${this._encodeDuckRules()}:${this.config.enabled ? 'true' : 'false'}`;
   }
 
   async refreshActiveAudioApps(): Promise<string[]> {
@@ -889,8 +1251,10 @@ export class FocusAudioManager {
           const pid = parseInt(parts[0], 10);
           const processName = parts[1] || '';
           const muted = parts[2] === '1';
+          const playing = parts[3] === '1';
+          const ducked = parts[4] === '1';
           if (pid > 0 && processName) {
-            sessions.push({ pid, processName, muted });
+            sessions.push({ pid, processName, muted, playing, ducked });
           }
         }
       }
@@ -914,13 +1278,19 @@ export class FocusAudioManager {
     } catch { /* ignore */ }
   }
 
+  private async _clearDucking(): Promise<void> {
+    try {
+      await this._workerSend('CLEARDUCK', 5000);
+    } catch { /* ignore */ }
+  }
+
   async tick(): Promise<void> {
-    if (!this.config.enabled) return;
+    if (!this._isActive()) return;
     await this._tick();
   }
 
   private async _tick(): Promise<void> {
-    if (!this.config.enabled || this.tickInFlight) return;
+    if (!this._isActive() || this.tickInFlight) return;
     this.tickInFlight = true;
     try {
       const lines = await this._workerSend(this._rulesCommand('APPLY'), 5000);
@@ -944,9 +1314,9 @@ export class FocusAudioManager {
     if (this.timer) return;
     // Start the worker eagerly so Add-Type compilation happens before first tick
     this._startWorker();
-    if (this.config.enabled) void this._tick();
+    if (this._isActive()) void this._tick();
     this.timer = setInterval(() => {
-      if (this.config.enabled && !this.tickInFlight) void this._tick();
+      if (this._isActive() && !this.tickInFlight) void this._tick();
     }, 1000);
   }
 
@@ -955,8 +1325,10 @@ export class FocusAudioManager {
       clearInterval(this.timer);
       this.timer = null;
     }
-    void this._unmuteAll().then(() => {
-      this._killWorker('stop polling');
-    });
+    void this._clearDucking()
+      .then(() => this._unmuteAll())
+      .then(() => {
+        this._killWorker('stop polling');
+      });
   }
 }
