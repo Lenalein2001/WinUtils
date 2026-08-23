@@ -312,6 +312,7 @@ export class ClipboardManager {
   private cache: ClipboardHistoryFile | null = null;
   private pollHandle: NodeJS.Timeout | null = null;
   private lastSignature: string | null = null;
+  private pollInFlight = false;
   private quickAccessRegistered = false;
   private registeredQuickAccessHotkey: string | null = null;
   private registeredQuickAccessHotkeys: string[] = [];
@@ -329,10 +330,7 @@ export class ClipboardManager {
   }
 
   destroy(): void {
-    if (this.pollHandle) {
-      clearInterval(this.pollHandle);
-      this.pollHandle = null;
-    }
+    this.stopPolling();
 
     for (const accelerator of this.registeredQuickAccessHotkeys) {
       globalShortcut.unregister(accelerator);
@@ -373,6 +371,11 @@ export class ClipboardManager {
     const file = await this.load();
     file.settings = { ...file.settings, monitoring: enabled };
     await this.save(file);
+    if (enabled) {
+      this.startPolling();
+    } else {
+      this.stopPolling();
+    }
     this.notifyStateChanged();
     return this.getState();
   }
@@ -537,11 +540,32 @@ export class ClipboardManager {
     return path.join(this.historyDir, 'windows-clipboard-history-sync.ps1');
   }
 
+  private stopPolling(): void {
+    if (this.pollHandle) {
+      clearTimeout(this.pollHandle);
+      this.pollHandle = null;
+    }
+  }
+
   private startPolling(): void {
     if (this.pollHandle) return;
 
-    this.pollHandle = setInterval(() => {
-      void this.captureClipboard();
+    const settings = this.cache?.settings ?? DEFAULT_SETTINGS;
+    if (!settings.monitoring) return;
+
+    this.pollHandle = setTimeout(() => {
+      this.pollHandle = null;
+      if (this.pollInFlight) {
+        this.startPolling();
+        return;
+      }
+
+      void this.captureClipboard()
+        .finally(() => {
+          if ((this.cache?.settings ?? DEFAULT_SETTINGS).monitoring) {
+            this.startPolling();
+          }
+        });
     }, CLIPBOARD_POLL_MS);
   }
 
@@ -587,40 +611,47 @@ export class ClipboardManager {
   }
 
   private async captureClipboard(): Promise<void> {
-    const file = await this.load();
-    if (!file.settings.monitoring) return;
+    if (this.pollInFlight) return;
+    this.pollInFlight = true;
 
-    const snapshot = await this.readClipboardSnapshot(file.settings);
+    try {
+      const file = await this.load();
+      if (!file.settings.monitoring) return;
+
+      const snapshot = await this.readClipboardSnapshot(file.settings);
     if (!snapshot || snapshot.hash === this.lastSignature) return;
 
-    this.lastSignature = snapshot.hash;
-    const duplicate = file.entries.find((entry) => entry.hash === snapshot.hash);
+      this.lastSignature = snapshot.hash;
+      const duplicate = file.entries.find((entry) => entry.hash === snapshot.hash);
 
-    if (duplicate) {
-      duplicate.copiedAt = new Date().toISOString();
-      duplicate.updatedAt = duplicate.copiedAt;
-      if (duplicate.type === 'image') {
-        await this.attachWindowsHistoryItemId(duplicate);
+      if (duplicate) {
+        duplicate.copiedAt = new Date().toISOString();
+        duplicate.updatedAt = duplicate.copiedAt;
+        if (duplicate.type === 'image') {
+          await this.attachWindowsHistoryItemId(duplicate);
+        }
+        file.entries = [duplicate, ...file.entries.filter((entry) => entry.id !== duplicate.id)];
+        await this.save(file);
+        this.notifyStateChanged();
+        return;
       }
-      file.entries = [duplicate, ...file.entries.filter((entry) => entry.id !== duplicate.id)];
+
+      const entry = await this.createEntry(snapshot, file.settings);
+      if (entry.type === 'image') {
+        await this.attachWindowsHistoryItemId(entry);
+      }
+      file.entries = [entry, ...file.entries];
+      await this.pruneEntries(file);
       await this.save(file);
+
+      if (entry.type === 'image' && entry.image && entry.ocrStatus === 'pending') {
+        void this.runOcr(entry.id, this.imagePath(entry.image.fileName));
+      }
+
       this.notifyStateChanged();
-      return;
+    } finally {
+      this.pollInFlight = false;
     }
-
-    const entry = await this.createEntry(snapshot, file.settings);
-    if (entry.type === 'image') {
-      await this.attachWindowsHistoryItemId(entry);
-    }
-    file.entries = [entry, ...file.entries];
-    await this.pruneEntries(file);
-    await this.save(file);
-
-    if (entry.type === 'image' && entry.image && entry.ocrStatus === 'pending') {
-      void this.runOcr(entry.id, this.imagePath(entry.image.fileName));
-    }
-
-    this.notifyStateChanged();
   }
 
   private async readClipboardSnapshot(settings: ClipboardSettings): Promise<ClipboardSnapshot | null> {
