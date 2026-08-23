@@ -144,6 +144,47 @@ export interface MacroProfile {
   processBindings?: string[];
 }
 
+export interface MacroHotkeySuggestion {
+  macroId: string;
+  macroName: string;
+  suggestedHotkey: string;
+}
+
+export interface MacroHotkeyConflict {
+  hotkey: string;
+  macroIds: string[];
+  macroNames: string[];
+  suggestions: MacroHotkeySuggestion[];
+}
+
+export type MacroHotkeyBackend = 'electron' | 'uiohook' | 'modifier-worker' | 'none';
+
+export interface MacroHotkeyRegistration {
+  hotkey: string;
+  backend: MacroHotkeyBackend;
+  hasReleaseHandler: boolean;
+}
+
+export interface MacroRuntimeStats {
+  collectedAt: string;
+  focusWorkerRunning: boolean;
+  focusMonitorRestarts: number;
+  lastFocusSampleAt: string | null;
+  activePlaybackMacros: number;
+  queuedRuns: number;
+  uiohookRunning: boolean;
+  modifierWorkerRunning: boolean;
+  hotkeyRegistrations: MacroHotkeyRegistration[];
+  hotkeysWithNoBackend: string[];
+  hotkeyConflicts: MacroHotkeyConflict[];
+}
+
+export interface MacroProfileExportResult {
+  ok: boolean;
+  path?: string;
+  message?: string;
+}
+
 // ─── Config ───────────────────────────────────────────────────────────────
 
 export interface MacroConfig {
@@ -159,4 +200,5 @@ export interface MacroState {
   /** Flat list of all macros in the active profile (root + folders). */
   allMacros: Macro[];
   activeProfile: MacroProfile;
+  runtime?: MacroRuntimeStats;
 }

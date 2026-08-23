@@ -15,6 +15,14 @@ export interface HotkeyCallbacks {
   up?: () => void;
 }
 
+export type HotkeyBackend = 'electron' | 'uiohook' | 'modifier-worker' | 'none';
+
+export interface HotkeyDiagnostics {
+  hotkey: string;
+  backend: HotkeyBackend;
+  hasReleaseHandler: boolean;
+}
+
 interface UiohookCombo {
   hotkey: string;
   keycodes: number[];
@@ -43,6 +51,7 @@ const electronRegisteredHotkeys = new Set<string>();
 const uiohookCombos = new Map<string, UiohookCombo>();
 const pressedHotkeys = new Set<string>();
 const pendingStandaloneModifierHotkeys = new Set<string>();
+const modifierWorkerHotkeys = new Set<string>();
 
 function normalizeHotkey(raw: string): string {
   return raw.trim().toLowerCase().replace(/\s+/g, '');
@@ -311,8 +320,27 @@ function getUiohookModule(): UiohookModule | null {
 }
 
 function syncUiohook(): void {
+  const module = getUiohookModule();
   uiohookCombos.clear();
-  stopUiohook();
+
+  if (!module) {
+    stopUiohook();
+    return;
+  }
+
+  const keys = module.UiohookKey as Record<string, number>;
+  for (const [hotkey, callback] of callbacks.entries()) {
+    if (!shouldUseNativeHook(hotkey, callback)) continue;
+
+    const combo = toUiohookCombo(hotkey, keys);
+    if (combo) uiohookCombos.set(hotkey, combo);
+  }
+
+  if (uiohookCombos.size > 0) {
+    startUiohook(module);
+  } else {
+    stopUiohook();
+  }
 }
 
 function shouldUseNativeHook(hotkey: string, callback: HotkeyCallbacks): boolean {
@@ -330,6 +358,11 @@ function syncModifierHotkeyWorker(): void {
     .filter(hotkey => isModifierOnlyHotkey(hotkey) || !electronRegisteredHotkeys.has(hotkey))
     .map(hotkey => ({ hotkey, groups: hotkeyVkGroupsForHotkey(hotkey), fireOnRelease: isModifierOnlyHotkey(hotkey) }))
     .filter((definition): definition is { hotkey: string; groups: HotkeyVkGroup[]; fireOnRelease: boolean } => definition.groups !== null);
+
+  modifierWorkerHotkeys.clear();
+  for (const definition of definitions) {
+    modifierWorkerHotkeys.add(definition.hotkey);
+  }
 
   const nextKey = JSON.stringify(definitions);
   if (nextKey === modifierHotkeyWorkerKey) return;
@@ -368,6 +401,7 @@ function stopModifierHotkeyWorker(): void {
   modifierHotkeyWorker = null;
   modifierHotkeyWorkerKey = '';
   modifierHotkeyWorkerBuffer = '';
+  modifierWorkerHotkeys.clear();
   if (child && !child.killed) child.kill();
 }
 
@@ -984,4 +1018,35 @@ export function stopHook(): void {
   stopUiohook();
   stopModifierHotkeyWorker();
   hooked = false;
+}
+
+export function getHotkeyDiagnostics(): {
+  hotkeys: HotkeyDiagnostics[];
+  uiohookRunning: boolean;
+  modifierWorkerRunning: boolean;
+} {
+  const hotkeys: HotkeyDiagnostics[] = [];
+
+  for (const [hotkey, callback] of callbacks.entries()) {
+    let backend: HotkeyBackend = 'none';
+    if (electronRegisteredHotkeys.has(hotkey)) {
+      backend = 'electron';
+    } else if (uiohookCombos.has(hotkey)) {
+      backend = 'uiohook';
+    } else if (modifierWorkerHotkeys.has(hotkey)) {
+      backend = 'modifier-worker';
+    }
+
+    hotkeys.push({
+      hotkey,
+      backend,
+      hasReleaseHandler: Boolean(callback.up),
+    });
+  }
+
+  return {
+    hotkeys,
+    uiohookRunning,
+    modifierWorkerRunning: modifierHotkeyWorker !== null,
+  };
 }

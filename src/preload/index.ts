@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import type { StartupEntry } from '../shared/startup';
-import type { Macro, MacroAction, MacroFolder, MacroState } from '../shared/macro';
-import type { FocusAudioConfig, FocusAudioState } from '../shared/focusAudio';
+import type { Macro, MacroAction, MacroFolder, MacroProfileExportResult, MacroRuntimeStats, MacroState } from '../shared/macro';
+import type { FocusAudioConfig, FocusAudioDuckRule, FocusAudioState } from '../shared/focusAudio';
 import type { AlwaysActiveMode, AlwaysActiveRuleUpdate, AlwaysActiveState } from '../shared/alwaysActive';
 import type { AppSettings } from '../shared/settings';
 import type { RenameApplyResult, RenamePreview, RenameRule, RenameTransaction, RenameUndoResult, RenamerItem, RenamerLoadOptions, RenamerLoadPathsInput, RenamerPreviewInput } from '../shared/renamer';
@@ -29,6 +29,8 @@ const api = {
     setMode: (mode: 'whitelist' | 'blacklist'): Promise<FocusAudioConfig> => ipcRenderer.invoke('focusAudio:setMode', mode),
     setWhitelist: (list: string[]): Promise<FocusAudioConfig> => ipcRenderer.invoke('focusAudio:setWhitelist', list),
     setBlacklist: (list: string[]): Promise<FocusAudioConfig> => ipcRenderer.invoke('focusAudio:setBlacklist', list),
+    setDuckingEnabled: (enabled: boolean): Promise<FocusAudioConfig> => ipcRenderer.invoke('focusAudio:setDuckingEnabled', enabled),
+    setDuckRules: (rules: FocusAudioDuckRule[]): Promise<FocusAudioConfig> => ipcRenderer.invoke('focusAudio:setDuckRules', rules),
     getActiveApps: (): Promise<string[]> => ipcRenderer.invoke('focusAudio:getActiveApps'),
   },
   alwaysActive: {
@@ -74,6 +76,12 @@ const api = {
       ipcRenderer.invoke('macros:updateProcessBindings', profileName, bindings),
     getActiveApps: (): Promise<string[]> =>
       ipcRenderer.invoke('macros:getActiveApps'),
+    getRuntimeStats: (): Promise<MacroRuntimeStats> =>
+      ipcRenderer.invoke('macros:getRuntimeStats'),
+    exportProfile: (profileName?: string): Promise<MacroProfileExportResult> =>
+      ipcRenderer.invoke('macros:exportProfile', profileName),
+    importProfile: (): Promise<MacroState> =>
+      ipcRenderer.invoke('macros:importProfile'),
     /** Subscribe to auto-profile-switch events from the main process. Returns an unsubscribe function. */
     onProfileChanged: (cb: (state: MacroState) => void): (() => void) => {
       const listener = (_: Electron.IpcRendererEvent, state: MacroState): void => cb(state);

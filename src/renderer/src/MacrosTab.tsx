@@ -13,9 +13,12 @@ import type {
   MacroConditionOperator,
   MacroConditionSource,
   MacroFolder,
+  MacroHotkeyConflict,
+  MacroHotkeySuggestion,
   MacroPlaybackMode,
   MacroPlaybackOptions,
   MacroProfile,
+  MacroRuntimeStats,
   MacroState,
   MouseAction,
   RepeatAction,
@@ -177,6 +180,22 @@ function actionLabel(a: MacroAction): string {
     case 'if': return `If ${conditionSourceLabels[a.condition.source]}`;
     default: return '';
   }
+}
+
+function formatTimeAgo(iso: string | null): string {
+  if (!iso) return 'never';
+  const date = new Date(iso);
+  const diffMs = Date.now() - date.getTime();
+  if (!Number.isFinite(diffMs) || diffMs < 0) return 'just now';
+  if (diffMs < 1000) return 'just now';
+  const seconds = Math.floor(diffMs / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
 }
 
 const macroActionDescriptions: Record<MacroAction['type'], string> = {
@@ -1248,8 +1267,11 @@ export function MacrosTab(): ReactElement {
   const [newProfileInput, setNewProfileInput] = useState('');
   const [activeApps, setActiveApps] = useState<string[]>([]);
   const [appsLoading, setAppsLoading] = useState(false);
+  const [runtime, setRuntime] = useState<MacroRuntimeStats | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const saveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appsPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const runtimePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Load state
   const refresh = useCallback(async () => {
@@ -1258,6 +1280,7 @@ export function MacrosTab(): ReactElement {
     try {
       const s = await window.winUtils.macros.getState();
       setState(s);
+      setRuntime(s.runtime ?? null);
       setExpandedFolders(prev => {
         const next = new Set(prev);
         s.activeProfile.folders.forEach(f => { if (f.isExpanded) next.add(f.id); });
@@ -1274,9 +1297,31 @@ export function MacrosTab(): ReactElement {
 
   // Push notification: main process auto-switched the active profile
   useEffect(() => {
-    const off = window.winUtils.macros.onProfileChanged(s => setState(s));
+    const off = window.winUtils.macros.onProfileChanged(s => {
+      setState(s);
+      setRuntime(s.runtime ?? null);
+    });
     return off;
   }, []);
+
+  const loadRuntime = useCallback(async () => {
+    try {
+      const stats = await window.winUtils.macros.getRuntimeStats();
+      setRuntime(stats);
+    } catch {
+      // ignore transient runtime polling failures
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadRuntime();
+    runtimePollRef.current = setInterval(() => {
+      void loadRuntime();
+    }, 2500);
+    return () => {
+      if (runtimePollRef.current) clearInterval(runtimePollRef.current);
+    };
+  }, [loadRuntime]);
 
   const loadActiveApps = useCallback(async () => {
     setAppsLoading(true);
@@ -1316,7 +1361,10 @@ export function MacrosTab(): ReactElement {
 
   const update = async (fn: () => Promise<MacroState>): Promise<void> => {
     const s = await call(fn);
-    if (s) setState(s);
+    if (s) {
+      setState(s);
+      setRuntime(s.runtime ?? null);
+    }
   };
 
   // Get selected macro
@@ -1325,6 +1373,34 @@ export function MacrosTab(): ReactElement {
     ? [...profile.macros, ...profile.folders.flatMap((f: MacroFolder) => f.macros)]
     : [];
   const selectedMacro = allMacros.find(m => m.id === selectedMacroId) ?? null;
+  const hotkeyConflicts = runtime?.hotkeyConflicts ?? state?.runtime?.hotkeyConflicts ?? [];
+
+  const applyHotkeySuggestion = async (suggestion: MacroHotkeySuggestion): Promise<void> => {
+    const macro = allMacros.find(item => item.id === suggestion.macroId);
+    if (!macro) {
+      setError('Macro for this suggestion could not be found.');
+      return;
+    }
+    await update(() => api.upsertMacro({ ...macro, hotkey: suggestion.suggestedHotkey }));
+    setNotice(`Updated "${macro.name || '(unnamed)'}" to ${suggestion.suggestedHotkey}.`);
+  };
+
+  const exportActiveProfile = async (): Promise<void> => {
+    const result = await call(() => api.exportProfile(state?.config.activeProfile));
+    if (!result) return;
+    if (!result.ok) {
+      if (result.message && result.message !== 'Export cancelled.') {
+        setError(result.message);
+      }
+      return;
+    }
+    setNotice(result.path ? `Profile exported to ${result.path}` : 'Profile exported.');
+  };
+
+  const importProfile = async (): Promise<void> => {
+    await update(() => api.importProfile());
+    setNotice('Profile imported successfully.');
+  };
 
   // Save macro after debounced edit
   const saveMacro = useCallback((macro: Macro) => {
@@ -1348,7 +1424,10 @@ export function MacrosTab(): ReactElement {
     });
     if (saveTimeout.current) clearTimeout(saveTimeout.current);
     saveTimeout.current = setTimeout(() => {
-      void api.upsertMacro(normalizedMacro).then(s => setState(s)).catch(() => {});
+      void api.upsertMacro(normalizedMacro).then(s => {
+        setState(s);
+        setRuntime(s.runtime ?? null);
+      }).catch(() => {});
     }, 600);
   }, [api]);
 
@@ -1422,6 +1501,18 @@ export function MacrosTab(): ReactElement {
               >＋</button>
               <button
                 type="button"
+                className="micro-button"
+                title="Export the active macro profile to a JSON file."
+                onClick={() => void exportActiveProfile()}
+              >⇩</button>
+              <button
+                type="button"
+                className="micro-button"
+                title="Import a macro profile JSON file and switch to it."
+                onClick={() => void importProfile()}
+              >⇧</button>
+              <button
+                type="button"
                 className="micro-button micro-button--danger"
                 title="Delete the active macro profile. The Default profile cannot be deleted."
                 disabled={state?.config.activeProfile === 'Default'}
@@ -1473,6 +1564,76 @@ export function MacrosTab(): ReactElement {
           </div>
         </div>
 
+        <div className="macro-runtime-panel">
+          <div className="macro-runtime-header">
+            <span className="process-bindings-label">Automation runtime</span>
+            <button
+              type="button"
+              className="micro-button"
+              title="Refresh runtime diagnostics now."
+              onClick={() => void loadRuntime()}
+            >↺</button>
+          </div>
+          <div className="macro-runtime-metrics">
+            <span className={`status-pill status-pill--${runtime?.focusWorkerRunning ? 'enabled' : 'disabled'}`}>
+              Focus worker {runtime?.focusWorkerRunning ? 'online' : 'offline'}
+            </span>
+            <span className={`status-pill status-pill--${runtime?.uiohookRunning ? 'enabled' : 'disabled'}`}>
+              Native hook {runtime?.uiohookRunning ? 'active' : 'idle'}
+            </span>
+          </div>
+          <div className="macro-runtime-meta">
+            <span>Restarts: {runtime?.focusMonitorRestarts ?? 0}</span>
+            <span>Active loops: {runtime?.activePlaybackMacros ?? 0}</span>
+            <span>Queued runs: {runtime?.queuedRuns ?? 0}</span>
+            <span>Last focus sample: {formatTimeAgo(runtime?.lastFocusSampleAt ?? null)}</span>
+          </div>
+          {(runtime?.hotkeysWithNoBackend.length ?? 0) > 0 ? (
+            <div className="macro-runtime-warning">
+              Unhandled hotkeys: {(runtime?.hotkeysWithNoBackend ?? []).join(', ')}
+            </div>
+          ) : null}
+        </div>
+
+        <div className="macro-conflicts-panel">
+          <div className="macro-runtime-header">
+            <span className="process-bindings-label">Hotkey conflicts</span>
+            <span className={`status-pill status-pill--${hotkeyConflicts.length > 0 ? 'disabled' : 'enabled'}`}>
+              {hotkeyConflicts.length > 0 ? `${hotkeyConflicts.length} found` : 'none'}
+            </span>
+          </div>
+
+          {hotkeyConflicts.length === 0 ? (
+            <div className="process-apps-empty">No duplicate macro hotkeys in this profile.</div>
+          ) : (
+            <div className="macro-conflicts-list">
+              {hotkeyConflicts.map((conflict: MacroHotkeyConflict) => (
+                <div key={conflict.hotkey} className="macro-conflict-item">
+                  <div className="macro-conflict-title">{conflict.hotkey}</div>
+                  <div className="macro-conflict-macros">{conflict.macroNames.join(', ')}</div>
+                  {conflict.suggestions.length > 0 ? (
+                    <div className="macro-conflict-suggestions">
+                      {conflict.suggestions.map((suggestion: MacroHotkeySuggestion) => (
+                        <button
+                          key={`${conflict.hotkey}-${suggestion.macroId}`}
+                          type="button"
+                          className="ghost-button ghost-button--xs"
+                          onClick={() => void applyHotkeySuggestion(suggestion)}
+                          title={`Apply suggested hotkey ${suggestion.suggestedHotkey} to ${suggestion.macroName}.`}
+                        >
+                          Fix {suggestion.macroName || '(unnamed)'} to {suggestion.suggestedHotkey}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="process-apps-empty">No automatic suggestion available.</div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
         {/* Tree actions */}
         <div className="macros-tree-actions">
           <button type="button" className="ghost-button ghost-button--sm" title="Create a new macro in the active profile." onClick={() => {
@@ -1487,6 +1648,7 @@ export function MacrosTab(): ReactElement {
 
         {/* Error */}
         {error && <div className="error-banner">{error}</div>}
+        {notice && <div className="status-banner">{notice}</div>}
 
         {/* Macro tree */}
         <div className="macro-tree">

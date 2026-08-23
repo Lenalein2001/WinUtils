@@ -2,7 +2,8 @@
 
 import type { StartupEntry } from '../../shared/startup';
 import type { Macro, MacroAction, MacroFolder, MacroState } from '../../shared/macro';
-import type { FocusAudioConfig, FocusAudioState } from '../../shared/focusAudio';
+import type { MacroProfileExportResult, MacroRuntimeStats } from '../../shared/macro';
+import type { FocusAudioConfig, FocusAudioDuckRule, FocusAudioState } from '../../shared/focusAudio';
 import type { AlwaysActiveMode, AlwaysActiveRuleUpdate, AlwaysActiveState } from '../../shared/alwaysActive';
 import type { AppSettings } from '../../shared/settings';
 import type { RenameApplyResult, RenamePreview, RenameRule, RenameTransaction, RenameUndoResult, RenamerItem, RenamerLoadOptions, RenamerLoadPathsInput, RenamerPreviewInput } from '../../shared/renamer';
@@ -29,6 +30,8 @@ declare global {
         setMode: (mode: 'whitelist' | 'blacklist') => Promise<FocusAudioConfig>;
         setWhitelist: (list: string[]) => Promise<FocusAudioConfig>;
         setBlacklist: (list: string[]) => Promise<FocusAudioConfig>;
+        setDuckingEnabled: (enabled: boolean) => Promise<FocusAudioConfig>;
+        setDuckRules: (rules: FocusAudioDuckRule[]) => Promise<FocusAudioConfig>;
         getActiveApps: () => Promise<string[]>;
       };
       alwaysActive: {
@@ -57,6 +60,9 @@ declare global {
         updateRecordHotkey: (hotkey: string) => Promise<MacroState>;
         updateProcessBindings: (profileName: string, bindings: string[]) => Promise<MacroState>;
         getActiveApps: () => Promise<string[]>;
+        getRuntimeStats: () => Promise<MacroRuntimeStats>;
+        exportProfile: (profileName?: string) => Promise<MacroProfileExportResult>;
+        importProfile: () => Promise<MacroState>;
         onProfileChanged: (cb: (state: MacroState) => void) => () => void;
       };
       settings: {
