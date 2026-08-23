@@ -112,6 +112,9 @@ async function createTrayWindow(preloadPath: string): Promise<void> {
     backgroundColor: '#00000000',
     webPreferences: {
       preload: preloadPath,
+      contextIsolation: true,
+      nodeIntegration: false,
+      webSecurity: true,
     },
   });
 
@@ -201,6 +204,9 @@ async function createWindow(startMinimized: boolean): Promise<void> {
     autoHideMenuBar: true,
     webPreferences: {
       preload: preloadPath,
+      contextIsolation: true,
+      nodeIntegration: false,
+      webSecurity: true,
     },
   });
 
