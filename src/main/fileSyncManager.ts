@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, watch, type FSWatcher, type Stats } from 'node:fs';
-import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, stat, unlink, utimes, writeFile } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { app } from 'electron';
 import type {
@@ -245,15 +245,17 @@ export class FileSyncManager {
 
       if (row.action === 'quarantine-left') {
         if (!row.left) throw new Error('Missing left-side file to quarantine.');
-        const quarantinePath = await this.quarantinePath(job, runId, 'left', row.relativePath);
-        await moveFile(row.left.path, quarantinePath);
+        const quarantinePath = job.options.quarantineDeletes ? await this.quarantinePath(job, runId, 'left', row.relativePath) : undefined;
+        if (quarantinePath) await moveFile(row.left.path, quarantinePath);
+        else await removePath(row.left.path);
         return { relativePath: row.relativePath, action: row.action, status: 'applied', targetPath: row.left.path, quarantinePath };
       }
 
       if (row.action === 'quarantine-right') {
         if (!row.right) throw new Error('Missing right-side file to quarantine.');
-        const quarantinePath = await this.quarantinePath(job, runId, 'right', row.relativePath);
-        await moveFile(row.right.path, quarantinePath);
+        const quarantinePath = job.options.quarantineDeletes ? await this.quarantinePath(job, runId, 'right', row.relativePath) : undefined;
+        if (quarantinePath) await moveFile(row.right.path, quarantinePath);
+        else await removePath(row.right.path);
         return { relativePath: row.relativePath, action: row.action, status: 'applied', targetPath: row.right.path, quarantinePath };
       }
 
@@ -272,16 +274,18 @@ export class FileSyncManager {
       if (row.action === 'quarantine-directory-left') {
         if (!row.left) throw new Error('Missing left-side folder to quarantine.');
         if (!(await isDirectoryEmpty(row.left.path))) throw new Error('Folder is no longer empty; re-run Analyze before syncing.');
-        const quarantinePath = await this.quarantinePath(job, runId, 'left', row.relativePath);
-        await moveFile(row.left.path, quarantinePath);
+        const quarantinePath = job.options.quarantineDeletes ? await this.quarantinePath(job, runId, 'left', row.relativePath) : undefined;
+        if (quarantinePath) await moveFile(row.left.path, quarantinePath);
+        else await removePath(row.left.path);
         return { relativePath: row.relativePath, action: row.action, status: 'applied', targetPath: row.left.path, quarantinePath };
       }
 
       if (row.action === 'quarantine-directory-right') {
         if (!row.right) throw new Error('Missing right-side folder to quarantine.');
         if (!(await isDirectoryEmpty(row.right.path))) throw new Error('Folder is no longer empty; re-run Analyze before syncing.');
-        const quarantinePath = await this.quarantinePath(job, runId, 'right', row.relativePath);
-        await moveFile(row.right.path, quarantinePath);
+        const quarantinePath = job.options.quarantineDeletes ? await this.quarantinePath(job, runId, 'right', row.relativePath) : undefined;
+        if (quarantinePath) await moveFile(row.right.path, quarantinePath);
+        else await removePath(row.right.path);
         return { relativePath: row.relativePath, action: row.action, status: 'applied', targetPath: row.right.path, quarantinePath };
       }
 
@@ -340,8 +344,12 @@ export class FileSyncManager {
       }
 
       if (existsSync(targetPath)) {
-        backupPath = await this.quarantinePath(job, runId, targetSide, relativePath);
-        await moveFile(targetPath, backupPath);
+        if (job.options.quarantineDeletes && job.options.keepVersions) {
+          backupPath = await this.quarantinePath(job, runId, targetSide, relativePath);
+          await moveFile(targetPath, backupPath);
+        } else {
+          await removePath(targetPath);
+        }
       }
 
       await rename(tempPath, targetPath);
@@ -807,7 +815,7 @@ function validateJob(job: FileSyncJob): void {
   }
   const leftExists = existsSync(job.leftPath);
   const rightExists = existsSync(job.rightPath);
-  if (!leftExists && !rightExists) throw new Error('At least one sync folder must exist.');
+  if (!leftExists && !rightExists) throw new Error('At least one sync folder must exist. Choose an existing left or right folder before analyzing.');
   if (!leftExists && !job.options.createMissingFolders) throw new Error('The left folder does not exist.');
   if (!rightExists && !job.options.createMissingFolders) throw new Error('The right folder does not exist.');
 }
@@ -1148,6 +1156,10 @@ async function hashFile(filePath: string): Promise<string> {
 async function moveFile(sourcePath: string, targetPath: string): Promise<void> {
   await mkdir(path.dirname(targetPath), { recursive: true });
   await rename(sourcePath, targetPath);
+}
+
+async function removePath(targetPath: string): Promise<void> {
+  await rm(targetPath, { recursive: true, force: true });
 }
 
 function safeJoin(rootPath: string, relativePath: string): string {

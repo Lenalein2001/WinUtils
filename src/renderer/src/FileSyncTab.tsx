@@ -89,10 +89,11 @@ export function FileSyncTab(): ReactElement {
   const selectedJob = useMemo(() => state?.jobs.find((job) => job.id === selectedJobId) ?? state?.jobs[0] ?? null, [selectedJobId, state]);
   const selectedAutomation = useMemo(() => state?.automation.find((item) => item.jobId === selectedJob?.id) ?? null, [selectedJob?.id, state]);
   const autoAnalyzeSignature = useMemo(() => selectedJob ? buildAnalyzeSignature(selectedJob) : null, [selectedJob]);
+  const hasBothFolders = Boolean(selectedJob?.leftPath.trim() && selectedJob?.rightPath.trim());
   const actionableCount = preview ? preview.counts.copyLeftToRight + preview.counts.copyRightToLeft + preview.counts.quarantine : 0;
 
   useEffect(() => {
-    if (!selectedJob || !autoAnalyzeSignature || !selectedJob.leftPath.trim() || !selectedJob.rightPath.trim() || busy === 'sync files') return;
+    if (!selectedJob || !autoAnalyzeSignature || !hasBothFolders || busy === 'sync files') return;
     if (lastAutoAnalyzeSignatureRef.current === autoAnalyzeSignature) return;
 
     const requestId = autoAnalyzeRequestIdRef.current + 1;
@@ -120,8 +121,10 @@ export function FileSyncTab(): ReactElement {
 
     return () => {
       window.clearTimeout(timeoutId);
+      autoAnalyzeRequestIdRef.current += 1;
+      setAutoAnalyzing(false);
     };
-  }, [autoAnalyzeSignature, busy, selectedJob]);
+  }, [autoAnalyzeSignature, busy, hasBothFolders, selectedJob]);
 
   const loadState = async (showLoading = false): Promise<void> => {
     if (showLoading) setLoading(true);
@@ -204,6 +207,10 @@ export function FileSyncTab(): ReactElement {
 
   const analyze = async (): Promise<void> => {
     if (!selectedJob) return;
+    if (!hasBothFolders) {
+      setError('Choose both left and right folders before analyzing.');
+      return;
+    }
     await runAction('analyze file sync job', async () => {
       const result = await window.winUtils.fileSync.analyze(selectedJob.id);
       setPreview(result);
@@ -213,7 +220,10 @@ export function FileSyncTab(): ReactElement {
   };
 
   const apply = async (): Promise<void> => {
-    if (!selectedJob) return;
+    if (!selectedJob || !hasBothFolders) {
+      setError('Choose both left and right folders before syncing.');
+      return;
+    }
     await runAction('sync files', async () => {
       const result = await window.winUtils.fileSync.apply(selectedJob.id);
       setLastApply(result);
@@ -239,16 +249,21 @@ export function FileSyncTab(): ReactElement {
   if (loading) return <div className="empty-state">Loading file sync jobs...</div>;
 
   return (
-    <div className="file-sync-layout">
+    <div className="file-sync-layout module-shell module-shell--file-sync">
       <aside className="file-sync-jobs-panel">
         <div className="renamer-panel-header">
           <div>
             <p className="section-kicker">Jobs</p>
             <h2>File Sync</h2>
           </div>
-          <button className="micro-button" type="button" onClick={() => void createJob()} disabled={busy !== null} title="Create a new local folder sync job.">
-            New
-          </button>
+          <div className="file-sync-job-actions">
+            <button className="micro-button" type="button" onClick={() => void createJob()} disabled={busy !== null} title="Create a new local folder sync job.">
+              New
+            </button>
+            <button className="micro-button micro-button--danger" type="button" onClick={() => void deleteJob()} disabled={busy !== null || !selectedJob} title="Delete the selected file sync job and its saved automation settings.">
+              Delete
+            </button>
+          </div>
         </div>
 
         <div className="file-sync-job-list">
@@ -279,9 +294,9 @@ export function FileSyncTab(): ReactElement {
           <>
             <div className="file-sync-toolbar">
               <div>
-                <p className="section-kicker">Auto-analyze first, sync second</p>
+                <p className="section-kicker">Job workspace</p>
                 <h2>{selectedJob.name}</h2>
-                <p>Local folder sync only. Write operations use verified temp copies and quarantine instead of hard deletes.</p>
+                <p>Auto-analyze first, sync second. Local folder sync only with verified temp copies and quarantine instead of hard deletes.</p>
                 {selectedAutomation ? (
                   <p className="file-sync-automation-line">
                     Automation: {formatAutomation(selectedAutomation)}
@@ -289,7 +304,7 @@ export function FileSyncTab(): ReactElement {
                 ) : null}
               </div>
               <div className="renamer-batch-actions">
-                <button className="ghost-button" type="button" onClick={() => void analyze()} disabled={busy !== null || autoAnalyzing} title="Refresh the no-write folder comparison now.">
+                <button className="ghost-button" type="button" onClick={() => void analyze()} disabled={busy !== null || autoAnalyzing || !hasBothFolders} title="Choose both folders before refreshing the no-write folder comparison.">
                   {autoAnalyzing ? 'Analyzing...' : 'Analyze now'}
                 </button>
                 <button className="toggle-button" type="button" onClick={() => void apply()} disabled={busy !== null || autoAnalyzing || !preview || preview.counts.conflicts > 0 || preview.counts.errors > 0 || actionableCount === 0} title="Apply the previewed safe sync operations.">
@@ -310,6 +325,7 @@ export function FileSyncTab(): ReactElement {
 
             <div className="file-sync-config-grid">
               <section className="file-sync-card">
+                <p className="section-kicker">Basics</p>
                 <h3>General</h3>
                 <label className="macro-label">Job name</label>
                 <input className="macro-input" value={selectedJob.name} onChange={(event) => void updateJob({ name: event.target.value })} />
@@ -322,12 +338,17 @@ export function FileSyncTab(): ReactElement {
                   Create left/right folders if they are not found
                 </label>
                 <label title="Always move deleted/replaced files into the WinUtils quarantine folder instead of hard-deleting.">
-                  <input type="checkbox" checked readOnly />
+                  <input type="checkbox" checked={selectedJob.options.quarantineDeletes} onChange={(event) => void updateJob({ options: { quarantineDeletes: event.target.checked } })} />
                   Save deleted/replaced files in quarantine
+                </label>
+                <label title="Keep replaced versions in quarantine so they can be recovered after a sync.">
+                  <input type="checkbox" checked={selectedJob.options.keepVersions} onChange={(event) => void updateJob({ options: { keepVersions: event.target.checked } })} />
+                  Keep replaced versions
                 </label>
               </section>
 
               <section className="file-sync-card">
+                <p className="section-kicker">Inclusion rules</p>
                 <h3>Filters</h3>
                 <label className="macro-label">Exclude patterns</label>
                 <textarea className="macro-input file-sync-textarea" value={selectedJob.filters.excludePatterns.join('\n')} onChange={(event) => void updateJob({ filters: { excludePatterns: splitPatterns(event.target.value) } })} placeholder="node_modules/**&#10;*.tmp" />
@@ -337,9 +358,11 @@ export function FileSyncTab(): ReactElement {
                 <input className="macro-input" type="number" min="0" step="1" value={maxSizeToMegabytes(selectedJob.filters.maxFileSizeBytes)} onChange={(event) => void updateJob({ filters: { maxFileSizeBytes: megabytesToBytes(event.target.value) } })} placeholder="No limit" />
                 <label><input type="checkbox" checked={selectedJob.filters.excludeHidden} onChange={(event) => void updateJob({ filters: { excludeHidden: event.target.checked } })} />Exclude hidden files and folders</label>
                 <label><input type="checkbox" checked={selectedJob.filters.excludeSystem} onChange={(event) => void updateJob({ filters: { excludeSystem: event.target.checked } })} />Exclude system files and folders</label>
+                <label><input type="checkbox" checked={selectedJob.filters.excludeEmptyFolders} onChange={(event) => void updateJob({ filters: { excludeEmptyFolders: event.target.checked } })} />Exclude empty folders</label>
               </section>
 
               <section className="file-sync-card">
+                <p className="section-kicker">Automation</p>
                 <h3>Auto</h3>
                 <p className="inline-note">Auto-sync runs only after this job has completed one manual Sync successfully. It skips conflicts/errors and never runs two copies of the same job at once.</p>
                 <label><input type="checkbox" checked={isTriggerEnabled(selectedJob, 'on-change')} onChange={(event) => void updateJob({ triggers: setTriggerEnabled(selectedJob, 'on-change', event.target.checked) })} />On file change</label>
@@ -353,6 +376,7 @@ export function FileSyncTab(): ReactElement {
               </section>
 
               <section className="file-sync-card">
+                <p className="section-kicker">Conflict behavior</p>
                 <h3>Advanced</h3>
                 <label className="macro-label">Compare mode</label>
                 <select className="macro-select" value={selectedJob.options.compareMode} onChange={(event) => void updateJob({ options: { compareMode: event.target.value as 'size-time' | 'hash' } })}>
@@ -373,6 +397,17 @@ export function FileSyncTab(): ReactElement {
                 </select>
               </section>
             </div>
+
+            <section className="file-sync-history">
+              <div className="file-sync-history-header">
+                <div>
+                  <p className="section-kicker">Audit trail</p>
+                  <h3>Recent runs</h3>
+                </div>
+                <span className="inline-note">{state?.recentRuns.filter((run) => run.jobId === selectedJob.id).length ?? 0} recorded</span>
+              </div>
+              <FileSyncRunHistory runs={(state?.recentRuns ?? []).filter((run) => run.jobId === selectedJob.id)} />
+            </section>
           </>
         )}
       </section>
@@ -460,6 +495,51 @@ function PreviewPanel({ job, preview, lastApply, autoAnalyzing, onAddPattern, on
       ) : null}
     </section>
   );
+}
+
+function FileSyncRunHistory({ runs }: { runs: FileSyncState['recentRuns'] }): ReactElement {
+  if (runs.length === 0) {
+    return <div className="empty-state empty-state--compact">No completed runs for this job yet.</div>;
+  }
+
+  return (
+    <div className="file-sync-history-list">
+      {runs.slice(0, 8).map((run) => (
+        <article className="file-sync-history-row" key={run.id}>
+          <div>
+            <strong>{formatRunStatus(run.status)}</strong>
+            <span>{formatRunTrigger(run.trigger)} · {formatRunDate(run.finishedAt)}</span>
+          </div>
+          <div className="file-sync-history-counts">
+            <span>{run.appliedCount} applied</span>
+            <span>{run.failedCount} failed</span>
+            <span>{run.analyzed.total} compared</span>
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function formatRunStatus(status: FileSyncState['recentRuns'][number]['status']): string {
+  if (status === 'applied') return 'Sync completed';
+  if (status === 'partial') return 'Sync partially completed';
+  if (status === 'failed') return 'Sync failed';
+  return 'Analysis completed';
+}
+
+function formatRunTrigger(trigger: FileSyncState['recentRuns'][number]['trigger']): string {
+  if (trigger === 'manual') return 'Manual';
+  if (trigger === 'on-change') return 'File change';
+  if (trigger === 'on-startup') return 'App startup';
+  if (trigger === 'path-available') return 'Path available';
+  if (trigger === 'interval') return 'Interval';
+  if (trigger === 'schedule') return 'Schedule';
+  return 'Logoff';
+}
+
+function formatRunDate(value: string): string {
+  return new Date(value).toLocaleString();
 }
 
 function TreePanel({ title, rootPath, side, nodes, hasPreview, onChangePath, onBrowse, onAddPattern }: {
