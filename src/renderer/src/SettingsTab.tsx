@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactElement, type ReactNode } from 'react';
-import type { AppSettings } from '../../shared/settings';
+import type { AppSettings, AppTheme } from '../../shared/settings';
 import type { AppUpdateInfo, UpdateState } from '../../shared/updater';
 
 interface SettingsTabProps {
@@ -9,7 +9,26 @@ interface SettingsTabProps {
   onToggleStartMinimized: (value: boolean) => void;
   onToggleMinimizeToTray: (value: boolean) => void;
   onToggleCloseToTray: (value: boolean) => void;
+  onThemeChange: (value: AppTheme) => void;
 }
+
+const themeOptions: Array<{ value: AppTheme; label: string; description: string }> = [
+  {
+    value: 'winutils-blue',
+    label: 'WinUtils Ocean',
+    description: 'Original WinUtils cool-blue desktop style.',
+  },
+  {
+    value: 'sable-night',
+    label: 'Sable Tactical',
+    description: 'Dark tactical palette inspired by your Discord web app.',
+  },
+  {
+    value: 'sable-ember',
+    label: 'Sable Ember',
+    description: 'Brighter orange-accent variant of the Sable style.',
+  },
+];
 
 export function SettingsTab({
   settings,
@@ -18,6 +37,7 @@ export function SettingsTab({
   onToggleStartMinimized,
   onToggleMinimizeToTray,
   onToggleCloseToTray,
+  onThemeChange,
 }: SettingsTabProps): ReactElement {
   const [updateState, setUpdateState] = useState<UpdateState | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
@@ -102,7 +122,7 @@ export function SettingsTab({
   const changelogReleases = showAllChangelogs ? releaseHistory ?? [] : changelogRelease ? [changelogRelease] : [];
 
   return (
-    <div className="settings-layout">
+    <div className="settings-layout module-shell module-shell--settings">
       <div className="content-header">
         <div>
           <p className="section-kicker">Settings</p>
@@ -111,6 +131,25 @@ export function SettingsTab({
       </div>
 
       <div className="settings-card">
+        <p className="section-kicker">Display and startup behavior</p>
+        <div className="settings-row settings-row--stack" title="Choose the app-wide visual theme.">
+          <div>
+            <strong>Theme</strong>
+            <p>{themeOptions.find((option) => option.value === settings.theme)?.description ?? 'Choose the app-wide visual theme.'}</p>
+          </div>
+          <select
+            className="macro-select settings-theme-select"
+            value={settings.theme}
+            disabled={busy}
+            onChange={(event) => onThemeChange(event.target.value as AppTheme)}
+            title="Choose the app-wide visual theme."
+          >
+            {themeOptions.map((option) => (
+              <option key={option.value} value={option.value}>{option.label}</option>
+            ))}
+          </select>
+        </div>
+
         <label className="settings-row" title="Automatically open WinUtils when you sign into Windows.">
           <div>
             <strong>Launch at Windows login</strong>
@@ -169,6 +208,7 @@ export function SettingsTab({
       </div>
 
       <div className="settings-card settings-card--updates">
+        <p className="section-kicker">Updates and release notes</p>
         <div className="settings-update-header">
           <div>
             <strong>Updates</strong>

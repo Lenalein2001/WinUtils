@@ -1,7 +1,7 @@
 ﻿import type { ReactElement } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 import type { StartupEntry } from '../../shared/startup';
-import type { AppSettings } from '../../shared/settings';
+import type { AppSettings, AppTheme } from '../../shared/settings';
 import type { RegexRenamerExport } from '../../shared/regexLab';
 import { AlwaysActiveTab } from './AlwaysActiveTab';
 import { ClipboardTab } from './ClipboardTab';
@@ -99,6 +99,11 @@ function joinFeatureList(features: readonly string[], finalJoin = 'and'): string
 
 const sidebarDescription = `Manage ${joinFeatureList(modules.map((module) => module.compact), 'plus')}.`;
 
+function applyTheme(theme: AppTheme | undefined): void {
+  const resolved = theme ?? 'winutils-blue';
+  document.documentElement.setAttribute('data-theme', resolved);
+}
+
 function App(): ReactElement {
   const [activeTab, setActiveTab] = useState<ActiveTab>('startup-apps');
   const [entries, setEntries] = useState<StartupEntry[]>([]);
@@ -154,15 +159,24 @@ function App(): ReactElement {
   }, []);
 
   useEffect(() => {
+    applyTheme('winutils-blue');
+  }, []);
+
+  useEffect(() => {
     void (async () => {
       try {
         const settings = await window.winUtils.settings.get();
         setAppSettings(settings);
+        applyTheme(settings.theme);
       } catch {
         // Keep UI usable even if settings read fails.
       }
     })();
   }, []);
+
+  useEffect(() => {
+    applyTheme(appSettings?.theme);
+  }, [appSettings?.theme]);
 
   const updateSettings = async (patch: Partial<AppSettings>) => {
     setSettingsBusy(true);
@@ -337,7 +351,8 @@ function App(): ReactElement {
                 onClick={() => setActiveTab(module.id)}
                 title={module.hero}
               >
-                {module.label}
+                <span className="tab-button-label">{module.label}</span>
+                <small>{module.eyebrow}</small>
               </button>
             ))}
           </div>
@@ -346,80 +361,98 @@ function App(): ReactElement {
 
         {activeTab === 'macros' ? (
           <section className="content-card content-card--macros">
-            <MacrosTab />
+            <div className="module-host module-host--macros">
+              <MacrosTab />
+            </div>
           </section>
         ) : null}
 
         {activeTab === 'focus-audio' ? (
           <section className="content-card content-card--focus-audio">
-            <FocusAudioTab />
+            <div className="module-host module-host--focus-audio">
+              <FocusAudioTab />
+            </div>
           </section>
         ) : null}
 
         {activeTab === 'always-active' ? (
           <section className="content-card content-card--always-active">
-            <AlwaysActiveTab />
+            <div className="module-host module-host--always-active">
+              <AlwaysActiveTab />
+            </div>
           </section>
         ) : null}
 
         {activeTab === 'renamer' ? (
           <section className="content-card content-card--renamer">
-            <RenamerTab importedRegex={renamerRegexImport} />
+            <div className="module-host module-host--renamer">
+              <RenamerTab importedRegex={renamerRegexImport} />
+            </div>
           </section>
         ) : null}
 
         {activeTab === 'regex-lab' ? (
           <section className="content-card content-card--regex-lab">
-            <RegexLabTab
-              onExportToRenamer={(payload) => {
-                setRenamerRegexImport(payload);
-                setActiveTab('renamer');
-              }}
-            />
+            <div className="module-host module-host--regex-lab">
+              <RegexLabTab
+                onExportToRenamer={(payload) => {
+                  setRenamerRegexImport(payload);
+                  setActiveTab('renamer');
+                }}
+              />
+            </div>
           </section>
         ) : null}
 
         {activeTab === 'clipboard' ? (
           <section className="content-card content-card--clipboard">
-            <ClipboardTab />
+            <div className="module-host module-host--clipboard">
+              <ClipboardTab />
+            </div>
           </section>
         ) : null}
 
         {activeTab === 'file-sync' ? (
           <section className="content-card content-card--file-sync">
-            <FileSyncTab />
+            <div className="module-host module-host--file-sync">
+              <FileSyncTab />
+            </div>
           </section>
         ) : null}
 
         {activeTab === 'settings' ? (
           <section className="content-card content-card--settings">
-            <SettingsTab
-              settings={appSettings}
-              busy={settingsBusy}
-              onToggleLaunchAtLogin={(value) => void updateSettings({ launchAtLogin: value })}
-              onToggleStartMinimized={(value) => void updateSettings({ startMinimized: value })}
-              onToggleMinimizeToTray={(value) => void updateSettings({ minimizeToTray: value })}
-              onToggleCloseToTray={(value) => void updateSettings({ closeToTray: value })}
-            />
+            <div className="module-host module-host--settings">
+              <SettingsTab
+                settings={appSettings}
+                busy={settingsBusy}
+                onToggleLaunchAtLogin={(value) => void updateSettings({ launchAtLogin: value })}
+                onToggleStartMinimized={(value) => void updateSettings({ startMinimized: value })}
+                onToggleMinimizeToTray={(value) => void updateSettings({ minimizeToTray: value })}
+                onToggleCloseToTray={(value) => void updateSettings({ closeToTray: value })}
+                onThemeChange={(value) => void updateSettings({ theme: value })}
+              />
+            </div>
           </section>
         ) : null}
 
         <section className="content-card" style={activeTab !== 'startup-apps' ? { display: 'none' } : undefined}>
-          <div className="content-header">
-            <div>
-              <p className="section-kicker">Startup Apps</p>
-              <h2>Autostart entries across Windows</h2>
+          <div className="module-shell module-shell--startup">
+            <div className="content-header">
+              <div>
+                <p className="section-kicker">Startup Apps</p>
+                <h2>Autostart entries across Windows</h2>
+              </div>
+              <button
+                className="ghost-button"
+                type="button"
+                onClick={() => void loadEntries()}
+                disabled={loading || busyId !== null}
+                title="Rescan registry Run keys and Startup folders."
+              >
+                Refresh
+              </button>
             </div>
-            <button
-              className="ghost-button"
-              type="button"
-              onClick={() => void loadEntries()}
-              disabled={loading || busyId !== null}
-              title="Rescan registry Run keys and Startup folders."
-            >
-              Refresh
-            </button>
-          </div>
 
           <div className="startup-add-card">
             <h3>Quick Add</h3>
@@ -589,6 +622,7 @@ function App(): ReactElement {
                   </div>
                 ))
               : null}
+          </div>
           </div>
         </section>
       </main>

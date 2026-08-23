@@ -17,6 +17,7 @@ export function registerSettingsIpcHandlers(settingsStore: AppSettingsStore): vo
       startMinimized: stored.startMinimized,
       minimizeToTray: stored.minimizeToTray,
       closeToTray: stored.closeToTray,
+      theme: stored.theme,
     };
   });
 
@@ -27,6 +28,7 @@ export function registerSettingsIpcHandlers(settingsStore: AppSettingsStore): vo
       startMinimized: patch.startMinimized ?? current.startMinimized,
       minimizeToTray: patch.minimizeToTray ?? current.minimizeToTray,
       closeToTray: patch.closeToTray ?? current.closeToTray,
+      theme: patch.theme ?? current.theme,
     };
 
     await settingsStore.save(next);

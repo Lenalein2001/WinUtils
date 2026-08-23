@@ -264,8 +264,9 @@ export function RenamerTab({ importedRegex }: RenamerTabProps): ReactElement {
   };
 
   return (
-    <div className="renamer-layout">
+    <div className="renamer-layout module-shell module-shell--renamer">
       <div className="renamer-toolbar">
+        <p className="section-kicker">Queue controls</p>
         <div className="renamer-actions">
           <button className="toggle-button" type="button" onClick={() => void handlePickFiles()} disabled={busy} title="Choose individual files to add to the rename queue.">Add Files</button>
           <button className="ghost-button" type="button" onClick={() => void handlePickFolder()} disabled={busy} title="Choose a folder and load its contents using the Recursive and Folders options.">Add Folder</button>
@@ -331,6 +332,7 @@ export function RenamerTab({ importedRegex }: RenamerTabProps): ReactElement {
             title="Drop files or folders here to add them to the rename preview."
           >
             <div>
+              <p className="section-kicker">Preview</p>
               <strong>{items.length === 0 ? 'Drop files or folders' : `${items.length} selected item${items.length === 1 ? '' : 's'}`}</strong>
               <p>{preview ? buildPreviewSummary(preview, excludedCount) : activeItems.length === 0 && items.length > 0 ? `${excludedCount} item${excludedCount === 1 ? '' : 's'} excluded.` : 'Preview is generated before anything changes.'}</p>
             </div>

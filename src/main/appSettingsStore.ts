@@ -2,7 +2,14 @@
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { defaultAppSettings, type AppSettings } from '../shared/settings';
+import { defaultAppSettings, type AppSettings, type AppTheme } from '../shared/settings';
+
+function normalizeTheme(value: unknown): AppTheme {
+  if (value === 'sable-night' || value === 'sable-ember' || value === 'winutils-blue') {
+    return value;
+  }
+  return defaultAppSettings.theme;
+}
 
 export class AppSettingsStore {
   private _settings: AppSettings | null = null;
@@ -31,6 +38,7 @@ export class AppSettingsStore {
         startMinimized: Boolean(parsed.startMinimized),
         minimizeToTray: Boolean(parsed.minimizeToTray),
         closeToTray: Boolean(parsed.closeToTray),
+        theme: normalizeTheme(parsed.theme),
       };
       return this._settings;
     } catch {

@@ -176,8 +176,9 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
   };
 
   return (
-    <div className="regex-lab-layout">
+    <div className="regex-lab-layout module-shell module-shell--regex-lab">
       <div className="regex-lab-topbar">
+        <p className="section-kicker">Input and flags</p>
         <div className="regex-lab-field regex-lab-field--sample">
           <span>Text Input</span>
           <input

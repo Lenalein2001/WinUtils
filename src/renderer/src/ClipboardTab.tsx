@@ -156,7 +156,7 @@ export function ClipboardTab(): ReactElement {
     : state?.quickAccessRegistered ? 'Ready' : 'Blocked';
 
   return (
-    <div className="clipboard-layout">
+    <div className="clipboard-layout module-shell module-shell--clipboard">
       <div className="clipboard-topbar">
         <div>
           <p className="section-kicker">Clipboard Manager</p>
@@ -190,6 +190,7 @@ export function ClipboardTab(): ReactElement {
       </div>
 
       <div className="clipboard-controls">
+        <p className="section-kicker">Query and filters</p>
         <label className="clipboard-search">
           <span>Search</span>
           <input
@@ -220,6 +221,7 @@ export function ClipboardTab(): ReactElement {
       </div>
 
       <div className="clipboard-settings-strip">
+        <p className="section-kicker">Capture and retention</p>
         <label title="When enabled, WinUtils watches the Windows clipboard while the app is running or hidden in the tray.">
           <input
             type="checkbox"

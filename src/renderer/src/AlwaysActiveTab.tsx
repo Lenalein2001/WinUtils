@@ -68,7 +68,7 @@ export function AlwaysActiveTab(): ReactElement {
   };
 
   return (
-    <div className="always-active-layout">
+    <div className="always-active-layout module-shell module-shell--always-active">
       <div className="always-active-header">
         <div>
           <p className="section-kicker">Always Active</p>
@@ -110,6 +110,7 @@ export function AlwaysActiveTab(): ReactElement {
         <section className="always-active-panel">
           <div className="always-active-panel-header">
             <div>
+              <p className="section-kicker">Rules</p>
               <h3>Selected Apps</h3>
               <p>{busy ? `Working: ${busy}...` : state?.settings.enabled ? 'Rules are ready.' : 'Rules are saved but disabled.'}</p>
             </div>
@@ -136,6 +137,7 @@ export function AlwaysActiveTab(): ReactElement {
         <section className="always-active-panel">
           <div className="always-active-panel-header">
             <div>
+              <p className="section-kicker">Discovery</p>
               <h3>Running Windows</h3>
               <p>{state?.foregroundWindow?.title ? `Foreground: ${state.foregroundWindow.title}` : 'Foreground window unavailable.'}</p>
             </div>
