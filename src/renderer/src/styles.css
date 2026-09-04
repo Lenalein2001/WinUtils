@@ -2725,6 +2725,139 @@ code {
   gap: 6px;
 }
 
+.macro-keyboard-panel {
+  padding: 8px 14px 10px;
+  border-bottom: 1px solid var(--panel-border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.macro-keyboard-controls {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+}
+
+.macro-keyboard-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.macro-keyboard-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px;
+  border: 1px solid rgba(141, 210, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow-x: auto;
+}
+
+.macro-keyboard-row {
+  display: flex;
+  gap: 4px;
+  min-width: max-content;
+}
+
+.macro-key {
+  --key-unit-width: 34px;
+  flex: 0 0 calc(var(--key-unit-width) * var(--key-width-units, 1));
+  min-height: 30px;
+  border-radius: 6px;
+  border: 1px solid rgba(141, 210, 255, 0.12);
+  background: rgba(9, 15, 26, 0.9);
+  color: var(--text-secondary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-size: 0.69rem;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
+.macro-key:hover {
+  border-color: rgba(141, 210, 255, 0.3);
+  color: var(--text);
+}
+
+.macro-key--spacer {
+  background: transparent;
+  border-color: transparent;
+  cursor: default;
+}
+
+.macro-key--bound {
+  border-color: rgba(123, 216, 143, 0.5);
+  background: rgba(123, 216, 143, 0.12);
+  color: #b6f3c2;
+}
+
+.macro-key--conflict {
+  border-color: rgba(255, 127, 138, 0.55);
+  background: rgba(255, 127, 138, 0.14);
+  color: #ffd1d6;
+}
+
+.macro-key--selected {
+  box-shadow: 0 0 0 1px rgba(141, 210, 255, 0.5);
+}
+
+.macro-key-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.macro-key-count {
+  font-size: 0.63rem;
+  line-height: 1;
+  border-radius: 999px;
+  padding: 1px 5px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.macro-keyboard-details {
+  border: 1px solid rgba(141, 210, 255, 0.14);
+  border-radius: 8px;
+  background: rgba(141, 210, 255, 0.05);
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.macro-keyboard-details-title {
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+}
+
+.macro-keyboard-binding-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.macro-keyboard-binding-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.74rem;
+}
+
+.macro-keyboard-binding-item code {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  padding: 2px 5px;
+  font-size: 0.68rem;
+}
+
 .macro-runtime-header {
   display: flex;
   align-items: center;
@@ -3924,6 +4057,10 @@ code {
 
   .macro-condition-grid {
     grid-template-columns: 1fr;
+  }
+
+  .macro-key {
+    --key-unit-width: 30px;
   }
 }
 

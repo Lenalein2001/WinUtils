@@ -1,5 +1,5 @@
 import type { CSSProperties, DragEvent, ReactElement } from 'react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { normalizeMacroPlayback } from '../../shared/macro';
 import type {
   CommandAction,
@@ -287,6 +287,205 @@ interface ActionDragController {
   previewDrop: (target: ActionDropTarget | null) => void;
   dropAction: (target: ActionDropTarget) => void;
   endDrag: () => void;
+}
+
+type KeyboardPreviewLayoutId = 'ansi-full' | 'ansi-tkl' | 'ansi-60';
+
+interface KeyboardPreviewKey {
+  id: string;
+  label: string;
+  width?: number;
+  aliases?: string[];
+  spacer?: boolean;
+}
+
+interface KeyboardPreviewLayout {
+  id: KeyboardPreviewLayoutId;
+  label: string;
+  rows: KeyboardPreviewKey[][];
+}
+
+interface HotkeyKeyBinding {
+  macroId: string;
+  macroName: string;
+  hotkey: string;
+  enabled: boolean;
+  modifiers: string[];
+}
+
+const KEYBOARD_PREVIEW_ENABLED_STORAGE_KEY = 'winutils.macros.keyboardPreview.enabled';
+const KEYBOARD_PREVIEW_LAYOUT_STORAGE_KEY = 'winutils.macros.keyboardPreview.layout';
+
+const keyboardModifierTokens = new Set(['ctrl', 'alt', 'shift', 'win']);
+
+function keyDef(id: string, label: string, width = 1, aliases: string[] = []): KeyboardPreviewKey {
+  return { id, label, width, aliases };
+}
+
+function spacer(width = 0.5): KeyboardPreviewKey {
+  return { id: `spacer-${newId()}`, label: '', width, spacer: true };
+}
+
+const keyboardPreviewLayouts: Record<KeyboardPreviewLayoutId, KeyboardPreviewLayout> = {
+  'ansi-full': {
+    id: 'ansi-full',
+    label: 'ANSI Full Size',
+    rows: [
+      [keyDef('escape', 'Esc', 1.1, ['esc']), spacer(0.4), keyDef('f1', 'F1'), keyDef('f2', 'F2'), keyDef('f3', 'F3'), keyDef('f4', 'F4'), spacer(0.3), keyDef('f5', 'F5'), keyDef('f6', 'F6'), keyDef('f7', 'F7'), keyDef('f8', 'F8'), spacer(0.3), keyDef('f9', 'F9'), keyDef('f10', 'F10'), keyDef('f11', 'F11'), keyDef('f12', 'F12'), spacer(0.6), keyDef('printscreen', 'PrtSc', 1.2, ['prtsc']), keyDef('insert', 'Ins', 1.1, ['ins']), keyDef('home', 'Home', 1.1), keyDef('pageup', 'PgUp', 1.1, ['pgup']), spacer(0.6), keyDef('numlock', 'Num', 1.1), keyDef('numdiv', 'N /', 1.1, ['num/']), keyDef('nummult', 'N *', 1.1, ['num*']), keyDef('numsub', 'N -', 1.1, ['num-'])],
+      [keyDef('backquote', '`', 1.1, ['`']), keyDef('1', '1'), keyDef('2', '2'), keyDef('3', '3'), keyDef('4', '4'), keyDef('5', '5'), keyDef('6', '6'), keyDef('7', '7'), keyDef('8', '8'), keyDef('9', '9'), keyDef('0', '0'), keyDef('minus', '-', 1.1, ['-']), keyDef('equal', '=', 1.1, ['=']), keyDef('backspace', 'Backspace', 2, ['bksp']), spacer(0.6), keyDef('delete', 'Del', 1.1, ['del']), keyDef('end', 'End', 1.1), keyDef('pagedown', 'PgDn', 1.1, ['pgdn']), spacer(0.6), keyDef('num7', 'N 7', 1.1), keyDef('num8', 'N 8', 1.1), keyDef('num9', 'N 9', 1.1), keyDef('numadd', 'N +', 1.1, ['num+'])],
+      [keyDef('tab', 'Tab', 1.6), keyDef('q', 'Q'), keyDef('w', 'W'), keyDef('e', 'E'), keyDef('r', 'R'), keyDef('t', 'T'), keyDef('y', 'Y'), keyDef('u', 'U'), keyDef('i', 'I'), keyDef('o', 'O'), keyDef('p', 'P'), keyDef('bracketleft', '[', 1.1, ['[']), keyDef('bracketright', ']', 1.1, [']']), keyDef('backslash', '\\', 1.5, ['|']), spacer(4), keyDef('num4', 'N 4', 1.1), keyDef('num5', 'N 5', 1.1), keyDef('num6', 'N 6', 1.1)],
+      [keyDef('capslock', 'Caps', 1.9, ['caps']), keyDef('a', 'A'), keyDef('s', 'S'), keyDef('d', 'D'), keyDef('f', 'F'), keyDef('g', 'G'), keyDef('h', 'H'), keyDef('j', 'J'), keyDef('k', 'K'), keyDef('l', 'L'), keyDef('semicolon', ';', 1.1, [';']), keyDef('quote', "'", 1.1, ["'"]), keyDef('enter', 'Enter', 2.2, ['return']), spacer(4), keyDef('num1', 'N 1', 1.1), keyDef('num2', 'N 2', 1.1), keyDef('num3', 'N 3', 1.1), keyDef('numenter', 'N Enter', 1.1)],
+      [keyDef('shift-left', 'Shift', 2.3, ['shift']), keyDef('z', 'Z'), keyDef('x', 'X'), keyDef('c', 'C'), keyDef('v', 'V'), keyDef('b', 'B'), keyDef('n', 'N'), keyDef('m', 'M'), keyDef('comma', ',', 1.1, [',']), keyDef('period', '.', 1.1, ['.']), keyDef('slash', '/', 1.1, ['/']), keyDef('shift-right', 'Shift', 2.8, ['shift']), spacer(1.2), keyDef('up', '↑', 1.1, ['arrowup']), spacer(1.7), keyDef('num0', 'N 0', 2.3), keyDef('numdec', 'N .', 1.1, ['num.'])],
+      [keyDef('ctrl-left', 'Ctrl', 1.4, ['ctrl', 'control']), keyDef('win-left', 'Win', 1.3, ['meta']), keyDef('alt-left', 'Alt', 1.3, ['option']), keyDef('space', 'Space', 6), keyDef('alt-right', 'Alt', 1.3, ['option']), keyDef('fn', 'Fn', 1.2), keyDef('menu', 'Menu', 1.2), keyDef('ctrl-right', 'Ctrl', 1.4, ['ctrl', 'control']), spacer(0.5), keyDef('left', '←', 1.1, ['arrowleft']), keyDef('down', '↓', 1.1, ['arrowdown']), keyDef('right', '→', 1.1, ['arrowright'])],
+    ],
+  },
+  'ansi-tkl': {
+    id: 'ansi-tkl',
+    label: 'ANSI TKL',
+    rows: [
+      [keyDef('escape', 'Esc', 1.1, ['esc']), spacer(0.4), keyDef('f1', 'F1'), keyDef('f2', 'F2'), keyDef('f3', 'F3'), keyDef('f4', 'F4'), spacer(0.3), keyDef('f5', 'F5'), keyDef('f6', 'F6'), keyDef('f7', 'F7'), keyDef('f8', 'F8'), spacer(0.3), keyDef('f9', 'F9'), keyDef('f10', 'F10'), keyDef('f11', 'F11'), keyDef('f12', 'F12'), spacer(0.6), keyDef('printscreen', 'PrtSc', 1.2, ['prtsc']), keyDef('insert', 'Ins', 1.1, ['ins']), keyDef('home', 'Home', 1.1), keyDef('pageup', 'PgUp', 1.1, ['pgup'])],
+      [keyDef('backquote', '`', 1.1, ['`']), keyDef('1', '1'), keyDef('2', '2'), keyDef('3', '3'), keyDef('4', '4'), keyDef('5', '5'), keyDef('6', '6'), keyDef('7', '7'), keyDef('8', '8'), keyDef('9', '9'), keyDef('0', '0'), keyDef('minus', '-', 1.1, ['-']), keyDef('equal', '=', 1.1, ['=']), keyDef('backspace', 'Backspace', 2, ['bksp']), spacer(0.6), keyDef('delete', 'Del', 1.1, ['del']), keyDef('end', 'End', 1.1), keyDef('pagedown', 'PgDn', 1.1, ['pgdn'])],
+      [keyDef('tab', 'Tab', 1.6), keyDef('q', 'Q'), keyDef('w', 'W'), keyDef('e', 'E'), keyDef('r', 'R'), keyDef('t', 'T'), keyDef('y', 'Y'), keyDef('u', 'U'), keyDef('i', 'I'), keyDef('o', 'O'), keyDef('p', 'P'), keyDef('bracketleft', '[', 1.1, ['[']), keyDef('bracketright', ']', 1.1, [']']), keyDef('backslash', '\\', 1.5, ['|'])],
+      [keyDef('capslock', 'Caps', 1.9, ['caps']), keyDef('a', 'A'), keyDef('s', 'S'), keyDef('d', 'D'), keyDef('f', 'F'), keyDef('g', 'G'), keyDef('h', 'H'), keyDef('j', 'J'), keyDef('k', 'K'), keyDef('l', 'L'), keyDef('semicolon', ';', 1.1, [';']), keyDef('quote', "'", 1.1, ["'"]), keyDef('enter', 'Enter', 2.2, ['return'])],
+      [keyDef('shift-left', 'Shift', 2.3, ['shift']), keyDef('z', 'Z'), keyDef('x', 'X'), keyDef('c', 'C'), keyDef('v', 'V'), keyDef('b', 'B'), keyDef('n', 'N'), keyDef('m', 'M'), keyDef('comma', ',', 1.1, [',']), keyDef('period', '.', 1.1, ['.']), keyDef('slash', '/', 1.1, ['/']), keyDef('shift-right', 'Shift', 2.8, ['shift']), spacer(1.2), keyDef('up', '↑', 1.1, ['arrowup'])],
+      [keyDef('ctrl-left', 'Ctrl', 1.4, ['ctrl', 'control']), keyDef('win-left', 'Win', 1.3, ['meta']), keyDef('alt-left', 'Alt', 1.3, ['option']), keyDef('space', 'Space', 6), keyDef('alt-right', 'Alt', 1.3, ['option']), keyDef('fn', 'Fn', 1.2), keyDef('menu', 'Menu', 1.2), keyDef('ctrl-right', 'Ctrl', 1.4, ['ctrl', 'control']), spacer(0.5), keyDef('left', '←', 1.1, ['arrowleft']), keyDef('down', '↓', 1.1, ['arrowdown']), keyDef('right', '→', 1.1, ['arrowright'])],
+    ],
+  },
+  'ansi-60': {
+    id: 'ansi-60',
+    label: 'ANSI 60%',
+    rows: [
+      [keyDef('escape', 'Esc', 1.1, ['esc']), keyDef('1', '1'), keyDef('2', '2'), keyDef('3', '3'), keyDef('4', '4'), keyDef('5', '5'), keyDef('6', '6'), keyDef('7', '7'), keyDef('8', '8'), keyDef('9', '9'), keyDef('0', '0'), keyDef('minus', '-', 1.1, ['-']), keyDef('equal', '=', 1.1, ['=']), keyDef('backspace', 'Backspace', 2, ['bksp'])],
+      [keyDef('tab', 'Tab', 1.6), keyDef('q', 'Q'), keyDef('w', 'W'), keyDef('e', 'E'), keyDef('r', 'R'), keyDef('t', 'T'), keyDef('y', 'Y'), keyDef('u', 'U'), keyDef('i', 'I'), keyDef('o', 'O'), keyDef('p', 'P'), keyDef('bracketleft', '[', 1.1, ['[']), keyDef('bracketright', ']', 1.1, [']']), keyDef('backslash', '\\', 1.5, ['|'])],
+      [keyDef('capslock', 'Caps', 1.9, ['caps']), keyDef('a', 'A'), keyDef('s', 'S'), keyDef('d', 'D'), keyDef('f', 'F'), keyDef('g', 'G'), keyDef('h', 'H'), keyDef('j', 'J'), keyDef('k', 'K'), keyDef('l', 'L'), keyDef('semicolon', ';', 1.1, [';']), keyDef('quote', "'", 1.1, ["'"]), keyDef('enter', 'Enter', 2.2, ['return'])],
+      [keyDef('shift-left', 'Shift', 2.3, ['shift']), keyDef('z', 'Z'), keyDef('x', 'X'), keyDef('c', 'C'), keyDef('v', 'V'), keyDef('b', 'B'), keyDef('n', 'N'), keyDef('m', 'M'), keyDef('comma', ',', 1.1, [',']), keyDef('period', '.', 1.1, ['.']), keyDef('slash', '/', 1.1, ['/']), keyDef('shift-right', 'Shift', 2.8, ['shift'])],
+      [keyDef('ctrl-left', 'Ctrl', 1.4, ['ctrl', 'control']), keyDef('win-left', 'Win', 1.3, ['meta']), keyDef('alt-left', 'Alt', 1.3, ['option']), keyDef('space', 'Space', 6), keyDef('alt-right', 'Alt', 1.3, ['option']), keyDef('fn', 'Fn', 1.2), keyDef('menu', 'Menu', 1.2), keyDef('ctrl-right', 'Ctrl', 1.4, ['ctrl', 'control'])],
+    ],
+  },
+};
+
+function loadKeyboardPreviewEnabled(): boolean {
+  if (typeof window === 'undefined') return false;
+  return window.localStorage.getItem(KEYBOARD_PREVIEW_ENABLED_STORAGE_KEY) === '1';
+}
+
+function loadKeyboardPreviewLayout(): KeyboardPreviewLayoutId {
+  if (typeof window === 'undefined') return 'ansi-full';
+  const raw = window.localStorage.getItem(KEYBOARD_PREVIEW_LAYOUT_STORAGE_KEY);
+  if (raw === 'ansi-full' || raw === 'ansi-tkl' || raw === 'ansi-60') return raw;
+  return 'ansi-full';
+}
+
+function normalizeHotkeyToken(token: string): string {
+  const normalized = token.trim().toLowerCase().replace(/\s+/g, '').replace(/[_-]/g, '');
+  switch (normalized) {
+    case 'control':
+      return 'ctrl';
+    case 'meta':
+    case 'windows':
+    case 'os':
+      return 'win';
+    case 'option':
+      return 'alt';
+    case 'arrowup':
+      return 'up';
+    case 'arrowdown':
+      return 'down';
+    case 'arrowleft':
+      return 'left';
+    case 'arrowright':
+      return 'right';
+    case 'pageup':
+    case 'pgup':
+      return 'pageup';
+    case 'pagedown':
+    case 'pgdn':
+      return 'pagedown';
+    case 'escape':
+      return 'escape';
+    case 'return':
+      return 'enter';
+    case 'ins':
+      return 'insert';
+    case 'del':
+      return 'delete';
+    case 'numadd':
+    case 'num+':
+      return 'numadd';
+    case 'numsub':
+    case 'num-':
+      return 'numsub';
+    case 'nummult':
+    case 'num*':
+      return 'nummult';
+    case 'numdiv':
+    case 'num/':
+      return 'numdiv';
+    case 'numdec':
+    case 'num.':
+      return 'numdec';
+    default:
+      return normalized;
+  }
+}
+
+function modifierTokenLabel(token: string): string {
+  if (token === 'ctrl') return 'Ctrl';
+  if (token === 'alt') return 'Alt';
+  if (token === 'shift') return 'Shift';
+  if (token === 'win') return 'Win';
+  return token.toUpperCase();
+}
+
+function buildKeyboardAliasMap(layout: KeyboardPreviewLayout): Map<string, string[]> {
+  const aliases = new Map<string, string[]>();
+  const addAlias = (token: string, keyId: string) => {
+    const list = aliases.get(token) ?? [];
+    if (!list.includes(keyId)) list.push(keyId);
+    aliases.set(token, list);
+  };
+
+  layout.rows.forEach(row => {
+    row.forEach(key => {
+      if (key.spacer) return;
+      addAlias(normalizeHotkeyToken(key.id), key.id);
+      key.aliases?.forEach(alias => addAlias(normalizeHotkeyToken(alias), key.id));
+      if (key.label) addAlias(normalizeHotkeyToken(key.label), key.id);
+    });
+  });
+
+  return aliases;
+}
+
+function extractHotkeyBinding(macro: Macro): { binding: HotkeyKeyBinding; primaryToken: string } | null {
+  const hotkey = macro.hotkey.trim();
+  if (!hotkey) return null;
+
+  const tokens = hotkey.split('+').map(token => normalizeHotkeyToken(token)).filter(Boolean);
+  if (tokens.length === 0) return null;
+
+  let resolvedPrimaryIndex = tokens.length - 1;
+  for (let index = tokens.length - 1; index >= 0; index -= 1) {
+    if (!keyboardModifierTokens.has(tokens[index])) {
+      resolvedPrimaryIndex = index;
+      break;
+    }
+  }
+  const primaryToken = tokens[resolvedPrimaryIndex];
+  const modifiers = tokens
+    .filter((token, index) => index !== resolvedPrimaryIndex && keyboardModifierTokens.has(token))
+    .map(modifierTokenLabel);
+
+  return {
+    primaryToken,
+    binding: {
+      macroId: macro.id,
+      macroName: macro.name || '(unnamed)',
+      hotkey,
+      enabled: macro.enabled,
+      modifiers,
+    },
+  };
 }
 
 function nestedActionListId(actionId: string, branch: NestedActionListBranch): string {
@@ -1535,6 +1734,8 @@ export function MacrosTab(): ReactElement {
   const [appsLoading, setAppsLoading] = useState(false);
   const [runtime, setRuntime] = useState<MacroRuntimeStats | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [keyboardPreviewEnabled, setKeyboardPreviewEnabled] = useState<boolean>(() => loadKeyboardPreviewEnabled());
+  const [keyboardLayoutId, setKeyboardLayoutId] = useState<KeyboardPreviewLayoutId>(() => loadKeyboardPreviewLayout());
   const saveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appsPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const runtimePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -1609,6 +1810,16 @@ export function MacrosTab(): ReactElement {
       if (appsPollRef.current) clearInterval(appsPollRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(KEYBOARD_PREVIEW_ENABLED_STORAGE_KEY, keyboardPreviewEnabled ? '1' : '0');
+  }, [keyboardPreviewEnabled]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(KEYBOARD_PREVIEW_LAYOUT_STORAGE_KEY, keyboardLayoutId);
+  }, [keyboardLayoutId]);
 
   const api = window.winUtils.macros;
 
@@ -1941,6 +2152,44 @@ export function MacrosTab(): ReactElement {
           )}
         </div>
 
+        <div className="macro-keyboard-panel">
+          <div className="macro-runtime-header">
+            <span className="process-bindings-label">Keyboard preview</span>
+            <label className="macro-toggle-label" title="Experimental: disable this any time to roll back to the classic macro editor view.">
+              <input
+                type="checkbox"
+                checked={keyboardPreviewEnabled}
+                onChange={event => setKeyboardPreviewEnabled(event.target.checked)}
+              />
+              Experimental
+            </label>
+          </div>
+
+          <div className="macro-keyboard-controls">
+            <label className="macro-label" htmlFor="keyboard-layout-select">Layout</label>
+            <select
+              id="keyboard-layout-select"
+              className="macro-select"
+              value={keyboardLayoutId}
+              onChange={event => setKeyboardLayoutId(event.target.value as KeyboardPreviewLayoutId)}
+              disabled={!keyboardPreviewEnabled}
+              title="Choose the keyboard layout used for the bound-key preview."
+            >
+              {Object.values(keyboardPreviewLayouts).map(layout => (
+                <option key={layout.id} value={layout.id}>{layout.label}</option>
+              ))}
+            </select>
+          </div>
+
+          {keyboardPreviewEnabled ? (
+            <KeyboardHotkeyPreview macros={allMacros} layoutId={keyboardLayoutId} />
+          ) : (
+            <div className="process-apps-empty">
+              Enable the experimental preview to visualize all bound hotkeys on a keyboard layout.
+            </div>
+          )}
+        </div>
+
         {/* Tree actions */}
         <div className="macros-tree-actions">
           <button type="button" className="ghost-button ghost-button--sm" title="Create a new macro in the active profile." onClick={() => {
@@ -2060,6 +2309,124 @@ export function MacrosTab(): ReactElement {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+function KeyboardHotkeyPreview({
+  macros,
+  layoutId,
+}: {
+  macros: Macro[];
+  layoutId: KeyboardPreviewLayoutId;
+}): ReactElement {
+  const layout = keyboardPreviewLayouts[layoutId];
+  const aliasMap = useMemo(() => buildKeyboardAliasMap(layout), [layout]);
+  const [selectedKeyId, setSelectedKeyId] = useState<string | null>(null);
+
+  const { keyBindings, unmatchedBindings } = useMemo(() => {
+    const nextKeyBindings = new Map<string, HotkeyKeyBinding[]>();
+    const unmatched: HotkeyKeyBinding[] = [];
+
+    macros.forEach(macro => {
+      const parsed = extractHotkeyBinding(macro);
+      if (!parsed) return;
+
+      const keyIds = aliasMap.get(parsed.primaryToken) ?? [];
+      if (keyIds.length === 0) {
+        unmatched.push(parsed.binding);
+        return;
+      }
+
+      keyIds.forEach(keyId => {
+        const current = nextKeyBindings.get(keyId) ?? [];
+        current.push(parsed.binding);
+        nextKeyBindings.set(keyId, current);
+      });
+    });
+
+    return { keyBindings: nextKeyBindings, unmatchedBindings: unmatched };
+  }, [aliasMap, macros]);
+
+  const boundKeyIds = useMemo(() => [...keyBindings.keys()], [keyBindings]);
+
+  useEffect(() => {
+    if (selectedKeyId && keyBindings.has(selectedKeyId)) return;
+    setSelectedKeyId(boundKeyIds[0] ?? null);
+  }, [boundKeyIds, keyBindings, selectedKeyId]);
+
+  const selectedBindings = selectedKeyId ? (keyBindings.get(selectedKeyId) ?? []) : [];
+  const selectedKeyLabel = selectedKeyId
+    ? layout.rows.flat().find(key => key.id === selectedKeyId)?.label ?? selectedKeyId
+    : null;
+  const assignedHotkeyCount = macros.reduce((count, macro) => (macro.hotkey.trim() ? count + 1 : count), 0);
+  const conflictKeyCount = [...keyBindings.values()].filter(list => list.length > 1).length;
+
+  return (
+    <div className="macro-keyboard-preview">
+      <div className="macro-runtime-metrics">
+        <span className="status-pill status-pill--enabled">{assignedHotkeyCount} assigned</span>
+        <span className={`status-pill status-pill--${conflictKeyCount > 0 ? 'disabled' : 'enabled'}`}>
+          {conflictKeyCount > 0 ? `${conflictKeyCount} key conflicts` : 'no key conflicts'}
+        </span>
+      </div>
+
+      <div className="macro-keyboard-layout" role="grid" aria-label={`Keyboard preview (${layout.label})`}>
+        {layout.rows.map((row, rowIndex) => (
+          <div className="macro-keyboard-row" key={`${layout.id}-row-${rowIndex}`} role="row">
+            {row.map(key => {
+              const bindings = key.spacer ? [] : (keyBindings.get(key.id) ?? []);
+              const style = { '--key-width-units': String(key.width ?? 1) } as CSSProperties;
+              if (key.spacer) return <span key={key.id} className="macro-key macro-key--spacer" style={style} aria-hidden />;
+
+              const detail = bindings.slice(0, 3).map(binding => binding.macroName).join(', ');
+              const extra = bindings.length > 3 ? ` (+${bindings.length - 3} more)` : '';
+              const title = bindings.length > 0
+                ? `${key.label}: ${detail}${extra}`
+                : key.label;
+
+              return (
+                <button
+                  key={key.id}
+                  type="button"
+                  className={`macro-key${bindings.length > 0 ? ' macro-key--bound' : ''}${bindings.length > 1 ? ' macro-key--conflict' : ''}${selectedKeyId === key.id ? ' macro-key--selected' : ''}`}
+                  style={style}
+                  title={title}
+                  onClick={() => setSelectedKeyId(key.id)}
+                  role="gridcell"
+                >
+                  <span className="macro-key-label">{key.label}</span>
+                  {bindings.length > 0 ? <span className="macro-key-count">{bindings.length}</span> : null}
+                </button>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+
+      {selectedBindings.length > 0 ? (
+        <div className="macro-keyboard-details">
+          <div className="macro-keyboard-details-title">Bound to {selectedKeyLabel}</div>
+          <div className="macro-keyboard-binding-list">
+            {selectedBindings.map(binding => (
+              <div key={`${binding.macroId}-${binding.hotkey}`} className="macro-keyboard-binding-item">
+                <span>{binding.macroName}</span>
+                <code>{binding.hotkey}</code>
+                {binding.modifiers.length > 0 ? <span className="macro-tool-hint">{binding.modifiers.join(' + ')}</span> : null}
+                {!binding.enabled ? <span className="status-pill status-pill--disabled">disabled</span> : null}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div className="process-apps-empty">Click a highlighted key to inspect bound macros.</div>
+      )}
+
+      {unmatchedBindings.length > 0 ? (
+        <div className="macro-runtime-warning">
+          {unmatchedBindings.length} hotkey(s) could not be mapped to this layout.
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2684,7 +3051,3 @@ function MacroEditor({
     </div>
   );
 }
-
-
-
-
