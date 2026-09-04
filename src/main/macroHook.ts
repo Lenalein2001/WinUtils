@@ -3,7 +3,7 @@
  * with uiohook-napi used for release tracking when a macro needs hold behavior.
  */
 
-import { app, globalShortcut } from 'electron';
+import { app, BrowserWindow, globalShortcut } from 'electron';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createRequire } from 'node:module';
 import type { UiohookKeyboardEvent } from 'uiohook-napi';
@@ -59,6 +59,11 @@ function normalizeHotkey(raw: string): string {
 
 function toCallbacks(callback: (() => void) | HotkeyCallbacks): HotkeyCallbacks {
   return typeof callback === 'function' ? { down: callback } : callback;
+}
+
+function isWinUtilsFocused(): boolean {
+  const focusedWindow = BrowserWindow.getFocusedWindow();
+  return focusedWindow !== null && !focusedWindow.isDestroyed();
 }
 
 function toElectronAccelerator(hotkey: string): string | null {
@@ -931,6 +936,7 @@ function modifierStateMatches(actual: boolean, expected: boolean, isTriggerKey: 
 function fireHotkeyDown(hotkey: string, fromElectron: boolean): void {
   const callback = callbacks.get(hotkey);
   if (!callback) return;
+  if (isWinUtilsFocused()) return;
   const canTrackRelease = uiohookRunning && uiohookCombos.has(hotkey);
 
   if (fromElectron && canTrackRelease) {

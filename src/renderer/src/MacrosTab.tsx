@@ -39,6 +39,10 @@ function blankFolder(name = 'New Folder'): MacroFolder {
   return { id: newId(), name, macros: [], isExpanded: true };
 }
 
+function normalizeMacroHotkey(hotkey: string): string {
+  return hotkey.trim().toLowerCase().replace(/\s+/g, '');
+}
+
 function blankCondition(): MacroCondition {
   return { source: 'active-process', operator: 'contains', value: '', caseSensitive: false };
 }
@@ -419,8 +423,29 @@ interface AutoClickerPresetOptions {
   clicksPerSecond: number;
 }
 
+type HelldiversDirection = 'U' | 'D' | 'L' | 'R';
+type HelldiversMovementKeys = 'arrows' | 'wasd';
+type HelldiversModifierKey = 'none' | 'Ctrl' | 'Alt' | 'Shift';
+type HelldiversModifierBehavior = 'hold' | 'press';
+
+interface HelldiversStratagemPreset {
+  id: string;
+  name: string;
+  code: string;
+}
+
+interface HelldiversPresetOptions {
+  stratagemId: string;
+  movementKeys: HelldiversMovementKeys;
+  modifierKey: HelldiversModifierKey;
+  modifierBehavior: HelldiversModifierBehavior;
+  keyDelayMs: number;
+  modifierLeadInMs: number;
+}
+
 interface MacroPresetOptions {
   autoClicker: AutoClickerPresetOptions;
+  helldivers: HelldiversPresetOptions;
 }
 
 const AUTO_CLICKER_CLICK_MS = 0;
@@ -430,6 +455,238 @@ const DEFAULT_AUTO_CLICKER_OPTIONS: AutoClickerPresetOptions = {
   delayMs: 0,
   clicksPerSecond: 20,
 };
+
+const helldivers2StratagemPresets: HelldiversStratagemPreset[] = [
+  { id: 'orbital-precision-strike', name: 'Orbital Precision Strike', code: 'RRU' },
+  { id: 'orbital-gatling-barrage', name: 'Orbital Gatling Barrage', code: 'RDLUU' },
+  { id: 'orbital-airburst-strike', name: 'Orbital Airburst Strike', code: 'RRR' },
+  { id: 'orbital-napalm-barrage', name: 'Orbital Napalm Barrage', code: 'RRDLRU' },
+  { id: 'orbital-120mm-he-barrage', name: 'Orbital 120MM HE Barrage', code: 'RRDLRD' },
+  { id: 'orbital-walking-barrage', name: 'Orbital Walking Barrage', code: 'RDRDRD' },
+  { id: 'orbital-380mm-he-barrage', name: 'Orbital 380MM HE Barrage', code: 'RDUULDD' },
+  { id: 'orbital-railcannon-strike', name: 'Orbital Railcannon Strike', code: 'RUDDR' },
+  { id: 'orbital-laser', name: 'Orbital Laser', code: 'RDURD' },
+  { id: 'orbital-ems-strike', name: 'Orbital EMS Strike', code: 'RRLD' },
+  { id: 'orbital-gas-strike', name: 'Orbital Gas Strike', code: 'RRDR' },
+  { id: 'orbital-smoke-strike', name: 'Orbital Smoke Strike', code: 'RRDU' },
+  { id: 'eagle-500kg-bomb', name: 'Eagle 500kg Bomb', code: 'URDDD' },
+  { id: 'eagle-strafing-run', name: 'Eagle Strafing Run', code: 'URR' },
+  { id: 'eagle-110mm-rocket-pods', name: 'Eagle 110MM Rocket Pods', code: 'URUL' },
+  { id: 'eagle-airstrike', name: 'Eagle Airstrike', code: 'URDR' },
+  { id: 'eagle-cluster-bomb', name: 'Eagle Cluster Bomb', code: 'URDDR' },
+  { id: 'eagle-napalm-airstrike', name: 'Eagle Napalm Airstrike', code: 'URDU' },
+  { id: 'eagle-smoke-strike', name: 'Eagle Smoke Strike', code: 'URUD' },
+  { id: 'cqc-1-one-true-flag', name: 'CQC-1 One True Flag', code: 'DLRRU' },
+  { id: 'mg-43-machine-gun', name: 'MG-43 Machine Gun', code: 'DLDUR' },
+  { id: 'm-105-stalwart', name: 'M-105 Stalwart', code: 'DLDUUL' },
+  { id: 'mg-206-heavy-machine-gun', name: 'MG-206 Heavy Machine Gun', code: 'DLUDD' },
+  { id: 'rs-422-railgun', name: 'RS-422 Railgun', code: 'DRDULR' },
+  { id: 'apw-1-anti-materiel-rifle', name: 'APW-1 Anti-Materiel Rifle', code: 'DLRUD' },
+  { id: 'gl-21-grenade-launcher', name: 'GL-21 Grenade Launcher', code: 'DLULD' },
+  { id: 'gl-52-de-escalator', name: 'GL-52 De-Escalator', code: 'DRULR' },
+  { id: 'tx-41-sterilizer', name: 'TX-41 Sterilizer', code: 'DLUDL' },
+  { id: 'flam-40-flamethrower', name: 'FLAM-40 Flamethrower', code: 'DLUDU' },
+  { id: 'las-98-laser-cannon', name: 'LAS-98 Laser Cannon', code: 'DLDUL' },
+  { id: 'las-99-quasar-cannon', name: 'LAS-99 Quasar Cannon', code: 'DDULR' },
+  { id: 'arc-3-arc-thrower', name: 'ARC-3 Arc Thrower', code: 'DRDULL' },
+  { id: 'mls-4x-commando', name: 'MLS-4X Commando', code: 'DLUDR' },
+  { id: 'eat-17-expendable-anti-tank', name: 'EAT-17 Expendable Anti-tank', code: 'DDLUR' },
+  { id: 'ac-8-autocannon', name: 'AC-8 Autocannon', code: 'DLDUUR' },
+  { id: 'rl-77-airburst-rocket-launcher', name: 'RL-77 Airburst Rocket Launcher', code: 'DUULR' },
+  { id: 'faf-14-spear-launcher', name: 'FAF-14 Spear Launcher', code: 'DDUDD' },
+  { id: 'sta-x3-w-a-s-p-launcher', name: 'StA-X3 W.A.S.P. Launcher', code: 'DDUDR' },
+  { id: 'gr-8-recoilless-rifle', name: 'GR-8 Recoilless Rifle', code: 'DLRRL' },
+  { id: 'b-1-supply-pack', name: 'B-1 Supply Pack', code: 'DLDUUD' },
+  { id: 'b-100-portable-hellbomb', name: 'B-100 Portable Hellbomb', code: 'DRUUU' },
+  { id: 'lift-860-hover-pack', name: 'LIFT-860 Hover Pack', code: 'DUUDLR' },
+  { id: 'lift-850-jump-pack', name: 'LIFT-850 Jump Pack', code: 'DUUDU' },
+  { id: 'sh-32-shield-generator-pack', name: 'SH-32 Shield Generator Pack', code: 'DULRLR' },
+  { id: 'sh-51-directional-shield-backpack', name: 'SH-51 Directional Shield Backpack', code: 'DULRUU' },
+  { id: 'sh-20-ballistic-shield-backpack', name: 'SH-20 Ballistic Shield Backpack', code: 'DLDDUL' },
+  { id: 'ax-arc-3-guard-dog-k-9', name: 'AX/ARC-3 "Guard Dog" K-9', code: 'DULURL' },
+  { id: 'ax-ar-23-guard-dog', name: 'AX/AR-23 "Guard Dog"', code: 'DULURD' },
+  { id: 'ax-las-5-guard-dog-rover', name: 'AX/LAS-5 "Guard Dog" Rover', code: 'DULURR' },
+  { id: 'ax-tx-13-guard-dog-dog-breath', name: 'AX/TX-13 "Guard Dog" Dog Breath', code: 'DULURU' },
+  { id: 'm-103-supply-frv', name: 'M-103 Supply FRV', code: 'LDLLDUR' },
+  { id: 'm-104-incinerator-frv', name: 'M-104 Incinerator FRV', code: 'LDRLDUU' },
+  { id: 'exo-49-emancipator-exosuit', name: 'EXO-49 Emancipator Exosuit', code: 'LDRULDU' },
+  { id: 'exo-45-patriot-exosuit', name: 'EXO-45 Patriot Exosuit', code: 'LDRULDD' },
+  { id: 'm-102-gunner-frv', name: 'M-102 Gunner FRV', code: 'LDRDRDU' },
+  { id: 'td-220-bastion-mk-xvi', name: 'TD-220 Bastion MK XVI', code: 'LDRDLDUDU' },
+  { id: 'exo-55-breakthrough-exosuit', name: 'EXO-55 Breakthrough Exosuit', code: 'LDRLRDU' },
+  { id: 'exo-51-lumberer-exosuit', name: 'EXO-51 Lumberer Exosuit', code: 'LDRURLU' },
+  { id: 'a-g-16-gatling-sentry', name: 'A/G-16 Gatling Sentry', code: 'DURL' },
+  { id: 'a-mg-43-machine-gun-sentry', name: 'A/MG-43 Machine Gun Sentry', code: 'DURRU' },
+  { id: 'e-flam-40-flame-sentry', name: 'E/FLAM-40 Flame Sentry', code: 'DURDUU' },
+  { id: 'a-mls-4x-rocket-sentry', name: 'A/MLS-4X Rocket Sentry', code: 'DURRL' },
+  { id: 'a-ac-8-autocannon-sentry', name: 'A/AC-8 Autocannon Sentry', code: 'DURULU' },
+  { id: 'a-m-23-ems-mortar-sentry', name: 'A/M-23 EMS Mortar Sentry', code: 'DURDR' },
+  { id: 'a-m-12-mortar-sentry', name: 'A/M-12 Mortar Sentry', code: 'DURRD' },
+  { id: 'fx-12-shield-generator-relay', name: 'FX-12 Shield Generator Relay', code: 'DDLRLR' },
+  { id: 'e-gl-21-grenadier-battlement', name: 'E/GL-21 Grenadier Battlement', code: 'DRDLR' },
+  { id: 'e-at-12-anti-tank-emplacement', name: 'E/AT-12 Anti-Tank Emplacement', code: 'DULRRR' },
+  { id: 'e-mg-101-hmg-emplacement', name: 'E/MG-101 HMG Emplacement', code: 'DULRRL' },
+  { id: 'a-arc-3-tesla-tower', name: 'A/ARC-3 Tesla Tower', code: 'DURULR' },
+  { id: 'md-17-anti-tank-mines', name: 'MD-17 Anti-Tank Mines', code: 'DLUU' },
+  { id: 'md-8-gas-mines', name: 'MD-8 Gas Mines', code: 'DLLR' },
+  { id: 'md-6-anti-personnel-minefield', name: 'MD-6 Anti-Personnel Minefield', code: 'DLUR' },
+  { id: 'md-i4-incendiary-mines', name: 'MD-I4 Incendiary Mines', code: 'DLLD' },
+  { id: 'reinforce', name: 'Reinforce', code: 'UDRLU' },
+  { id: 'sos-beacon', name: 'SOS Beacon', code: 'UDRU' },
+  { id: 'resupply', name: 'Resupply', code: 'DDUR' },
+  { id: 'nux-223-hellbomb', name: 'NUX-223 Hellbomb', code: 'DULDURDU' },
+  { id: 'sssd-delivery', name: 'SSSD Delivery', code: 'DDDUU' },
+  { id: 'seismic-probe', name: 'Seismic Probe', code: 'UULRDD' },
+  { id: 'upload-data', name: 'Upload Data', code: 'LRUUU' },
+  { id: 'eagle-rearm', name: 'Eagle Rearm', code: 'UULUR' },
+  { id: 'seaf-artillery', name: 'SEAF Artillery', code: 'RUUD' },
+  { id: 'super-earth-flag', name: 'Super Earth Flag', code: 'DUDU' },
+  { id: 'hive-breaker-drill', name: 'Hive Breaker Drill', code: 'LUDRDD' },
+  { id: 'mgx-42-bullet-storm', name: 'MGX-42 Bullet Storm', code: 'DLDRUL' },
+  { id: 's-11-speargun', name: 'S-11 Speargun', code: 'DRDLUR' },
+  { id: 'cqc-9-defoliation-tool', name: 'CQC-9 Defoliation Tool', code: 'DLRRD' },
+  { id: 'cqc-20-breaching-hammer', name: 'CQC-20 Breaching Hammer', code: 'DLRLU' },
+  { id: 'plas-45-epoch', name: 'PLAS-45 Epoch', code: 'DLULR' },
+  { id: 'eat-700-expendable-napalm', name: 'EAT-700 Expendable Napalm', code: 'DDLUL' },
+  { id: 'eat-411-leveller', name: 'EAT-411 Leveller', code: 'DDLUD' },
+  { id: 'gl-28-belt-fed-grenade-launcher', name: 'GL-28 Belt-Fed Grenade Launcher', code: 'DLULUU' },
+  { id: 'b-md-c4-pack', name: 'B/MD C4 Pack', code: 'DRUURU' },
+  { id: 'ms-11-solo-silo', name: 'MS-11 Solo Silo', code: 'DURDD' },
+  { id: 'b-flam-80-cremator', name: 'B/FLAM-80 Cremator', code: 'DDRDUU' },
+  { id: 'm-1000-maxigun', name: 'M-1000 Maxigun', code: 'DLRDUU' },
+  { id: 'meltagun', name: '40-K Meltagun', code: 'DLULLD' },
+];
+
+const DEFAULT_HELLDIVERS_OPTIONS: HelldiversPresetOptions = {
+  stratagemId: helldivers2StratagemPresets[0]?.id ?? '',
+  movementKeys: 'arrows',
+  modifierKey: 'Ctrl',
+  modifierBehavior: 'hold',
+  keyDelayMs: 45,
+  modifierLeadInMs: 55,
+};
+
+const HELLDIVERS_DEFAULTS_STORAGE_KEY = 'winutils.macros.helldiversDefaults';
+
+function sanitizeHelldiversOptions(input: Partial<HelldiversPresetOptions> | null | undefined): HelldiversPresetOptions {
+  const firstStratagemId = helldivers2StratagemPresets[0]?.id ?? '';
+  const stratagemId = typeof input?.stratagemId === 'string' && helldivers2StratagemPresets.some(item => item.id === input.stratagemId)
+    ? input.stratagemId
+    : firstStratagemId;
+  const movementKeys: HelldiversMovementKeys = input?.movementKeys === 'wasd' ? 'wasd' : 'arrows';
+  const modifierKey: HelldiversModifierKey = input?.modifierKey === 'Alt' || input?.modifierKey === 'Shift' || input?.modifierKey === 'none' ? input.modifierKey : 'Ctrl';
+  const modifierBehavior: HelldiversModifierBehavior = input?.modifierBehavior === 'press' ? 'press' : 'hold';
+
+  return {
+    stratagemId,
+    movementKeys,
+    modifierKey,
+    modifierBehavior,
+    keyDelayMs: clampInteger(Number(input?.keyDelayMs), 0, 2000, DEFAULT_HELLDIVERS_OPTIONS.keyDelayMs),
+    modifierLeadInMs: clampInteger(Number(input?.modifierLeadInMs), 0, 2000, DEFAULT_HELLDIVERS_OPTIONS.modifierLeadInMs),
+  };
+}
+
+function loadStoredHelldiversDefaults(): HelldiversPresetOptions {
+  if (typeof window === 'undefined') return DEFAULT_HELLDIVERS_OPTIONS;
+
+  const raw = window.localStorage.getItem(HELLDIVERS_DEFAULTS_STORAGE_KEY);
+  if (!raw) return DEFAULT_HELLDIVERS_OPTIONS;
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    console.error('Failed to parse stored Helldivers defaults.', error);
+    return DEFAULT_HELLDIVERS_OPTIONS;
+  }
+
+  if (!parsed || typeof parsed !== 'object') return DEFAULT_HELLDIVERS_OPTIONS;
+  return sanitizeHelldiversOptions(parsed as Partial<HelldiversPresetOptions>);
+}
+
+function persistHelldiversDefaults(options: HelldiversPresetOptions): void {
+  if (typeof window === 'undefined') return;
+  window.localStorage.setItem(HELLDIVERS_DEFAULTS_STORAGE_KEY, JSON.stringify(options));
+}
+
+const helldiversDirectionDisplay: Record<HelldiversDirection, string> = {
+  U: '↑',
+  D: '↓',
+  L: '←',
+  R: '→',
+};
+
+function helldiversDirectionToKey(direction: HelldiversDirection, movementKeys: HelldiversMovementKeys): string {
+  if (movementKeys === 'wasd') {
+    if (direction === 'U') return 'W';
+    if (direction === 'D') return 'S';
+    if (direction === 'L') return 'A';
+    return 'D';
+  }
+
+  if (direction === 'U') return 'Up';
+  if (direction === 'D') return 'Down';
+  if (direction === 'L') return 'Left';
+  return 'Right';
+}
+
+function formatHelldiversCode(code: string): string {
+  return code
+    .split('')
+    .map(direction => helldiversDirectionDisplay[helldiversTokenToDirection(direction)] ?? direction.toUpperCase())
+    .join(' ');
+}
+
+function helldiversTokenToDirection(token: string): HelldiversDirection {
+  const normalized = token.trim().toUpperCase();
+  if (normalized === 'W' || normalized === 'U' || normalized === '↑') return 'U';
+  if (normalized === 'S' || normalized === 'D' || normalized === '↓') return 'D';
+  if (normalized === 'A' || normalized === 'L' || normalized === '←') return 'L';
+  return 'R';
+}
+
+function createHelldiversActions(
+  stratagem: HelldiversStratagemPreset,
+  options: HelldiversPresetOptions,
+): MacroAction[] {
+  const actions: MacroAction[] = [];
+  const keyDelayMs = clampInteger(options.keyDelayMs, 0, 2000, DEFAULT_HELLDIVERS_OPTIONS.keyDelayMs);
+  const modifierLeadInMs = clampInteger(options.modifierLeadInMs, 0, 2000, DEFAULT_HELLDIVERS_OPTIONS.modifierLeadInMs);
+  const directions = stratagem.code.split('').map(helldiversTokenToDirection);
+
+  if (options.modifierKey !== 'none') {
+    if (options.modifierBehavior === 'hold') {
+      actions.push({ id: newId(), type: 'keyboard', enabled: true, key: options.modifierKey, pressType: 'down' });
+    } else {
+      actions.push({ id: newId(), type: 'keyboard', enabled: true, key: options.modifierKey, pressType: 'press' });
+    }
+
+    if (modifierLeadInMs > 0) {
+      actions.push({ id: newId(), type: 'delay', enabled: true, milliseconds: modifierLeadInMs });
+    }
+  }
+
+  directions.forEach((direction, index) => {
+    actions.push({
+      id: newId(),
+      type: 'keyboard',
+      enabled: true,
+      key: helldiversDirectionToKey(direction, options.movementKeys),
+      pressType: 'press',
+    });
+
+    if (keyDelayMs > 0 && index < directions.length - 1) {
+      actions.push({ id: newId(), type: 'delay', enabled: true, milliseconds: keyDelayMs });
+    }
+  });
+
+  if (options.modifierKey !== 'none' && options.modifierBehavior === 'hold') {
+    actions.push({ id: newId(), type: 'keyboard', enabled: true, key: options.modifierKey, pressType: 'up' });
+  }
+
+  return actions;
+}
 
 function clampInteger(value: number, min: number, max: number, fallback: number): number {
   const integer = Math.trunc(Number(value));
@@ -722,6 +979,15 @@ const macroPresets: MacroPreset[] = [
       thenActions: [{ id: newId(), type: 'text', enabled: true, text: 'Matched window' }],
       elseActions: [{ id: newId(), type: 'text', enabled: true, text: 'Other window' }],
     }],
+  },
+  {
+    id: 'helldivers-2-stratagem',
+    label: 'Helldivers 2 Stratagem',
+    description: 'Insert a Helldivers 2 stratagem input sequence with configurable modifier behavior.',
+    createActions: ({ helldivers }) => {
+      const stratagem = helldivers2StratagemPresets.find(item => item.id === helldivers.stratagemId) ?? helldivers2StratagemPresets[0];
+      return stratagem ? createHelldiversActions(stratagem, helldivers) : [];
+    },
   },
 ];
 
@@ -1375,6 +1641,44 @@ export function MacrosTab(): ReactElement {
   const selectedMacro = allMacros.find(m => m.id === selectedMacroId) ?? null;
   const hotkeyConflicts = runtime?.hotkeyConflicts ?? state?.runtime?.hotkeyConflicts ?? [];
 
+  const importHelldiversPack = async (options: HelldiversPresetOptions): Promise<void> => {
+    let createdFirstMacroId: string | null = null;
+    const folderBaseName = 'Helldivers 2 Stratagems';
+    const existingFolderNames = new Set((profile?.folders ?? []).map(folder => folder.name.toLowerCase()));
+    let folderName = folderBaseName;
+    let suffix = 2;
+    while (existingFolderNames.has(folderName.toLowerCase())) {
+      folderName = `${folderBaseName} ${suffix}`;
+      suffix += 1;
+    }
+    const folder = blankFolder(folderName);
+
+    const nextState = await call(async () => {
+      await api.upsertFolder(folder);
+      for (const stratagem of helldivers2StratagemPresets) {
+        const macro = blankMacro(stratagem.name);
+        macro.actions = createHelldiversActions(stratagem, options);
+        await api.upsertMacro(macro);
+        await api.moveMacroToFolder(macro.id, folder.id);
+        createdFirstMacroId ??= macro.id;
+      }
+      return api.getState();
+    });
+
+    if (!nextState) return;
+    setState(nextState);
+    setRuntime(nextState.runtime ?? null);
+    setExpandedFolders(prev => {
+      const next = new Set(prev);
+      next.add(folder.id);
+      return next;
+    });
+    if (createdFirstMacroId) {
+      setSelectedMacroId(createdFirstMacroId);
+    }
+    setNotice(`Created ${helldivers2StratagemPresets.length} Helldivers stratagem macros in "${folderName}".`);
+  };
+
   const applyHotkeySuggestion = async (suggestion: MacroHotkeySuggestion): Promise<void> => {
     const macro = allMacros.find(item => item.id === suggestion.macroId);
     if (!macro) {
@@ -1427,7 +1731,10 @@ export function MacrosTab(): ReactElement {
       void api.upsertMacro(normalizedMacro).then(s => {
         setState(s);
         setRuntime(s.runtime ?? null);
-      }).catch(() => {});
+      }).catch((error: unknown) => {
+        setError(error instanceof Error ? error.message : 'Failed to save macro.');
+        void refresh();
+      });
     }, 600);
   }, [api]);
 
@@ -1733,6 +2040,7 @@ export function MacrosTab(): ReactElement {
         {selectedMacro ? (
           <MacroEditor
             macro={selectedMacro}
+            allMacros={allMacros}
             onChange={saveMacro}
             onDelete={() => {
               setSelectedMacroId(null);
@@ -1743,6 +2051,7 @@ export function MacrosTab(): ReactElement {
               await call(() => api.runMacro(selectedMacro.id));
               setRunningId(null);
             }}
+            onImportHelldiversPack={importHelldiversPack}
             running={runningId === selectedMacro.id}
           />
         ) : (
@@ -1792,33 +2101,85 @@ function MacroTreeItem({
 // ─── MacroEditor ──────────────────────────────────────────────────────────
 
 function MacroEditor({
-  macro, onChange, onDelete, onRun, running,
+  macro, allMacros, onChange, onDelete, onRun, onImportHelldiversPack, running,
 }: {
   macro: Macro;
+  allMacros: Macro[];
   onChange: (m: Macro) => void;
   onDelete: () => void;
   onRun: () => Promise<void>;
+  onImportHelldiversPack: (options: HelldiversPresetOptions) => Promise<void>;
   running: boolean;
 }): ReactElement {
   const [dragSource, setDragSource] = useState<ActionDragSource | null>(null);
   const [dropTarget, setDropTarget] = useState<ActionDropTarget | null>(null);
   const [selectedPresetId, setSelectedPresetId] = useState(macroPresets[0]?.id ?? '');
   const [autoClickerOptions, setAutoClickerOptions] = useState<AutoClickerPresetOptions>(DEFAULT_AUTO_CLICKER_OPTIONS);
+  const [helldiversDefaults, setHelldiversDefaults] = useState<HelldiversPresetOptions>(() => loadStoredHelldiversDefaults());
+  const [helldiversOptions, setHelldiversOptions] = useState<HelldiversPresetOptions>(helldiversDefaults);
+  const [helldiversSearch, setHelldiversSearch] = useState('');
   const [targetRunTimeMs, setTargetRunTimeMs] = useState(100);
   const [hoveredPairIndex, setHoveredPairIndex] = useState<number | null>(null);
+  const [hotkeyError, setHotkeyError] = useState<string | null>(null);
   const playback = normalizeMacroPlayback(macro.playback);
   const selectedPreset = macroPresets.find(item => item.id === selectedPresetId) ?? macroPresets[0];
+  const selectedHelldiversStratagem = helldivers2StratagemPresets.find(item => item.id === helldiversOptions.stratagemId) ?? helldivers2StratagemPresets[0];
+  const filteredHelldiversStratagems = helldivers2StratagemPresets.filter(stratagem => stratagem.name.toLowerCase().includes(helldiversSearch.trim().toLowerCase()));
   const calculatedAutoClickerDelay = autoClickerDelayMs(autoClickerOptions);
   const delayActionCount = countDelayActions(macro.actions);
   const hasLinkedActionPairs = hasActionPair(macro.actions);
   const pairDecorations = buildActionPairDecorations(macro.actions);
 
+  useEffect(() => {
+    setHotkeyError(null);
+  }, [macro.id, macro.hotkey]);
+
   const updateAutoClickerOptions = (updates: Partial<AutoClickerPresetOptions>) => {
     setAutoClickerOptions(prev => ({ ...prev, ...updates }));
   };
 
+  const updateHelldiversOptions = (updates: Partial<HelldiversPresetOptions>) => {
+    setHelldiversOptions(prev => sanitizeHelldiversOptions({ ...prev, ...updates }));
+  };
+
+  const applyStoredHelldiversDefaults = () => {
+    setHelldiversOptions(helldiversDefaults);
+  };
+
+  const saveHelldiversDefaults = () => {
+    const nextDefaults = sanitizeHelldiversOptions(helldiversOptions);
+    setHelldiversDefaults(nextDefaults);
+    setHelldiversOptions(nextDefaults);
+    persistHelldiversDefaults(nextDefaults);
+  };
+
+  const resetHelldiversDefaults = () => {
+    setHelldiversDefaults(DEFAULT_HELLDIVERS_OPTIONS);
+    setHelldiversOptions(DEFAULT_HELLDIVERS_OPTIONS);
+    persistHelldiversDefaults(DEFAULT_HELLDIVERS_OPTIONS);
+  };
+
   const updatePlayback = (updates: Partial<MacroPlaybackOptions>) => {
     onChange({ ...macro, playback: normalizeMacroPlayback({ ...playback, ...updates }) });
+  };
+
+  const commitHotkey = (nextHotkey: string) => {
+    const trimmedHotkey = nextHotkey.trim();
+    if (!trimmedHotkey) {
+      setHotkeyError(null);
+      onChange({ ...macro, hotkey: '' });
+      return;
+    }
+
+    const normalizedHotkey = normalizeMacroHotkey(trimmedHotkey);
+    const conflictMacro = allMacros.find(item => item.id !== macro.id && normalizeMacroHotkey(item.hotkey) === normalizedHotkey);
+    if (conflictMacro) {
+      setHotkeyError(`"${trimmedHotkey}" is already assigned to "${conflictMacro.name || '(unnamed)'}".`);
+      return;
+    }
+
+    setHotkeyError(null);
+    onChange({ ...macro, hotkey: trimmedHotkey });
   };
 
   const addAction = (type: MacroAction['type']) => {
@@ -1827,7 +2188,18 @@ function MacroEditor({
 
   const insertPreset = () => {
     if (!selectedPreset) return;
-    onChange({ ...macro, actions: [...macro.actions, ...selectedPreset.createActions({ autoClicker: autoClickerOptions })] });
+
+    const actionsToInsert = selectedPreset.createActions({
+      autoClicker: autoClickerOptions,
+      helldivers: helldiversOptions,
+    });
+
+    const shouldAutoNameHelldivers = selectedPreset.id === 'helldivers-2-stratagem' && selectedHelldiversStratagem;
+    onChange({
+      ...macro,
+      name: shouldAutoNameHelldivers ? selectedHelldiversStratagem.name : macro.name,
+      actions: [...macro.actions, ...actionsToInsert],
+    });
   };
 
   const updateAction = (idx: number, updated: MacroAction, insertAfter?: MacroAction[]) => {
@@ -1910,15 +2282,16 @@ function MacroEditor({
         <label className="macro-label">Global Hotkey</label>
         <HotkeyInput
           value={macro.hotkey}
-          onChange={hk => onChange({ ...macro, hotkey: hk })}
+          onChange={commitHotkey}
           placeholder="Click and press key combination…"
           allowModifierKeys
           allowNonAsciiKeys={false}
         />
         {macro.hotkey && (
-          <button type="button" className="micro-button" onClick={() => onChange({ ...macro, hotkey: '' })} title="Clear this macro hotkey.">✕</button>
+          <button type="button" className="micro-button" onClick={() => { setHotkeyError(null); onChange({ ...macro, hotkey: '' }); }} title="Clear this macro hotkey.">✕</button>
         )}
       </div>
+      {hotkeyError ? <div className="macro-inline-error">{hotkeyError}</div> : null}
 
       <div className="macro-playback-row">
         <label className="macro-label">Playback Option</label>
@@ -2080,6 +2453,165 @@ function MacroEditor({
             )}
           </div>
         ) : null}
+        {selectedPresetId === 'helldivers-2-stratagem' ? (
+          <div className="macro-preset-options macro-preset-options--helldivers">
+            <div className="helldivers-preset-toolbar">
+              <input
+                className="macro-input macro-input--search"
+                value={helldiversSearch}
+                placeholder="Search stratagem..."
+                onChange={event => setHelldiversSearch(event.target.value)}
+                title="Filter the Helldivers stratagem list by name."
+              />
+              <button
+                type="button"
+                className="ghost-button ghost-button--sm"
+                onClick={() => applyStoredHelldiversDefaults()}
+                title="Use your saved Helldivers default values for this preset."
+              >
+                Use Defaults
+              </button>
+              <button
+                type="button"
+                className="ghost-button ghost-button--sm"
+                onClick={() => saveHelldiversDefaults()}
+                title="Save the current Helldivers options as your defaults."
+              >
+                Save as Defaults
+              </button>
+              <button
+                type="button"
+                className="ghost-button ghost-button--sm"
+                onClick={() => resetHelldiversDefaults()}
+                title="Reset Helldivers defaults back to the built-in values."
+              >
+                Reset Defaults
+              </button>
+              <button
+                type="button"
+                className="ghost-button ghost-button--sm"
+                onClick={() => void onImportHelldiversPack(helldiversOptions)}
+                title="Create one macro per listed stratagem in a new profile folder."
+              >
+                Create Full Pack ({helldivers2StratagemPresets.length})
+              </button>
+            </div>
+
+            <div className="helldivers-preset-grid">
+              <label className="macro-label">Stratagem</label>
+              <select
+                className="macro-select"
+                value={helldiversOptions.stratagemId}
+                onChange={event => updateHelldiversOptions({ stratagemId: event.target.value })}
+                title="Choose the stratagem code to insert."
+              >
+                {helldivers2StratagemPresets.map(stratagem => (
+                  <option key={stratagem.id} value={stratagem.id}>{stratagem.name}</option>
+                ))}
+              </select>
+
+              <label className="macro-label">Direction keys</label>
+              <div className="macro-preset-mode" role="group" aria-label="Helldivers direction key mode">
+                <button
+                  type="button"
+                  className={`macro-preset-mode-button${helldiversOptions.movementKeys === 'arrows' ? ' macro-preset-mode-button--active' : ''}`}
+                  onClick={() => updateHelldiversOptions({ movementKeys: 'arrows' })}
+                  title="Use Arrow keys for direction input."
+                >
+                  Arrows
+                </button>
+                <button
+                  type="button"
+                  className={`macro-preset-mode-button${helldiversOptions.movementKeys === 'wasd' ? ' macro-preset-mode-button--active' : ''}`}
+                  onClick={() => updateHelldiversOptions({ movementKeys: 'wasd' })}
+                  title="Use W A S D for direction input."
+                >
+                  WASD
+                </button>
+              </div>
+
+              <label className="macro-label">Modifier key</label>
+              <select
+                className="macro-select"
+                value={helldiversOptions.modifierKey}
+                onChange={event => updateHelldiversOptions({ modifierKey: event.target.value as HelldiversModifierKey })}
+                title="Key used to open stratagem input in-game."
+              >
+                <option value="Ctrl">Ctrl</option>
+                <option value="Alt">Alt</option>
+                <option value="Shift">Shift</option>
+                <option value="none">None</option>
+              </select>
+
+              <label className="macro-label">Modifier behavior</label>
+              <div className="macro-preset-mode" role="group" aria-label="Helldivers modifier behavior">
+                <button
+                  type="button"
+                  className={`macro-preset-mode-button${helldiversOptions.modifierBehavior === 'hold' ? ' macro-preset-mode-button--active' : ''}`}
+                  onClick={() => updateHelldiversOptions({ modifierBehavior: 'hold' })}
+                  title="Hold the modifier for the whole stratagem input, then release it."
+                >
+                  Hold
+                </button>
+                <button
+                  type="button"
+                  className={`macro-preset-mode-button${helldiversOptions.modifierBehavior === 'press' ? ' macro-preset-mode-button--active' : ''}`}
+                  onClick={() => updateHelldiversOptions({ modifierBehavior: 'press' })}
+                  title="Tap the modifier once before entering the stratagem sequence."
+                >
+                  Press
+                </button>
+              </div>
+
+              <label className="macro-label">Step delay (ms)</label>
+              <input
+                type="number"
+                className="macro-input macro-input--short"
+                min={0}
+                max={2000}
+                value={helldiversOptions.keyDelayMs}
+                onChange={event => updateHelldiversOptions({ keyDelayMs: Number(event.target.value) })}
+                title="Delay between each directional key press."
+              />
+
+              <label className="macro-label">Modifier lead-in (ms)</label>
+              <input
+                type="number"
+                className="macro-input macro-input--short"
+                min={0}
+                max={2000}
+                value={helldiversOptions.modifierLeadInMs}
+                onChange={event => updateHelldiversOptions({ modifierLeadInMs: Number(event.target.value) })}
+                title="Pause between modifier input and first direction."
+              />
+            </div>
+
+            {selectedHelldiversStratagem ? (
+              <div className="helldivers-preview-row">
+                <span className="macro-tool-hint">Selected code</span>
+                <code className="helldivers-code-preview">{formatHelldiversCode(selectedHelldiversStratagem.code)}</code>
+              </div>
+            ) : null}
+
+            <div className="helldivers-list-header">
+              <span>Current stratagem codes ({filteredHelldiversStratagems.length}/{helldivers2StratagemPresets.length})</span>
+            </div>
+            <div className="helldivers-code-list">
+              {filteredHelldiversStratagems.map(stratagem => (
+                <button
+                  key={stratagem.id}
+                  type="button"
+                  className={`helldivers-code-row${helldiversOptions.stratagemId === stratagem.id ? ' helldivers-code-row--active' : ''}`}
+                  onClick={() => updateHelldiversOptions({ stratagemId: stratagem.id })}
+                  title="Select this stratagem preset."
+                >
+                  <span className="helldivers-code-name">{stratagem.name}</span>
+                  <code className="helldivers-code-value">{formatHelldiversCode(stratagem.code)}</code>
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <div className="macro-actions-list">
@@ -2152,3 +2684,7 @@ function MacroEditor({
     </div>
   );
 }
+
+
+
+

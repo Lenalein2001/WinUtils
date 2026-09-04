@@ -17,7 +17,7 @@ WinUtils is a Windows desktop utility app built with Electron, React, TypeScript
   - User Startup folder
   - Common Startup folder
 - Disable autostart entries, keep them visible from cache, and restore them later
-- Macros with folders, profiles, recorded keyboard/mouse actions, and process-aware automatic profile switching
+- Macros with folders, profiles, recorded keyboard/mouse actions, process-aware automatic profile switching, and a Helldivers 2 stratagem preset library (including full-pack import with configurable modifier key behavior)
 - Focus Audio with whitelist/blacklist modes for muting unfocused apps by audio session/process
 - Always Active (Beta) rules for preventing window deactivation, throttled game keepalive signals, active-window signals, or focus-locking selected running apps
 - Batch Renamer with drag-and-drop loading, ordered rename rules, live validation, conflict preview, reversible apply, and undo history

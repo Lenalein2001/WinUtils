@@ -2754,6 +2754,12 @@ code {
   padding: 6px;
 }
 
+.macro-inline-error {
+  font-size: 0.74rem;
+  color: #ff7f8a;
+  margin: 4px 0 0 126px;
+}
+
 .macro-conflicts-list {
   display: flex;
   flex-direction: column;
@@ -3157,6 +3163,87 @@ code {
   font-size: 0.78rem;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
+}
+
+.macro-preset-options--helldivers {
+  align-items: stretch;
+}
+
+.helldivers-preset-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.macro-input--search {
+  flex: 1;
+  min-width: 200px;
+}
+
+.helldivers-preset-grid {
+  display: grid;
+  grid-template-columns: minmax(120px, auto) minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.helldivers-preview-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.helldivers-code-preview {
+  color: var(--accent);
+  font-size: 0.86rem;
+  letter-spacing: 0.08em;
+}
+
+.helldivers-list-header {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.helldivers-code-list {
+  display: grid;
+  gap: 6px;
+  max-height: 260px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.helldivers-code-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  border: 1px solid rgba(141, 210, 255, 0.08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  padding: 7px 10px;
+  cursor: pointer;
+}
+
+.helldivers-code-row:hover,
+.helldivers-code-row--active {
+  border-color: rgba(141, 210, 255, 0.35);
+  background: rgba(141, 210, 255, 0.12);
+}
+
+.helldivers-code-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.helldivers-code-value {
+  color: var(--accent);
+  letter-spacing: 0.08em;
+  font-size: 0.78rem;
 }
 
 .macro-playback-row {

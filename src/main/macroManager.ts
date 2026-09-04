@@ -823,6 +823,14 @@ while ($true) {
       ? cfg.profiles.find(p => p.name === profileName) ?? this.store.getActiveProfile()
       : this.store.getActiveProfile();
 
+    const normalizedHotkey = this.normalizeHotkey(normalizedMacro.hotkey);
+    if (normalizedHotkey) {
+      const conflict = this.collectMacros(profile).find(other => other.id !== normalizedMacro.id && this.normalizeHotkey(other.hotkey) === normalizedHotkey);
+      if (conflict) {
+        throw new Error(`Hotkey "${normalizedMacro.hotkey}" is already assigned to "${conflict.name || '(unnamed)'}".`);
+      }
+    }
+
     const rootIdx = profile.macros.findIndex(m => m.id === normalizedMacro.id);
     if (rootIdx >= 0) {
       profile.macros[rootIdx] = normalizedMacro;
@@ -1189,3 +1197,4 @@ export function registerMacroIpcHandlers(manager: MacroManager): void {
 
   ipcMain.handle('macros:newId', () => randomUUID());
 }
+
