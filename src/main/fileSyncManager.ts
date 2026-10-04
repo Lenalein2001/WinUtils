@@ -3,6 +3,7 @@ import { existsSync, watch, type FSWatcher, type Stats } from 'node:fs';
 import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { app } from 'electron';
+import { isMissingFile } from './atomicFile';
 import type {
   FileSyncAction,
   FileSyncAnalyzeResult,
@@ -166,12 +167,12 @@ export class FileSyncManager {
   }
 
   async analyze(jobId: string): Promise<FileSyncAnalyzeResult> {
-    const job = await this.getJob(jobId);
-    validateJob(job);
+    const job = structuredClone(await this.getJob(jobId));
+    const endpoints = await validateJob(job);
 
     const [leftScan, rightScan] = await Promise.all([
-      this.scanEndpoint(job.leftPath, job.filters, job.options),
-      this.scanEndpoint(job.rightPath, job.filters, job.options),
+      this.scanEndpoint(job.leftPath, job.filters, job.options, !endpoints.leftExists),
+      this.scanEndpoint(job.rightPath, job.filters, job.options, !endpoints.rightExists),
     ]);
 
     const snapshot = (await this.load()).syncStates?.[job.id];
@@ -196,8 +197,16 @@ export class FileSyncManager {
         throw new Error('Resolve file sync conflicts and errors before applying changes.');
       }
 
+      // Initialize a missing destination even when the authoritative source is
+      // legitimately empty, so the successful run can capture a complete baseline.
+      await validateJob(preview.job);
+      await mkdir(preview.job.leftPath, { recursive: true });
+      await mkdir(preview.job.rightPath, { recursive: true });
+
       const operations: FileSyncRunOperation[] = [];
       for (const row of preview.rows) {
+        // A source disappearing during a run must not become a mirror deletion.
+        await assertSourcesAvailable(preview.job);
         operations.push(await this.applyRow(preview.job, runId, row));
       }
 
@@ -395,12 +404,20 @@ export class FileSyncManager {
     return rows;
   }
 
-  private async scanEndpoint(rootPath: string, filters: FileSyncFilters, options: FileSyncOptions): Promise<ScanResult> {
+  private async scanEndpoint(rootPath: string, filters: FileSyncFilters, options: FileSyncOptions, allowMissing = false): Promise<ScanResult> {
     const entries = new Map<string, FileSyncEntryInfo>();
     const errors: Array<{ relativePath: string; message: string }> = [];
     const visitedDirectories = new Set<string>();
     const pending: Array<() => Promise<void>> = [];
-    if (!existsSync(rootPath)) return { entries, errors };
+    try {
+      const rootStat = await lstat(rootPath);
+      if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+        throw new Error('Sync endpoints must be directories, not symbolic links or junctions.');
+      }
+    } catch (error) {
+      if (allowMissing && isMissingFile(error)) return { entries, errors };
+      throw new Error(`Sync folder is unavailable: ${rootPath}. ${errorMessage(error, 'Unable to access folder.')}`);
+    }
 
     const walk = async (directoryPath: string, relativeDirectory: string): Promise<void> => {
       let resolvedDirectory;
@@ -807,17 +824,65 @@ export class FileSyncManager {
   }
 }
 
-function validateJob(job: FileSyncJob): void {
+async function validateJob(job: FileSyncJob): Promise<{ leftExists: boolean; rightExists: boolean }> {
   if (!job.leftPath || !job.rightPath) throw new Error('Choose both left and right folders before analyzing.');
   if (normalizePathKey(job.leftPath) === normalizePathKey(job.rightPath)) throw new Error('Left and right folders must be different.');
   if (isNestedPath(job.leftPath, job.rightPath) || isNestedPath(job.rightPath, job.leftPath)) {
     throw new Error('Left and right folders cannot be nested inside each other.');
   }
-  const leftExists = existsSync(job.leftPath);
-  const rightExists = existsSync(job.rightPath);
+  const [left, right] = await Promise.all([resolveEndpoint(job.leftPath), resolveEndpoint(job.rightPath)]);
+  const leftExists = left.exists;
+  const rightExists = right.exists;
+  if (normalizePathKey(left.canonicalPath) === normalizePathKey(right.canonicalPath)
+    || isNestedPath(left.canonicalPath, right.canonicalPath)
+    || isNestedPath(right.canonicalPath, left.canonicalPath)) {
+    throw new Error('Sync folders resolve to the same or nested locations.');
+  }
+  if (job.mode.startsWith('left-to-right') && !leftExists) {
+    throw new Error('The left source folder is unavailable. Sync is blocked to protect destination files.');
+  }
+  if (job.mode.startsWith('right-to-left') && !rightExists) {
+    throw new Error('The right source folder is unavailable. Sync is blocked to protect destination files.');
+  }
+  if (job.mode === 'two-way' && (!leftExists || !rightExists)) {
+    throw new Error('Both folders must exist for two-way sync. A missing endpoint is not treated as a deletion.');
+  }
   if (!leftExists && !rightExists) throw new Error('At least one sync folder must exist. Choose an existing left or right folder before analyzing.');
   if (!leftExists && !job.options.createMissingFolders) throw new Error('The left folder does not exist.');
   if (!rightExists && !job.options.createMissingFolders) throw new Error('The right folder does not exist.');
+  return { leftExists, rightExists };
+}
+
+async function resolveEndpoint(endpointPath: string): Promise<{ exists: boolean; canonicalPath: string }> {
+  const absolutePath = path.resolve(endpointPath);
+  try {
+    const info = await lstat(absolutePath);
+    if (!info.isDirectory() || info.isSymbolicLink()) {
+      throw new Error(`Sync endpoint must be a directory, not a file, symbolic link, or junction: ${absolutePath}`);
+    }
+    // Check readability now; permission and I/O errors must never look like empty trees.
+    await readdir(absolutePath);
+    return { exists: true, canonicalPath: await realpath(absolutePath) };
+  } catch (error) {
+    if (!isMissingFile(error)) throw error;
+    const parent = path.dirname(absolutePath);
+    if (parent === absolutePath) throw new Error(`Sync volume is unavailable: ${absolutePath}`);
+    const ancestor = await resolveEndpoint(parent);
+    return { exists: false, canonicalPath: path.join(ancestor.canonicalPath, path.basename(absolutePath)) };
+  }
+}
+
+async function assertSourcesAvailable(job: FileSyncJob): Promise<void> {
+  const sourcePaths = job.mode === 'two-way' ? [job.leftPath, job.rightPath]
+    : job.mode.startsWith('right-to-left') ? [job.rightPath] : [job.leftPath];
+  for (const sourcePath of sourcePaths) {
+    try {
+      const info = await lstat(sourcePath);
+      if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('Source is no longer a normal directory.');
+    } catch (error) {
+      throw new Error(`Source folder became unavailable; sync stopped to protect destination files: ${sourcePath}. ${error}`);
+    }
+  }
 }
 
 function classifyRow(job: FileSyncJob, relativePath: string, left?: FileSyncEntryInfo, right?: FileSyncEntryInfo, previous?: FileSyncJobSnapshot['entries'][string]): FileSyncPreviewRow {

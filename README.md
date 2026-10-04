@@ -53,6 +53,12 @@ Start as a built desktop app (without packaging):
 npm run start:desktop
 ```
 
+Run file-safety regression tests (isolated temporary files; no real startup changes):
+
+```bash
+npm test
+```
+
 Run type checks:
 
 ```bash
@@ -79,6 +85,10 @@ npm run package:portable
 ```
 
 ## Notes
+
+- Directional sync requires its source folder to exist and be readable; a missing source is never interpreted as an empty tree. Two-way sync requires both folders to exist. Endpoint files, root junctions/symbolic links, and canonical same/nested locations are rejected.
+- Startup changes persist restore records before disabling entries and retain them until restoration succeeds. Cache mutations are serialized and published atomically; invalid cache files are preserved rather than replaced with empty data.
+- Batch Renamer journals each batch before moving files and recovers interrupted batches on startup. Undo uses staged renames for swaps and case-only changes, and new transactions track filesystem IDs to reject replacement files. If recovery cannot restore an original path safely, the journal and affected files are retained and the error identifies the recovery paths. Filesystems without stable file IDs are rejected for safety.
 
 - Editing `HKLM` startup entries may require elevated privileges depending on the target machine and how the app is launched.
 - Startup folder entries are restored from WinUtils cache storage, so deleting the cache files manually will prevent restore for those disabled items.

@@ -142,6 +142,13 @@ export interface RenameTransactionOperation {
   originalName: string;
   targetName: string;
   kind: RenamerItemKind;
+  /** Stable filesystem identity, used to avoid undoing a replacement file. */
+  identity?: RenameFileIdentity;
+}
+
+export interface RenameFileIdentity {
+  device: string;
+  inode: string;
 }
 
 export interface RenameTransaction {

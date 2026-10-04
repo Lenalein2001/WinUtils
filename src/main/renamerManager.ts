@@ -1,8 +1,10 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { app } from 'electron';
+import { isMissingFile, SerialTaskQueue, writeJsonAtomically } from './atomicFile';
+import { RenameTransactionRunner } from './renameTransactionRunner';
 import type {
   RenameApplyResult,
   RenameIssue,
@@ -26,11 +28,6 @@ const MAX_PATH_ERROR_LENGTH = 260;
 const ITEM_STAT_CONCURRENCY = 32;
 const DIRECTORY_SCAN_CONCURRENCY = 6;
 
-interface StagedOperation extends RenameTransactionOperation {
-  tempPath: string;
-  movedToTarget: boolean;
-}
-
 class RenamerTransactionStore {
   private cache: RenamerTransactionFile | null = null;
 
@@ -45,11 +42,10 @@ class RenamerTransactionStore {
 
   async add(transaction: RenameTransaction): Promise<void> {
     const file = await this.load();
-    file.transactions = [transaction, ...file.transactions].slice(0, 50);
-    await this.save(file);
+    await this.save({ ...file, transactions: [transaction, ...file.transactions.filter(item => item.id !== transaction.id)].slice(0, 50) });
   }
 
-  async markUndone(transactionId: string): Promise<RenameTransaction> {
+  async markUndone(transactionId: string, undoneAt: string): Promise<RenameTransaction> {
     const file = await this.load();
     const transaction = file.transactions.find((item) => item.id === transactionId);
 
@@ -57,46 +53,57 @@ class RenamerTransactionStore {
       throw new Error('The selected rename transaction could not be found.');
     }
 
-    transaction.undoneAt = new Date().toISOString();
-    await this.save(file);
-    return transaction;
+    const updated = { ...transaction, undoneAt };
+    await this.save({ ...file, transactions: file.transactions.map(item => item.id === transactionId ? updated : item) });
+    return updated;
   }
 
   private async load(): Promise<RenamerTransactionFile> {
     if (this.cache) return this.cache;
 
-    await mkdir(path.dirname(this.filePath), { recursive: true });
-
-    if (!existsSync(this.filePath)) {
-      this.cache = { version: 1, transactions: [] };
-      await this.save(this.cache);
-      return this.cache;
-    }
-
     try {
       const raw = await readFile(this.filePath, 'utf8');
       const parsed = JSON.parse(raw) as Partial<RenamerTransactionFile>;
-      this.cache = {
-        version: 1,
-        transactions: Array.isArray(parsed.transactions) ? parsed.transactions : [],
-      };
+      if (parsed?.version !== 1 || !Array.isArray(parsed.transactions)
+        || !parsed.transactions.every(transaction => typeof transaction.id === 'string'
+          && Array.isArray(transaction.operations)
+          && transaction.operations.every(operation => typeof operation.fromPath === 'string'
+            && typeof operation.toPath === 'string' && path.isAbsolute(operation.fromPath)
+            && path.isAbsolute(operation.toPath)))) {
+        throw new Error('Invalid rename history. The original file has been preserved.');
+      }
+      this.cache = parsed as RenamerTransactionFile;
       return this.cache;
-    } catch {
+    } catch (error) {
+      if (!isMissingFile(error)) throw error;
       this.cache = { version: 1, transactions: [] };
-      await this.save(this.cache);
       return this.cache;
     }
   }
 
   private async save(file: RenamerTransactionFile): Promise<void> {
+    await writeJsonAtomically(this.filePath, file);
     this.cache = file;
-    await mkdir(path.dirname(this.filePath), { recursive: true });
-    await writeFile(this.filePath, JSON.stringify(file, null, 2), 'utf8');
   }
 }
 
 export class RenamerManager {
   private readonly transactionStore = new RenamerTransactionStore();
+  private readonly mutations = new SerialTaskQueue();
+  private readonly runner = new RenameTransactionRunner(
+    path.join(app.getPath('userData'), 'rename-journal.json'),
+    async journal => {
+      if (journal.undo) {
+        await this.transactionStore.markUndone(journal.transaction.id, journal.transaction.undoneAt!);
+      } else {
+        await this.transactionStore.add(journal.transaction);
+      }
+    },
+  );
+
+  init(): Promise<void> {
+    return this.mutations.run(() => this.runner.recover());
+  }
 
   async loadPaths(input: RenamerLoadPathsInput): Promise<RenamerItem[]> {
     const seen = new Set<string>();
@@ -179,6 +186,15 @@ export class RenamerManager {
   }
 
   async apply(input: RenamerPreviewInput): Promise<RenameApplyResult> {
+    return this.mutations.run(async () => {
+      await this.runner.recover();
+      return this.applyInternal(input);
+    });
+  }
+
+  private async applyInternal(input: RenamerPreviewInput): Promise<RenameApplyResult> {
+    // Never mutate files when their undo history cannot be read and preserved.
+    await this.transactionStore.list();
     const preview = await this.preview(input);
     const errorRows = preview.rows.filter((row) => row.status === 'error');
 
@@ -205,15 +221,13 @@ export class RenamerManager {
       kind: row.kind,
     }));
 
-    await this.renameWithRollback(transactionId, operations);
-
     const transaction: RenameTransaction = {
       id: transactionId,
       createdAt: new Date().toISOString(),
       operations,
     };
 
-    await this.transactionStore.add(transaction);
+    await this.runner.execute(transaction, operations, false);
 
     const nextPaths = input.items.map((item) => {
       const operation = operations.find((candidate) => normalizePathKey(candidate.fromPath) === normalizePathKey(item.path));
@@ -228,6 +242,13 @@ export class RenamerManager {
   }
 
   async undo(transactionId?: string): Promise<RenameUndoResult> {
+    return this.mutations.run(async () => {
+      await this.runner.recover();
+      return this.undoInternal(transactionId);
+    });
+  }
+
+  private async undoInternal(transactionId?: string): Promise<RenameUndoResult> {
     const transactions = await this.transactionStore.list();
     const transaction = transactionId
       ? transactions.find((item) => item.id === transactionId)
@@ -241,19 +262,15 @@ export class RenamerManager {
       throw new Error('This rename transaction was already undone.');
     }
 
-    const restoreOperations = [...transaction.operations].reverse();
-
-    for (const operation of restoreOperations) {
-      if (existsSync(operation.fromPath)) {
-        throw new Error(`Cannot undo because ${operation.originalName} already exists.`);
-      }
-    }
-
-    for (const operation of restoreOperations) {
-      await rename(operation.toPath, operation.fromPath);
-    }
-
-    const updatedTransaction = await this.transactionStore.markUndone(transaction.id);
+    const restoreOperations = [...transaction.operations].reverse().map(operation => ({
+      ...operation,
+      fromPath: operation.toPath,
+      toPath: operation.fromPath,
+      originalName: operation.targetName,
+      targetName: operation.originalName,
+    }));
+    const updatedTransaction = { ...transaction, undoneAt: new Date().toISOString() };
+    await this.runner.execute(updatedTransaction, restoreOperations, true);
 
     return {
       transaction: updatedTransaction,
@@ -263,7 +280,10 @@ export class RenamerManager {
   }
 
   async listTransactions(): Promise<RenameTransaction[]> {
-    return this.transactionStore.list();
+    return this.mutations.run(async () => {
+      await this.runner.recover();
+      return this.transactionStore.list();
+    });
   }
 
   private async collectSelectedPath(
@@ -433,49 +453,6 @@ export class RenamerManager {
     }
   }
 
-  private async renameWithRollback(transactionId: string, operations: RenameTransactionOperation[]): Promise<void> {
-    const staged: StagedOperation[] = [];
-
-    try {
-      for (let index = 0; index < operations.length; index += 1) {
-        const operation = operations[index];
-        const tempPath = await this.createTempPath(path.dirname(operation.fromPath), transactionId, index);
-        await rename(operation.fromPath, tempPath);
-        staged.push({ ...operation, tempPath, movedToTarget: false });
-      }
-
-      for (const operation of staged) {
-        await rename(operation.tempPath, operation.toPath);
-        operation.movedToTarget = true;
-      }
-    } catch (error) {
-      await this.rollbackStagedOperations(staged);
-      throw new Error(`Rename batch failed and was rolled back: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
-
-  private async rollbackStagedOperations(staged: StagedOperation[]): Promise<void> {
-    for (const operation of [...staged].reverse()) {
-      try {
-        if (operation.movedToTarget && existsSync(operation.toPath) && !existsSync(operation.fromPath)) {
-          await rename(operation.toPath, operation.fromPath);
-        } else if (!operation.movedToTarget && existsSync(operation.tempPath) && !existsSync(operation.fromPath)) {
-          await rename(operation.tempPath, operation.fromPath);
-        }
-      } catch {
-        // Keep trying the remaining files so a partial failure has the best chance to heal.
-      }
-    }
-  }
-
-  private async createTempPath(directory: string, transactionId: string, index: number): Promise<string> {
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const tempPath = path.join(directory, `.winutils-renaming-${transactionId}-${index}-${attempt}.tmp`);
-      if (!existsSync(tempPath)) return tempPath;
-    }
-
-    throw new Error('Unable to reserve a temporary rename path.');
-  }
 }
 
 function applyRules(item: RenamerItem, rules: RenameRule[], index: number): { name: string; issues: RenameIssue[] } {

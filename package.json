@@ -7,6 +7,7 @@
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p src/renderer/tsconfig.json",
+    "test": "node --test tests/*.test.cjs",
     "start:desktop": "npm run build && electron .",
     "package:installer": "electron-builder --win nsis",
     "package:portable": "electron-builder --win portable",

@@ -297,6 +297,7 @@ async function bootstrap(): Promise<void> {
 
   const renamerManager = new RenamerManager();
   registerRenamerIpcHandlers(renamerManager);
+  await renamerManager.init().catch(error => logStartup('Rename recovery needs attention.', error));
 
   const fileSyncManager = new FileSyncManager({
     onStateChanged: () => {
