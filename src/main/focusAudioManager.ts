@@ -1,5 +1,6 @@
 import { SerialTaskQueue, writeJsonAtomicallySync } from './atomicFile';
 import { AUDIO_RESTORATION_CSHARP } from './audioRestoration';
+import { AUDIO_RECOVERY_JOURNAL_CSHARP } from './audioRecoveryJournal';
 import { stopWorkerGracefully } from './workerLifecycle';
 import { spawn } from 'node:child_process';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -22,8 +23,13 @@ class CMMDeviceEnumerator {}
 
 [ComImport, Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 interface IMMDeviceEnumerator {
-    void EnumAudioEndpoints();
+    [return: MarshalAs(UnmanagedType.Interface)] object EnumAudioEndpoints(int dataFlow, uint stateMask);
     [return: MarshalAs(UnmanagedType.Interface)] object GetDefaultAudioEndpoint(int dataFlow, int role);
+}
+[ComImport, Guid("0BD7A1BE-7A1A-44DB-8397-CC5392387B5E"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDeviceCollection {
+    uint GetCount();
+    [return: MarshalAs(UnmanagedType.Interface)] object Item(uint index);
 }
 [ComImport, Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
 interface IMMDevice {
@@ -91,6 +97,7 @@ class DuckRule {
 }
 
 ${AUDIO_RESTORATION_CSHARP}
+${AUDIO_RECOVERY_JOURNAL_CSHARP}
 
 public class WinAudio {
     [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
@@ -130,10 +137,69 @@ public class WinAudio {
         }
 
     static Dictionary<string, AudioRestorationState> ManagedSessions = new Dictionary<string, AudioRestorationState>(StringComparer.Ordinal);
+    static AudioRecoveryJournal Recovery;
+
+    static long ProcessStarted(int pid) {
+      using (var process = Process.GetProcessById(pid)) return process.StartTime.ToUniversalTime().Ticks;
+    }
+
+    public static void ConfigureRecovery(string path) {
+      if (String.IsNullOrEmpty(path)) return;
+      Recovery = new AudioRecoveryJournal(path);
+      if (Recovery.Pending.Count == 0) return;
+      // Never match a reused PID, and never carry a dead process's intent into a new session.
+      foreach (var record in Recovery.Pending) {
+        try { if (ProcessStarted(record.Pid) != record.Started) Recovery.Remove(record.Id); }
+        catch (ArgumentException) { Recovery.Remove(record.Id); }
+      }
+      if (Recovery.Pending.Count == 0) return;
+      var errors = new List<string>();
+      IMMDeviceEnumerator devices = null; IMMDeviceCollection collection = null;
+      try {
+        devices = (IMMDeviceEnumerator)new CMMDeviceEnumerator();
+        collection = (IMMDeviceCollection)devices.EnumAudioEndpoints(0, 1);
+        for (uint index = 0; index < collection.GetCount(); index++) {
+          IMMDevice device = null; IAudioSessionManager2 manager = null; IAudioSessionEnumerator sessions = null;
+          try {
+            device = (IMMDevice)collection.Item(index);
+            var iid = new Guid("77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F");
+            manager = (IAudioSessionManager2)device.Activate(ref iid, 1, IntPtr.Zero);
+            sessions = (IAudioSessionEnumerator)manager.GetSessionEnumerator();
+            for (int i = 0; i < sessions.GetCount(); i++) {
+              object session = null;
+              try {
+                session = sessions.GetSession(i);
+                var control = session as IAudioSessionControl2;
+                if (control == null) continue;
+                string id = ReadCoTaskString(control.GetSessionInstanceIdentifier());
+                AudioRecoveryRecord record;
+                if (!Recovery.TryGet(id, out record) || control.GetProcessId() != record.Pid || ProcessStarted(record.Pid) != record.Started) continue;
+                var info = new SessionInfo { InstanceId = id, Pid = record.Pid, SessionObj = session };
+                var state = TrackSession(info);
+                try { state.RestoreVolume(); } catch (Exception ex) { errors.Add(ex.Message); }
+                try { state.RestoreMute(); } catch (Exception ex) { errors.Add(ex.Message); }
+              } catch (Exception ex) { errors.Add(ex.Message); }
+              finally { if (session != null) Marshal.ReleaseComObject(session); }
+            }
+          } catch (Exception ex) { errors.Add(ex.Message); }
+          finally {
+            if (sessions != null) Marshal.ReleaseComObject(sessions);
+            if (manager != null) Marshal.ReleaseComObject(manager);
+            if (device != null) Marshal.ReleaseComObject(device);
+          }
+        }
+      } finally {
+        if (collection != null) Marshal.ReleaseComObject(collection);
+        if (devices != null) Marshal.ReleaseComObject(devices);
+      }
+      ReleaseIdleSessions();
+      if (Recovery.Pending.Count > 0) throw new InvalidOperationException("Audio recovery pending for " + Recovery.Pending.Count + " session(s). Reconnect the output device or check the Windows volume mixer. " + String.Join("; ", errors.ToArray()));
+    }
 
     static AudioRestorationState TrackSession(SessionInfo session) {
       AudioRestorationState state;
       if (ManagedSessions.TryGetValue(session.InstanceId, out state)) return state;
+      long started = Recovery == null ? 0 : ProcessStarted(session.Pid);
       // A private RCW keeps this session alive independently of enumeration cleanup
       // and remains usable when the default output device changes.
       IntPtr unknown = Marshal.GetIUnknownForObject(session.SessionObj);
@@ -150,7 +216,10 @@ public class WinAudio {
         delegate(bool value) { var context = Guid.Empty; volume.SetMute(value, ref context); },
         delegate { return volume.GetMasterVolume(); },
         delegate(float value) { var context = Guid.Empty; volume.SetMasterVolume(value, ref context); },
-        delegate { Marshal.ReleaseComObject(retained); });
+        delegate { Marshal.ReleaseComObject(retained); },
+        delegate(AudioRestorationState changed) { if (Recovery != null) Recovery.Save(session.InstanceId, session.Pid, started, changed); });
+      AudioRecoveryRecord baseline;
+      if (Recovery != null && Recovery.TryGet(session.InstanceId, out baseline)) state.Import(baseline.Snapshot);
       ManagedSessions.Add(session.InstanceId, state);
       return state;
     }
@@ -665,6 +734,7 @@ Add-Type -TypeDefinition @"
 ${CSHARP_TYPES}
 "@
 
+[WinAudio]::ConfigureRecovery($env:WINUTILS_AUDIO_RECOVERY_PATH)
 [Console]::Out.WriteLine("READY")
 [Console]::Out.Flush()
 
@@ -856,7 +926,10 @@ export class FocusAudioManager {
     const proc = spawn('powershell.exe', [
       '-NonInteractive', '-NoProfile', '-ExecutionPolicy', 'Bypass',
       '-File', this.workerScriptPath,
-    ], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    ], {
+      stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+      env: { ...process.env, WINUTILS_AUDIO_RECOVERY_PATH: path.join(app.getPath('userData'), 'audio-recovery.state') },
+    });
     this._debugLog(`Worker spawned, pid=${proc.pid}`);
 
     const state: WorkerState = {
@@ -866,6 +939,7 @@ export class FocusAudioManager {
       pending: new Map<number, PendingRequest>(),
       nextId: 1,
     };
+    let startupError = '';
 
     proc.stdout.on('data', (chunk: Buffer) => {
       if (this.worker !== state) return;
@@ -880,6 +954,7 @@ export class FocusAudioManager {
           if (line === 'READY') {
             state.ready = true;
             this.workerReady = true;
+            this.workerFailure = null;
             this._flushWorkerReadyCallbacks();
           }
           continue;
@@ -908,6 +983,7 @@ export class FocusAudioManager {
     });
 
     proc.stderr.on('data', (chunk: Buffer) => {
+      if (!state.ready) startupError = (startupError + chunk.toString('utf8')).slice(-4096);
       this._debugLog(`STDERR: ${chunk.toString('utf8').trimEnd()}`);
     });
 
@@ -929,7 +1005,8 @@ export class FocusAudioManager {
       state.pending.clear();
 
       if (this.worker === state) {
-        if (!this.stopping) this.workerFailure = 'Audio worker exited unexpectedly; audio restoration may be incomplete. Check affected apps in the Windows volume mixer.';
+        if (!this.stopping) this.workerFailure = startupError.trim()
+          || 'Audio worker exited unexpectedly. Saved restoration baselines will be retried on restart; check affected apps in the Windows volume mixer.';
         this.worker = null;
         this.workerReady = false;
         this._flushWorkerReadyCallbacks();
