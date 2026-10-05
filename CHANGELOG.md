@@ -20,7 +20,7 @@ This release strengthens recovery and privacy, adds safer settings controls, and
 - Simplified clipboard controls and settings previews; advanced privacy options are expandable.
 - New clipboard profiles keep unpinned items for 30 days and use a 256 MB storage limit. Existing retention choices and pinned items are preserved.
 - File recovery lists copies from new sync runs; older quarantine folders remain on disk.
-- Unsigned builds open GitHub for manual updates; automatic installation requires a verified Windows publisher.
+- Installed builds keep in-app update downloads and restart installation; portable builds keep direct downloads.
 
 ### Security
 
@@ -31,7 +31,7 @@ This release strengthens recovery and privacy, adds safer settings controls, and
 ### Fixed
 
 - Fixed failed saves leaving unsaved settings in memory, damaged files replacing valid backups, and moving a macro to a missing folder losing it.
-- Added update download cancellation and fail-stop cleanup after unexpected main-process errors.
+- Added update download cancellation, verified GitHub installer digests, and fail-stop cleanup after unexpected main-process errors.
 - OCR reads encrypted images through stdin without writing plaintext temporary images.
 - Clipboard retention now saves explicitly, keeps drafts during background updates, and rejects invalid limits before pruning history.
 - Bulk clipboard clearing now asks for confirmation; quick access handles empty-list navigation and repeated Enter presses safely.

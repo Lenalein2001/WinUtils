@@ -215,7 +215,6 @@ export function SettingsTab({
       <DiagnosticsExport />
       <div className="settings-card settings-card--updates">
         <p className="section-kicker">Updates and release notes</p>
-        {updateState?.installMode === 'installer' && !updateState.automaticUpdates && <p>This build uses manual updates from GitHub. Automatic installation requires a verified Windows publisher.</p>}
         <div className="settings-update-header">
           <div>
             <strong>Updates</strong>
@@ -255,7 +254,7 @@ export function SettingsTab({
               onClick={() => void runUpdateAction(() => window.winUtils.updates.download())}
               title={updateState.installMode === 'portable' ? 'Open the release download page for the portable EXE.' : 'Download the available WinUtils update.'}
             >
-              {updateState.installMode === 'portable' ? 'Open Download' : !updateState.automaticUpdates ? 'Open release' : updateState.status === 'downloading' ? 'Downloading...' : 'Download Update'}
+              {updateState.installMode === 'portable' ? 'Open Download' : updateState.status === 'downloading' ? 'Downloading...' : 'Download Update'}
             </button>
           ) : null}
 

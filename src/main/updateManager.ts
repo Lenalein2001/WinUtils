@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell } from 'electron';
 import { createRequire } from 'node:module';
 import { verifiedPublisher } from './updateTrust';
+import { verifyReleaseInstaller, verifyInstallerBytes, type VerifiedInstaller } from './updateArtifact';
 import type { ProgressInfo, UpdateInfo } from 'electron-updater';
 import type { AppUpdateInfo, UpdateDownloadProgress, UpdateInstallMode, UpdateState, UpdateStatus } from '../shared/updater';
 
@@ -47,6 +48,7 @@ export class UpdateManager {
   private publisherCheck: Promise<string | null> | null = null;
   private publisher: string | null = null;
   private downloadVerified = false;
+  private verifiedInstaller: VerifiedInstaller | null = null;
   private downloadVerification: Promise<void> | null = null;
   private startupTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -79,9 +81,20 @@ export class UpdateManager {
       const token = this.downloadToken;
       if (!token || token.cancelled) return;
       this.downloadVerification = (async () => {
-        const publisher = await verifiedPublisher(info.downloadedFile);
+        const controller = new AbortController();
+        const cancel = () => controller.abort();
+        token.once('cancel', cancel);
+        let installer: VerifiedInstaller;
+        try {
+          installer = await verifyReleaseInstaller(info.downloadedFile, info.version, controller.signal);
+          if (this.publisher && await verifiedPublisher(info.downloadedFile) !== this.publisher) {
+            throw new Error('Update publisher could not be verified against the installed application. Use the GitHub release page.');
+          }
+        } finally {
+          token.removeListener('cancel', cancel);
+        }
         if (token.cancelled) return;
-        if (!this.publisher || publisher !== this.publisher) throw new Error('Update publisher could not be verified against the installed application. Use the GitHub release page.');
+        this.verifiedInstaller = installer;
         this.downloadVerified = true;
         this.setState({ status: 'downloaded', update: this.fromElectronUpdateInfo(info), progress: null, error: null });
       })().catch(error => { if (!token.cancelled) this.setError(error); });
@@ -118,7 +131,7 @@ export class UpdateManager {
       canCheck: installMode !== 'development' && !busy,
       canDownload: this.status === 'available' && !busy && (installMode === 'installer' || Boolean(this.update?.downloadUrl)),
       canInstall: installMode === 'installer' && this.status === 'downloaded' && this.downloadVerified,
-      automaticUpdates: Boolean(this.publisher),
+      automaticUpdates: installMode === 'installer',
     };
   }
 
@@ -143,8 +156,8 @@ export class UpdateManager {
       if (installMode === 'portable') {
         await this.checkPortableRelease();
       } else {
-        if (await this.ensurePublisher()) await autoUpdater.checkForUpdates();
-        else await this.checkPortableRelease();
+        await this.ensurePublisher();
+        await autoUpdater.checkForUpdates();
       }
     } catch (error) {
       this.setError(error);
@@ -179,13 +192,11 @@ export class UpdateManager {
     if (installMode !== 'installer') {
       throw new Error('Updates can only be downloaded from packaged builds.');
     }
-    if (!await this.ensurePublisher()) {
-      await this.openReleasePage();
-      return this.getState();
-    }
+    await this.ensurePublisher();
 
     const token = new CancellationToken();
     this.downloadVerified = false; this.downloadVerification = null;
+    this.verifiedInstaller = null;
     this.downloadToken = token;
     this.setState({ status: 'downloading', progress: null, error: null });
     const deadline = setTimeout(() => {
@@ -208,7 +219,17 @@ export class UpdateManager {
   async installUpdate(): Promise<UpdateState> {
     if (this.getInstallMode() !== 'installer') throw new Error('Only installed builds can apply updates in-app.');
     if (this.status !== 'downloaded') throw new Error('No downloaded update is ready to install.');
-    if (!this.downloadVerified) throw new Error('Update publisher has not been verified.');
+    if (!this.downloadVerified || !this.verifiedInstaller) throw new Error('Update installer has not been verified.');
+    try {
+      await verifyInstallerBytes(this.verifiedInstaller);
+      if (this.publisher && await verifiedPublisher(this.verifiedInstaller.path) !== this.publisher) {
+        throw new Error('Update publisher changed. Download it again.');
+      }
+    } catch (error) {
+      this.downloadVerified = false;
+      this.setError(error);
+      throw error;
+    }
 
     await this.beforeInstall();
     autoUpdater.quitAndInstall(true, true);
