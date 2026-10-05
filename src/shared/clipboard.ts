@@ -43,6 +43,9 @@ export interface ClipboardSettings {
   quickAccessHotkey: string;
   retentionDays: number;
   maxEntries: number;
+  maxStorageMiB: number;
+  encrypted: boolean;
+  excludedApps: string[];
 }
 
 export interface ClipboardQuery {
@@ -66,4 +69,7 @@ export interface ClipboardState {
   quickAccessRegistrationError: string | null;
   lastQuickAccessAt: string | null;
   availableCategories: ClipboardCategory[];
+  storageBytes: number;
+  captureError: string | null;
+  encryptionAvailable: boolean;
 }

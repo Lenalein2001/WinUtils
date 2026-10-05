@@ -1,12 +1,14 @@
 import { execFile as execFileCallback } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, lstat, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { app, clipboard as electronClipboard, nativeImage } from 'electron';
-import { SerialTaskQueue, writeJsonAtomically } from './atomicFile';
+import { SerialTaskQueue, writeBytesAtomically, writeJsonAtomically } from './atomicFile';
 import { TaskPool } from './taskPool';
+import { ClipboardVault } from './clipboardVault';
+import { readBoundedBytes } from './boundedFile';
 import { isClipboardExcluded } from './clipboardPrivacy';
 import type {
   ClipboardCategory,
@@ -34,8 +36,11 @@ const DEFAULT_SETTINGS: ClipboardSettings = {
   captureImages: true,
   imageOcr: true,
   quickAccessHotkey: 'Ctrl+Alt+V',
-  retentionDays: 0,
+  retentionDays: 30,
   maxEntries: 350,
+  maxStorageMiB: 256,
+  encrypted: false,
+  excludedApps: [],
 };
 const AVAILABLE_CATEGORIES: ClipboardCategory[] = ['plain-text', 'url', 'email', 'code', 'file-path', 'image'];
 
@@ -46,6 +51,7 @@ interface ClipboardHistoryFile {
 }
 
 interface ClipboardManagerOptions {
+  getClipboardSource?: () => { name: string; sampledAt: number; sequence: number } | null;
   onStateChanged?: () => void;
   onQuickAccess?: () => void;
 }
@@ -81,18 +87,19 @@ interface WindowsClipboardHistorySyncResult {
 
 const WINDOWS_OCR_SCRIPT = String.raw`
 param(
-  [Parameter(Mandatory = $true)]
-  [string]$ImagePath
+  [string]$ImagePath = 'WinUtilsStdin'
 )
 
 $ErrorActionPreference = 'Stop'
-if (-not (Test-Path -LiteralPath $ImagePath)) {
+if ($ImagePath -ne 'WinUtilsStdin' -and -not (Test-Path -LiteralPath $ImagePath)) {
   throw "Image file does not exist: $ImagePath"
 }
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
 [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime] | Out-Null
 [Windows.Storage.FileAccessMode, Windows.Storage, ContentType = WindowsRuntime] | Out-Null
 [Windows.Storage.Streams.IRandomAccessStream, Windows.Storage.Streams, ContentType = WindowsRuntime] | Out-Null
+[Windows.Storage.Streams.InMemoryRandomAccessStream, Windows.Storage.Streams, ContentType = WindowsRuntime] | Out-Null
+[Windows.Storage.Streams.DataWriter, Windows.Storage.Streams, ContentType = WindowsRuntime] | Out-Null
 [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType = WindowsRuntime] | Out-Null
 [Windows.Graphics.Imaging.SoftwareBitmap, Windows.Graphics.Imaging, ContentType = WindowsRuntime] | Out-Null
 [Windows.Graphics.Imaging.BitmapPixelFormat, Windows.Graphics.Imaging, ContentType = WindowsRuntime] | Out-Null
@@ -116,8 +123,17 @@ function Await-WinRt($operation, [Type]$resultType, [string]$step) {
 $stream = $null
 $bitmap = $null
 try {
-  $file = Await-WinRt ([Windows.Storage.StorageFile]::GetFileFromPathAsync($ImagePath)) ([Windows.Storage.StorageFile]) 'Open image file'
-  $stream = Await-WinRt ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream]) 'Open image stream'
+  if ($ImagePath -eq 'WinUtilsStdin') {
+    $bytes = [Convert]::FromBase64String([Console]::In.ReadToEnd())
+    $stream = New-Object Windows.Storage.Streams.InMemoryRandomAccessStream
+    $writer = New-Object Windows.Storage.Streams.DataWriter($stream)
+    try { $writer.WriteBytes($bytes); $null = Await-WinRt ($writer.StoreAsync()) ([uint32]) 'Load encrypted image'; $null = $writer.DetachStream() }
+    finally { $writer.Dispose() }
+    $stream.Seek(0)
+  } else {
+    $file = Await-WinRt ([Windows.Storage.StorageFile]::GetFileFromPathAsync($ImagePath)) ([Windows.Storage.StorageFile]) 'Open image file'
+    $stream = Await-WinRt ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream]) 'Open image stream'
+  }
   $decoder = Await-WinRt ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder]) 'Create image decoder'
   $bitmap = Await-WinRt ($decoder.GetSoftwareBitmapAsync([Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8, [Windows.Graphics.Imaging.BitmapAlphaMode]::Premultiplied)) ([Windows.Graphics.Imaging.SoftwareBitmap]) 'Decode OCR bitmap'
   $maxDimension = [Windows.Media.Ocr.OcrEngine]::MaxImageDimension
@@ -315,6 +331,12 @@ Write-SyncResult 'success' $matches.Count $deleted @() $null
 
 export class ClipboardManager {
   private readonly saveQueue = new SerialTaskQueue();
+  private readonly pendingImageDeletes = new Set<string>();
+  private readonly imageSizes = new Map<string, number>();
+  private captureError: string | null = null;
+  private awaitingSource: { hash: string; seenAt: number } | null = null;
+  private readonly mutationQueue = new SerialTaskQueue();
+  private readonly vault = new ClipboardVault(path.join(app.getPath('userData'), 'clipboard-history', 'profile.key'));
   private closing = false;
   private readonly ocrQueue = new TaskPool(2);
   private readonly queuedOcrTasks = new Set<string>();
@@ -370,6 +392,7 @@ export class ClipboardManager {
     this.stopPolling();
     this.actions.replaceOwnerActions('clipboard', []);
     while (this.pollInFlight || this.queuedOcrTasks.size) await new Promise(resolve => setTimeout(resolve, 25));
+    await this.mutationQueue.drain();
     if (this.cache) {
       for (const entry of this.cache.entries) if (entry.ocrStatus === 'pending') {
         entry.ocrStatus = 'none'; entry.ocrError = 'OCR was interrupted during shutdown. Retry to resume.';
@@ -402,6 +425,9 @@ export class ClipboardManager {
       quickAccessRegistrationError: quickAccess?.registrationError ?? null,
       lastQuickAccessAt: this.lastQuickAccessAt,
       availableCategories: AVAILABLE_CATEGORIES,
+      storageBytes: historyStorageBytes(file, this.imageSizes),
+      captureError: this.captureError,
+      encryptionAvailable: this.vault.available(),
     };
   }
 
@@ -411,44 +437,93 @@ export class ClipboardManager {
   }
 
   async setMonitoring(enabled: boolean): Promise<ClipboardState> {
-    const file = await this.load();
-    file.settings = { ...file.settings, monitoring: enabled };
-    await this.save(file);
-    if (enabled) {
-      this.startPolling();
-    } else {
-      this.stopPolling();
-    }
-    this.notifyStateChanged();
-    return this.getState();
+    return this.mutationQueue.run(async () => {
+      const file = await this.load();
+      file.settings = { ...file.settings, monitoring: enabled };
+      await this.save(file);
+      if (enabled) {
+        this.startPolling();
+      } else {
+        this.stopPolling();
+      }
+      this.notifyStateChanged();
+      return this.getState();
+
+    });
   }
 
   async setCaptureImages(enabled: boolean): Promise<ClipboardState> {
-    const file = await this.load();
-    file.settings = { ...file.settings, captureImages: enabled };
-    await this.save(file);
-    this.notifyStateChanged();
-    return this.getState();
+    return this.mutationQueue.run(async () => {
+      const file = await this.load();
+      file.settings = { ...file.settings, captureImages: enabled };
+      await this.save(file);
+      this.notifyStateChanged();
+      return this.getState();
+
+    });
   }
 
   async setImageOcr(enabled: boolean): Promise<ClipboardState> {
-    const file = await this.load();
-    file.settings = { ...file.settings, imageOcr: enabled };
-    await this.save(file);
+    return this.mutationQueue.run(async () => {
+      const file = await this.load();
+      file.settings = { ...file.settings, imageOcr: enabled };
+      await this.save(file);
 
-    if (enabled) {
+      if (enabled) {
+        for (const entry of file.entries) {
+          if (entry.type === 'image' && entry.image && (!entry.ocrText || entry.ocrStatus === 'none' || entry.ocrStatus === 'unsupported' || entry.ocrStatus === 'error')) {
+            entry.ocrStatus = 'pending';
+            entry.ocrError = undefined;
+            void this.runOcr(entry.id, this.imagePath(entry.image.fileName));
+          }
+        }
+        await this.save(file);
+      }
+
+      this.notifyStateChanged();
+      return this.getState();
+
+    });
+  }
+
+  async enableEncryption(): Promise<ClipboardState> {
+    return this.mutationQueue.run(async () => {
+      const file = await this.load();
+      if (!this.vault.available()) throw new Error('Windows profile encryption is unavailable.');
       for (const entry of file.entries) {
-        if (entry.type === 'image' && entry.image && (!entry.ocrText || entry.ocrStatus === 'none' || entry.ocrStatus === 'unsupported' || entry.ocrStatus === 'error')) {
-          entry.ocrStatus = 'pending';
-          entry.ocrError = undefined;
-          void this.runOcr(entry.id, this.imagePath(entry.image.fileName));
+        if (!entry.image) continue;
+        const imagePath = this.imagePath(entry.image.fileName);
+        const bytes = await readBoundedBytes(imagePath, 16 * 1024 * 1024 + 256);
+        await this.vault.open(bytes); // Verify partially migrated images before creating or using a key.
+        if (!this.vault.encrypted(bytes)) {
+          const encrypted = await this.vault.seal(bytes); await writeBytesAtomically(imagePath, encrypted);
+          this.imageSizes.set(entry.image.fileName, encrypted.length);
         }
       }
-      await this.save(file);
-    }
+      file.settings = { ...file.settings, encrypted: true };
+      await this.save(file); this.notifyStateChanged(); return this.getState();
 
-    this.notifyStateChanged();
-    return this.getState();
+    });
+  }
+
+  async setExcludedApps(apps: string[]): Promise<ClipboardState> {
+    if (!Array.isArray(apps) || apps.length > 64 || apps.some(name => typeof name !== 'string' || !/^[\p{L}\p{N}_. -]{1,128}$/u.test(name))) throw new Error('Enter up to 64 application names, without folders.');
+    return this.mutationQueue.run(async () => {
+      const file = await this.load();
+      file.settings = { ...file.settings, excludedApps: [...new Set(apps.map(name => name.trim().toLowerCase().replace(/\.exe$/i, '')))].filter(Boolean) };
+      await this.save(file); this.lastSignature = null; this.awaitingSource = null;
+      this.notifyStateChanged(); return this.getState();
+    });
+  }
+
+  async setStorageBudget(maxStorageMiB: number): Promise<ClipboardState> {
+    return this.mutationQueue.run(async () => {
+      if (!Number.isSafeInteger(maxStorageMiB) || maxStorageMiB < 16 || maxStorageMiB > 4096) throw new Error('Storage budget must be 16–4096 MiB.');
+      const file = await this.load(); file.settings = { ...file.settings, maxStorageMiB };
+      await this.save(file); this.lastSignature = null; this.captureError = null;
+      this.notifyStateChanged(); return this.getState();
+
+    });
   }
 
   async setRetention(settings: Pick<ClipboardSettings, 'retentionDays' | 'maxEntries'>): Promise<ClipboardState> {
@@ -456,106 +531,127 @@ export class ClipboardManager {
       || !Number.isSafeInteger(settings.retentionDays) || settings.retentionDays < 0 || settings.retentionDays > 3650) {
       throw new Error('Retention requires whole numbers: 0–10000 entries and 0–3650 days.');
     }
-    const file = await this.load();
-    file.settings = normalizeSettings({ ...file.settings, ...settings });
-    await this.pruneEntries(file);
-    await this.save(file);
-    this.notifyStateChanged();
-    return this.getState();
+    return this.mutationQueue.run(async () => {
+      const file = await this.load();
+      file.settings = normalizeSettings({ ...file.settings, ...settings });
+      await this.pruneEntries(file);
+      await this.save(file);
+      this.lastSignature = null; this.captureError = null;
+      this.notifyStateChanged();
+      return this.getState();
+
+    });
   }
 
   async setPinned(id: string, pinned: boolean): Promise<ClipboardState> {
-    const file = await this.load();
-    const entry = file.entries.find((item) => item.id === id);
+    return this.mutationQueue.run(async () => {
+      const file = await this.load();
+      const entry = file.entries.find((item) => item.id === id);
 
-    if (!entry) {
-      throw new Error('Clipboard entry could not be found.');
-    }
+      if (!entry) {
+        throw new Error('Clipboard entry could not be found.');
+      }
 
-    entry.pinned = pinned;
-    entry.updatedAt = new Date().toISOString();
-    await this.save(file);
-    this.notifyStateChanged();
-    return this.getState();
+      entry.pinned = pinned;
+      entry.updatedAt = new Date().toISOString();
+      await this.save(file);
+      this.notifyStateChanged();
+      return this.getState();
+
+    });
   }
 
   async copyEntry(id: string): Promise<ClipboardState> {
-    const file = await this.load();
-    const entry = file.entries.find((item) => item.id === id);
+    return this.mutationQueue.run(async () => {
+      const file = await this.load();
+      const entry = file.entries.find((item) => item.id === id);
 
-    if (!entry) {
-      throw new Error('Clipboard entry could not be found.');
-    }
+      if (!entry) {
+        throw new Error('Clipboard entry could not be found.');
+      }
 
-    if (entry.type === 'image') {
-      if (!entry.image) throw new Error('The selected image clipboard entry is missing its stored image.');
-      const image = nativeImage.createFromPath(this.imagePath(entry.image.fileName));
-      if (image.isEmpty()) throw new Error('The stored clipboard image could not be read.');
-      electronClipboard.writeImage(image);
-    } else if (entry.type === 'files') {
-      electronClipboard.writeText((entry.filePaths ?? []).join('\n'));
-    } else {
-      electronClipboard.writeText(entry.text ?? '');
-    }
+      if (entry.type === 'image') {
+        if (!entry.image) throw new Error('The selected image clipboard entry is missing its stored image.');
+        const image = nativeImage.createFromBuffer(await this.vault.open(await readFile(this.imagePath(entry.image.fileName))));
+        if (image.isEmpty()) throw new Error('The stored clipboard image could not be read.');
+        electronClipboard.writeImage(image);
+      } else if (entry.type === 'files') {
+        electronClipboard.writeText((entry.filePaths ?? []).join('\n'));
+      } else {
+        electronClipboard.writeText(entry.text ?? '');
+      }
 
-    if (entry.type === 'image') {
-      await this.attachWindowsHistoryItemId(entry);
-    }
+      if (entry.type === 'image') {
+        await this.attachWindowsHistoryItemId(entry);
+      }
 
-    const now = new Date().toISOString();
-    entry.lastUsedAt = now;
-    entry.updatedAt = now;
-    entry.useCount += 1;
-    this.lastSignature = entry.hash;
-    await this.save(file);
-    this.notifyStateChanged();
-    return this.getState();
+      const now = new Date().toISOString();
+      entry.lastUsedAt = now;
+      entry.updatedAt = now;
+      entry.useCount += 1;
+      this.lastSignature = entry.hash;
+      await this.save(file);
+      this.notifyStateChanged();
+      return this.getState();
+
+    });
   }
 
   async rerunOcr(id: string): Promise<ClipboardState> {
-    const file = await this.load();
-    const entry = file.entries.find((item) => item.id === id);
+    return this.mutationQueue.run(async () => {
+      const file = await this.load();
+      const entry = file.entries.find((item) => item.id === id);
 
-    if (!entry || entry.type !== 'image' || !entry.image) {
-      throw new Error('Select an image clipboard entry before running OCR.');
-    }
+      if (!entry || entry.type !== 'image' || !entry.image) {
+        throw new Error('Select an image clipboard entry before running OCR.');
+      }
 
-    entry.ocrStatus = 'pending';
-    entry.ocrError = undefined;
-    await this.save(file);
-    void this.runOcr(entry.id, this.imagePath(entry.image.fileName));
-    this.notifyStateChanged();
-    return this.getState();
+      entry.ocrStatus = 'pending';
+      entry.ocrError = undefined;
+      await this.save(file);
+      void this.runOcr(entry.id, this.imagePath(entry.image.fileName));
+      this.notifyStateChanged();
+      return this.getState();
+
+    });
   }
 
   async deleteEntry(id: string): Promise<ClipboardState> {
-    const file = await this.load();
-    const entry = file.entries.find((item) => item.id === id);
+    return this.mutationQueue.run(async () => {
+      const file = await this.load();
+      const entry = file.entries.find((item) => item.id === id);
 
-    if (!entry) {
+      if (!entry) {
+        return this.getState();
+      }
+
+      await this.deleteWindowsHistoryEntries([entry]);
+      file.entries = file.entries.filter((item) => item.id !== id);
+      await this.deleteEntryImage(entry);
+      await this.save(file);
+      this.lastSignature = null; this.captureError = null;
+      this.notifyStateChanged();
       return this.getState();
-    }
 
-    await this.deleteWindowsHistoryEntries([entry]);
-    file.entries = file.entries.filter((item) => item.id !== id);
-    await this.deleteEntryImage(entry);
-    await this.save(file);
-    this.notifyStateChanged();
-    return this.getState();
+    });
   }
 
   async clear(mode: ClipboardClearMode): Promise<ClipboardState> {
-    const file = await this.load();
-    const removed = mode === 'all' ? file.entries : file.entries.filter((entry) => !entry.pinned);
-    const kept = mode === 'all' ? [] : file.entries.filter((entry) => entry.pinned);
+    return this.mutationQueue.run(async () => {
+      const file = await this.load();
+      const removed = mode === 'all' ? file.entries : file.entries.filter((entry) => !entry.pinned);
+      const kept = mode === 'all' ? [] : file.entries.filter((entry) => entry.pinned);
 
-    await this.deleteWindowsHistoryEntries(removed);
-    file.entries = kept;
-    await Promise.all(removed.map((entry) => this.deleteEntryImage(entry)));
-    await this.save(file);
-    this.lastSignature = null;
-    this.notifyStateChanged();
-    return this.getState();
+      await this.deleteWindowsHistoryEntries(removed);
+      file.entries = kept;
+      await Promise.all(removed.map((entry) => this.deleteEntryImage(entry)));
+      await this.save(file);
+      this.lastSignature = null;
+      this.captureError = null;
+      this.notifyStateChanged();
+      return this.getState();
+
+    });
   }
 
   async openQuickAccess(): Promise<ClipboardState> {
@@ -625,47 +721,66 @@ export class ClipboardManager {
   }
 
   private async captureClipboard(): Promise<void> {
-    if (this.closing || this.pollInFlight) return;
-    this.pollInFlight = true;
+    return this.mutationQueue.run(async () => {
+      if (this.closing || this.pollInFlight) return;
+      this.pollInFlight = true;
 
-    try {
-      const file = await this.load();
-      if (!file.settings.monitoring) return;
+      try {
+        const file = await this.load();
+        if (!file.settings.monitoring) return;
 
-      const snapshot = await this.readClipboardSnapshot(file.settings);
-    if (!snapshot || snapshot.hash === this.lastSignature) return;
+        const snapshot = await this.readClipboardSnapshot(file.settings);
+        if (!snapshot || snapshot.hash === this.lastSignature) return;
 
-      this.lastSignature = snapshot.hash;
-      const duplicate = file.entries.find((entry) => entry.hash === snapshot.hash);
-
-      if (duplicate) {
-        duplicate.copiedAt = new Date().toISOString();
-        duplicate.updatedAt = duplicate.copiedAt;
-        if (duplicate.type === 'image') {
-          await this.attachWindowsHistoryItemId(duplicate);
+        if (file.settings.excludedApps.length) {
+          if (this.awaitingSource?.hash !== snapshot.hash) this.awaitingSource = { hash: snapshot.hash, seenAt: Date.now() };
+          const source = this.options.getClipboardSource?.();
+          if (!source?.name || !source.sequence || source.sampledAt < this.awaitingSource.seenAt) return;
+          if (file.settings.excludedApps.includes(source.name.toLowerCase().replace(/\.exe$/i, ''))) {
+            this.lastSignature = snapshot.hash; return;
+          }
         }
-        file.entries = [duplicate, ...file.entries.filter((entry) => entry.id !== duplicate.id)];
+
+        this.lastSignature = snapshot.hash;
+        const duplicate = file.entries.find((entry) => entry.hash === snapshot.hash);
+
+        if (duplicate) {
+          duplicate.copiedAt = new Date().toISOString();
+          duplicate.updatedAt = duplicate.copiedAt;
+          if (duplicate.type === 'image') {
+            await this.attachWindowsHistoryItemId(duplicate);
+          }
+          file.entries = [duplicate, ...file.entries.filter((entry) => entry.id !== duplicate.id)];
+          await this.save(file);
+          this.notifyStateChanged();
+          return;
+        }
+
+        if (historyStorageBytes(file, this.imageSizes) + (snapshot.imageBuffer?.length ?? 0)
+          + Buffer.byteLength(JSON.stringify(snapshot.type === 'image' ? { ...snapshot, imageBuffer: undefined } : snapshot), 'utf8') + 131072
+          > file.settings.maxStorageMiB * 1024 * 1024) {
+          this.captureError = 'Clipboard storage budget reached. Delete unneeded history or increase the budget; pinned items were preserved.';
+          this.notifyStateChanged(); return;
+        }
+        const entry = await this.createEntry(snapshot, file.settings);
+        this.captureError = null;
+        if (entry.type === 'image') {
+          await this.attachWindowsHistoryItemId(entry);
+        }
+        file.entries = [entry, ...file.entries];
+        await this.pruneEntries(file);
         await this.save(file);
+
+        if (entry.type === 'image' && entry.image && entry.ocrStatus === 'pending') {
+          void this.runOcr(entry.id, this.imagePath(entry.image.fileName));
+        }
+
         this.notifyStateChanged();
-        return;
+      } finally {
+        this.pollInFlight = false;
       }
 
-      const entry = await this.createEntry(snapshot, file.settings);
-      if (entry.type === 'image') {
-        await this.attachWindowsHistoryItemId(entry);
-      }
-      file.entries = [entry, ...file.entries];
-      await this.pruneEntries(file);
-      await this.save(file);
-
-      if (entry.type === 'image' && entry.image && entry.ocrStatus === 'pending') {
-        void this.runOcr(entry.id, this.imagePath(entry.image.fileName));
-      }
-
-      this.notifyStateChanged();
-    } finally {
-      this.pollInFlight = false;
-    }
+    });
   }
 
   private async readClipboardSnapshot(settings: ClipboardSettings): Promise<ClipboardSnapshot | null> {
@@ -739,7 +854,9 @@ export class ClipboardManager {
       await mkdir(this.imagesDir, { recursive: true });
       const fileName = `${baseEntry.id}.png`;
       const imagePath = this.imagePath(fileName);
-      await writeFile(imagePath, snapshot.imageBuffer);
+      const storedImage = settings.encrypted ? await this.vault.seal(snapshot.imageBuffer) : snapshot.imageBuffer;
+      await writeBytesAtomically(imagePath, storedImage);
+      this.imageSizes.set(fileName, storedImage.length);
       const image = nativeImage.createFromBuffer(snapshot.imageBuffer);
       baseEntry.image = {
         width: snapshot.width ?? image.getSize().width,
@@ -775,23 +892,32 @@ export class ClipboardManager {
     this.activeOcrTasks.add(entryId);
 
     try {
+      const found = await this.mutationQueue.run(async () => {
       const file = await this.load();
       const entry = file.entries.find((item) => item.id === entryId);
-      if (!entry) return;
+      if (!entry) return false;
       entry.ocrStatus = 'pending';
       entry.ocrError = undefined;
       entry.updatedAt = new Date().toISOString();
       await this.save(file);
-      this.notifyStateChanged();
+      this.notifyStateChanged(); return true;
+      });
+      if (!found) return;
 
       const scriptPath = await this.ensureOcrScript();
-      const { stdout } = await execFile(
-        'powershell.exe',
-        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, imagePath],
-        { signal: this.ocrAbort.signal, encoding: 'utf8', timeout: 30_000, windowsHide: true, maxBuffer: 1024 * 1024 },
-      );
+      const bytes = await this.vault.open(await readFile(imagePath));
+      if (bytes.length > 16 * 1024 * 1024) throw new Error('Image exceeds the OCR input budget.');
+      const stdout = await new Promise<string>((resolve, reject) => {
+        const child = execFileCallback('powershell.exe',
+          ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath],
+          { signal: this.ocrAbort.signal, encoding: 'utf8', timeout: 30_000, windowsHide: true, maxBuffer: 1024 * 1024 },
+          (error, output) => error ? reject(error) : resolve(output));
+        child.stdin?.on('error', reject);
+        child.stdin?.end(bytes.toString('base64'));
+      });
 
       const text = stdout.trim();
+      await this.mutationQueue.run(async () => {
       const nextFile = await this.load();
       const nextEntry = nextFile.entries.find((item) => item.id === entryId);
       if (!nextEntry) return;
@@ -804,7 +930,9 @@ export class ClipboardManager {
       nextEntry.preview = createPreview(nextEntry);
       await this.save(nextFile);
       this.notifyStateChanged();
+      });
     } catch (error) {
+      await this.mutationQueue.run(async () => {
       const file = await this.load();
       const entry = file.entries.find((item) => item.id === entryId);
       if (!entry) return;
@@ -814,6 +942,7 @@ export class ClipboardManager {
       entry.updatedAt = new Date().toISOString();
       await this.save(file);
       this.notifyStateChanged();
+      });
     } finally {
       this.activeOcrTasks.delete(entryId);
     }
@@ -914,11 +1043,8 @@ export class ClipboardManager {
   private async deleteEntryImage(entry: ClipboardEntry): Promise<void> {
     if (!entry.image) return;
 
-    try {
-      await unlink(this.imagePath(entry.image.fileName));
-    } catch {
-      // Missing image files should not block history cleanup.
-    }
+    // Publish metadata first; a failed history save must retain its referenced images.
+    this.pendingImageDeletes.add(entry.image.fileName);
   }
 
   private applyQuery(entries: ClipboardEntry[], query: ClipboardQuery): ClipboardEntry[] {
@@ -946,6 +1072,19 @@ export class ClipboardManager {
     await mkdir(this.historyDir, { recursive: true });
     await mkdir(this.imagesDir, { recursive: true });
 
+    // Count every retained image, including orphaned copies from interrupted saves.
+    // Scan once when loading, then account for this process's writes and deletions.
+    const imageFiles = await readdir(this.imagesDir);
+    if (imageFiles.length > 100000) throw new Error('Clipboard image directory exceeds its scan budget; files were preserved.');
+    this.imageSizes.clear();
+    for (let offset = 0; offset < imageFiles.length; offset += 64) {
+      await Promise.all(imageFiles.slice(offset, offset + 64).map(async name => {
+        const info = await lstat(path.join(this.imagesDir, name));
+        if (!info.isFile() || info.isSymbolicLink()) throw new Error('Unexpected clipboard image object; files were preserved.');
+        this.imageSizes.set(name, info.size);
+      }));
+    }
+
     if (!existsSync(this.filePath)) {
       this.cache = { version: 1, settings: DEFAULT_SETTINGS, entries: [] };
       await this.save(this.cache);
@@ -953,10 +1092,11 @@ export class ClipboardManager {
     }
 
     try {
-      const parsed = JSON.parse(await readFile(this.filePath, 'utf8')) as Partial<ClipboardHistoryFile>;
-      if (parsed.version !== 1 || !Array.isArray(parsed.entries) || !parsed.settings || typeof parsed.settings !== 'object') {
+      const parsed = JSON.parse((await this.vault.open(await readBoundedBytes(this.filePath, 128 * 1024 * 1024))).toString('utf8')) as Partial<ClipboardHistoryFile>;
+      if (parsed.version !== 1 || !Array.isArray(parsed.entries) || parsed.entries.length > 100000 || !parsed.settings || typeof parsed.settings !== 'object') {
         throw new Error('Invalid clipboard history schema.');
       }
+      validateStoredSettings(parsed.settings);
       const entries = Array.isArray(parsed.entries)
         ? parsed.entries.map(normalizeEntry).filter((entry): entry is ClipboardEntry => entry !== null)
         : [];
@@ -980,14 +1120,41 @@ export class ClipboardManager {
   }
 
   private async save(file: ClipboardHistoryFile): Promise<void> {
-    this.cache = file;
     const snapshot = structuredClone(file);
-    await this.saveQueue.run(() => writeJsonAtomically(this.filePath, snapshot));
+    await this.saveQueue.run(async () => {
+      try {
+        if (Buffer.byteLength(JSON.stringify(snapshot), 'utf8') + 64 > 128 * 1024 * 1024) throw new Error('Clipboard text history reached its file limit. Clear old history before saving more.');
+        if (snapshot.settings.encrypted) await writeBytesAtomically(this.filePath, await this.vault.seal(Buffer.from(JSON.stringify(snapshot), 'utf8')));
+        else await writeJsonAtomically(this.filePath, snapshot);
+      }
+      catch (error) { this.cache = null; this.pendingImageDeletes.clear(); this.lastSignature = null; throw error; }
+      this.cache = snapshot;
+      const referenced = new Set(snapshot.entries.map(entry => entry.image?.fileName).filter(Boolean));
+      for (const fileName of this.pendingImageDeletes) {
+        if (!referenced.has(fileName)) {
+          await unlink(this.imagePath(fileName)).then(() => this.imageSizes.delete(fileName)).catch(() => undefined);
+        }
+        this.pendingImageDeletes.delete(fileName);
+      }
+    });
   }
 
   private notifyStateChanged(): void {
     this.options.onStateChanged?.();
   }
+}
+
+function validateStoredSettings(settings: Partial<ClipboardSettings>): void {
+  for (const key of ['monitoring', 'captureImages', 'imageOcr', 'encrypted'] as const) {
+    if (settings[key] !== undefined && typeof settings[key] !== 'boolean') throw new Error('Invalid clipboard preference flag.');
+  }
+  for (const [key, minimum, maximum] of [['retentionDays', 0, 3650], ['maxEntries', 0, 10000], ['maxStorageMiB', 16, 4096]] as const) {
+    const value = settings[key];
+    if (value !== undefined && (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > maximum)) throw new Error('Invalid clipboard retention or storage budget.');
+  }
+  if (settings.quickAccessHotkey !== undefined && (typeof settings.quickAccessHotkey !== 'string' || settings.quickAccessHotkey.length > 128)) throw new Error('Invalid clipboard hotkey.');
+  if (settings.excludedApps !== undefined && (!Array.isArray(settings.excludedApps) || settings.excludedApps.length > 64
+    || settings.excludedApps.some(name => typeof name !== 'string' || !/^[\p{L}\p{N}_. -]{1,128}$/u.test(name)))) throw new Error('Invalid clipboard exclusions.');
 }
 
 function normalizeSettings(settings: Partial<ClipboardSettings> | undefined): ClipboardSettings {
@@ -996,8 +1163,11 @@ function normalizeSettings(settings: Partial<ClipboardSettings> | undefined): Cl
     captureImages: settings?.captureImages ?? DEFAULT_SETTINGS.captureImages,
     imageOcr: settings?.imageOcr ?? DEFAULT_SETTINGS.imageOcr,
     quickAccessHotkey: normalizeQuickAccessHotkey(settings?.quickAccessHotkey),
-    retentionDays: normalizeRetentionDays(settings?.retentionDays),
+    retentionDays: settings && settings.retentionDays === undefined ? 0 : normalizeRetentionDays(settings?.retentionDays),
     maxEntries: normalizeMaxEntries(settings?.maxEntries),
+    maxStorageMiB: typeof settings?.maxStorageMiB === 'number' && Number.isSafeInteger(settings.maxStorageMiB) && settings.maxStorageMiB >= 16 && settings.maxStorageMiB <= 4096 ? settings.maxStorageMiB : DEFAULT_SETTINGS.maxStorageMiB,
+    encrypted: settings?.encrypted === true,
+    excludedApps: settings?.excludedApps?.map(name => name.trim().toLowerCase().replace(/\.exe$/i, '')) ?? [],
   };
 }
 
@@ -1022,6 +1192,13 @@ function retentionCutoffTime(retentionDays: number): number | null {
 
 function normalizeEntry(entry: ClipboardEntry): ClipboardEntry | null {
   if (!entry || typeof entry.id !== 'string' || typeof entry.hash !== 'string') return null;
+  if (!['text', 'image', 'files'].includes(entry.type) || entry.id.length > 128 || entry.hash.length > 256
+    || (entry.sizeBytes !== undefined && (!Number.isSafeInteger(entry.sizeBytes) || entry.sizeBytes < 0))
+    || (entry.text !== undefined && (typeof entry.text !== 'string' || entry.text.length > 2 * 1024 * 1024))
+    || (entry.preview !== undefined && typeof entry.preview !== 'string')
+    || (entry.pinned !== undefined && typeof entry.pinned !== 'boolean')
+    || (entry.filePaths !== undefined && (!Array.isArray(entry.filePaths) || entry.filePaths.length > 10000 || entry.filePaths.some(value => typeof value !== 'string' || value.length > 32768)))
+    || (entry.categories !== undefined && (!Array.isArray(entry.categories) || entry.categories.some(value => !['plain-text', 'url', 'email', 'code', 'file-path', 'image'].includes(value))))) return null;
   if (entry.image && (typeof entry.image.fileName !== 'string' || !/^[a-z0-9_-]+\.png$/i.test(entry.image.fileName))) return null;
 
   return {
@@ -1218,4 +1395,10 @@ function simplifyPowerShellError(output: string): string {
     .filter((line) => !/^CategoryInfo\s*:/i.test(line) && !/^FullyQualifiedErrorId\s*:/i.test(line));
 
   return (lines[0] ?? output).replace(/\s+/g, ' ').trim();
+}
+
+function historyStorageBytes(file: ClipboardHistoryFile, images?: Map<string, number>): number {
+  return Buffer.byteLength(JSON.stringify(file), 'utf8')
+    + (images ? [...images.values()].reduce((total, size) => total + size, 0)
+      : file.entries.reduce((bytes, entry) => bytes + (entry.image ? Math.max(0, entry.sizeBytes ?? 0) : 0), 0));
 }

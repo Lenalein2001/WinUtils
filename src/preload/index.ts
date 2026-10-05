@@ -209,6 +209,9 @@ const api = {
     },
   },
   clipboard: {
+    setExcludedApps: (apps: string[]): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:setExcludedApps', apps),
+    enableEncryption: (): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:enableEncryption'),
+    setStorageBudget: (budget: number): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:setStorageBudget', budget),
     getState: (query?: ClipboardQuery): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:getState', query),
     captureNow: (): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:captureNow'),
     setMonitoring: (enabled: boolean): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:setMonitoring', enabled),

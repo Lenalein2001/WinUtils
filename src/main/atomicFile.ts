@@ -19,12 +19,16 @@ export function writeJsonAtomicallySync(filePath: string, value: unknown): void 
 
 /** Publish a complete, flushed file without truncating the previous version. */
 export async function writeJsonAtomically(filePath: string, value: unknown): Promise<void> {
+  await writeBytesAtomically(filePath, Buffer.from(JSON.stringify(value, null, 2), 'utf8'));
+}
+
+export async function writeBytesAtomically(filePath: string, bytes: Buffer): Promise<void> {
   await mkdir(path.dirname(filePath), { recursive: true });
   const temporaryPath = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
     const handle = await open(temporaryPath, 'wx');
     try {
-      await handle.writeFile(JSON.stringify(value, null, 2), 'utf8');
+      await handle.writeFile(bytes);
       await handle.sync();
     } finally {
       await handle.close();

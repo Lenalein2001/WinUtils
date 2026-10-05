@@ -6,6 +6,9 @@ import type { ClipboardManager } from './clipboardManager';
 export function registerClipboardIpcHandlers(manager: ClipboardManager): void {
   handleTrustedIpc('clipboard:getState', async (_event, query?: ClipboardQuery) => manager.getState(query));
   handleTrustedIpc('clipboard:captureNow', async () => manager.captureNow());
+  handleTrustedIpc('clipboard:setStorageBudget', async (_event, budget: number) => manager.setStorageBudget(budget));
+  handleTrustedIpc('clipboard:enableEncryption', async () => manager.enableEncryption());
+  handleTrustedIpc('clipboard:setExcludedApps', async (_event, apps: string[]) => manager.setExcludedApps(apps));
   handleTrustedIpc('clipboard:setMonitoring', async (_event, enabled: boolean) => manager.setMonitoring(enabled));
   handleTrustedIpc('clipboard:setCaptureImages', async (_event, enabled: boolean) => manager.setCaptureImages(enabled));
   handleTrustedIpc('clipboard:setImageOcr', async (_event, enabled: boolean) => manager.setImageOcr(enabled));

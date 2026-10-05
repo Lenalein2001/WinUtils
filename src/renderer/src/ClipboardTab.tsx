@@ -1,5 +1,6 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import type { ClipboardEntry, ClipboardFilter, ClipboardSettings, ClipboardState } from '../../shared/clipboard';
+import { ClipboardExclusions } from './ClipboardExclusions';
 
 const filterOptions: Array<{ value: ClipboardFilter; label: string; title: string }> = [
   { value: 'all', label: 'All', title: 'Show every saved clipboard item.' },
@@ -257,10 +258,10 @@ export function ClipboardTab(): ReactElement {
             onChange={(event) => void runAction('update image OCR', () => window.winUtils.clipboard.setImageOcr(event.target.checked).then(() => undefined), event.target.checked ? 'Image OCR enabled.' : 'Image OCR disabled.')}
             disabled={busy !== null}
           />
-          <span>Image OCR</span>
+          <span>Read text in images</span>
         </label>
         <label className="clipboard-retention-field" title="Maximum unpinned clipboard entries to keep. Use 0 for unlimited.">
-          <span>Max entries</span>
+          <span>History limit</span>
           <input
             type="number"
             className="macro-input macro-input--short"
@@ -273,7 +274,7 @@ export function ClipboardTab(): ReactElement {
           />
         </label>
         <label className="clipboard-retention-field" title="Delete unpinned clipboard entries older than this many days. Use 0 to keep by age indefinitely.">
-          <span>Max age days</span>
+          <span>Keep for (days)</span>
           <input
             type="number"
             className="macro-input macro-input--short"
@@ -285,8 +286,8 @@ export function ClipboardTab(): ReactElement {
             disabled={busy !== null || !state}
           />
         </label>
-        <button className="micro-button" type="button" disabled={busy !== null || !state} onClick={() => void applyRetentionDraft()}>Save retention</button>
-        <small>Saving can remove unpinned items beyond these limits. Pinned items are kept.</small>
+        <button className="micro-button" type="button" disabled={busy !== null || !state} onClick={() => void applyRetentionDraft()}>Save limits</button>
+        <small>0 means unlimited. Saving removes older unpinned items.</small>
         <div className="clipboard-clear-actions">
           <button className="micro-button" type="button" onClick={() => setClearMode('unpinned')} disabled={busy !== null || !state?.total} title="Delete unpinned clipboard entries while keeping pinned items.">
             Clear Unpinned
@@ -296,6 +297,27 @@ export function ClipboardTab(): ReactElement {
           </button>
         </div>
       </div>
+
+      <details className="clipboard-privacy settings-card">
+        <summary>Privacy and storage</summary>
+        <div className="clipboard-settings-strip">
+        <button className="micro-button" disabled={busy !== null || !state?.encryptionAvailable || state?.settings.encrypted}
+          onClick={() => void runAction('encrypt clipboard history', () => window.winUtils.clipboard.enableEncryption().then(() => undefined), 'Clipboard history encrypted for this Windows profile.')}>
+          {state?.settings.encrypted ? 'History encrypted' : 'Encrypt saved history'}
+        </button>
+        <small>Encrypted history is tied to this Windows account. Keep its key when backing up your data.</small>
+        <label>Storage limit
+          <select className="macro-select" aria-label="Clipboard storage budget" value={state?.settings.maxStorageMiB ?? 256} disabled={busy !== null}
+            onChange={event => void runAction('update storage budget', () => window.winUtils.clipboard.setStorageBudget(Number(event.target.value)).then(() => undefined), 'Storage budget updated. Existing history was preserved.')}>
+            {[16, 64, 256, 1024, 4096].map(budget => <option key={budget} value={budget}>{budget} MB</option>)}
+          </select>
+        </label>
+        <small>{((state?.storageBytes ?? 0) / 1024 / 1024).toFixed(1)} MB saved. Capture pauses at the limit; pinned items are kept.</small>
+        </div>
+      <ClipboardExclusions apps={state?.settings.excludedApps ?? []} disabled={busy !== null || !state}
+        onSave={apps => runAction('update clipboard exclusions', () => window.winUtils.clipboard.setExcludedApps(apps).then(() => undefined), 'Source app exclusions saved.')} />
+      </details>
+      {state?.captureError && <div className="error-banner" role="alert">{state.captureError}</div>}
 
       {clearMode && <div className="clipboard-clear-confirm" role="alertdialog" aria-labelledby="clipboard-clear-title" aria-describedby="clipboard-clear-description" onKeyDown={event => { if (event.key === 'Escape' && !busy) setClearMode(null); }}>
         <strong id="clipboard-clear-title">Clear {clearMode === 'all' ? 'all clipboard history' : 'unpinned history'}?</strong>

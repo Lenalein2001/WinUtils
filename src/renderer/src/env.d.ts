@@ -154,6 +154,9 @@ declare global {
         onChanged: (cb: () => void) => () => void;
       };
       clipboard: {
+        setExcludedApps: (apps: string[]) => Promise<ClipboardState>;
+        enableEncryption: () => Promise<ClipboardState>;
+        setStorageBudget: (budget: number) => Promise<ClipboardState>;
         getState: (query?: ClipboardQuery) => Promise<ClipboardState>;
         captureNow: () => Promise<ClipboardState>;
         setMonitoring: (enabled: boolean) => Promise<ClipboardState>;

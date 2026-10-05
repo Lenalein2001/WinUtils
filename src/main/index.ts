@@ -624,6 +624,7 @@ async function bootstrap(): Promise<void> {
 
   const automationTriggerManager = createOptionalModule('Automation Triggers', () => new AutomationTriggerManager(actionEngine), logStartup);
   registerAutomationTriggerIpc(automationTriggerManager);
+    getClipboardSource: () => macroManager.getClipboardSource(),
   automationTriggerManager.init();
 
   registerAutomationSafetyIpc(actionEngine, async () => {
