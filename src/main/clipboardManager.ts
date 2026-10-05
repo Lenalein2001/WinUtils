@@ -605,6 +605,7 @@ export class ClipboardManager {
       }
 
       void this.captureClipboard()
+        .catch(error => console.error('[ClipboardManager] Capture failed; history retained.', error))
         .finally(() => {
           if ((this.cache?.settings ?? DEFAULT_SETTINGS).monitoring) {
             this.startPolling();
@@ -949,9 +950,13 @@ export class ClipboardManager {
 
     try {
       const parsed = JSON.parse(await readFile(this.filePath, 'utf8')) as Partial<ClipboardHistoryFile>;
+      if (parsed.version !== 1 || !Array.isArray(parsed.entries) || !parsed.settings || typeof parsed.settings !== 'object') {
+        throw new Error('Invalid clipboard history schema.');
+      }
       const entries = Array.isArray(parsed.entries)
         ? parsed.entries.map(normalizeEntry).filter((entry): entry is ClipboardEntry => entry !== null)
         : [];
+      if (entries.length !== parsed.entries.length) throw new Error('Invalid clipboard entry; original history retained.');
       const loadedFile: ClipboardHistoryFile = {
         version: 1,
         settings: normalizeSettings(parsed.settings),

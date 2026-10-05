@@ -1,5 +1,6 @@
 import { drainIpcRequests, handleTrustedIpc, protectAppWindow, rendererDocumentUrl, stopAcceptingIpc } from './ipcSecurity';
 import { createShutdown } from './shutdown';
+import { createOptionalModule } from './optionalModule';
 import { app, BrowserWindow, dialog, nativeImage, screen, Tray } from 'electron';
 import { appendFileSync, existsSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -498,7 +499,7 @@ async function bootstrap(): Promise<void> {
 
   const actionEngine = new ActionEngine();
   registerSystemActions(actionEngine);
-  const contextMenuManager = new ContextMenuManager(actionEngine);
+  const contextMenuManager = createOptionalModule('Explorer context menu', () => new ContextMenuManager(actionEngine), logStartup);
   registerContextMenuIpc(contextMenuManager);
   handleSecondInstanceArguments = commandLine => {
     void contextMenuManager.handleArguments(commandLine)
@@ -574,18 +575,18 @@ async function bootstrap(): Promise<void> {
   registerMacroIpcHandlers(macroManager);
   await macroManager.init().catch(err => logStartup('MacroManager init error', err));
 
-  const focusAudioManager = new FocusAudioManager();
+  const focusAudioManager = createOptionalModule('Focus Audio', () => new FocusAudioManager(), logStartup);
   registerAudioActions(actionEngine, focusAudioManager);
   registerFocusAudioIpcHandlers(focusAudioManager);
   focusAudioManager.startPolling();
 
-  const alwaysActiveManager = new AlwaysActiveManager({
+  const alwaysActiveManager = createOptionalModule('Always Active', () => new AlwaysActiveManager({
     onStateChanged: () => {
       BrowserWindow.getAllWindows().forEach((window) => {
         window.webContents.send('alwaysActive:changed');
       });
     },
-  });
+  }), logStartup);
   registerAlwaysActiveIpcHandlers(alwaysActiveManager);
   alwaysActiveManager.init().catch(err => logStartup('AlwaysActiveManager init error', err));
 
@@ -593,8 +594,8 @@ async function bootstrap(): Promise<void> {
   registerRenamerIpcHandlers(renamerManager);
   await renamerManager.init().catch(error => logStartup('Rename recovery needs attention.', error));
 
-  const windowManager = new WindowManager(actionEngine);
-  await windowManager.restoreAll().catch(error => logStartup('Hidden-window recovery needs attention.', error));
+  const windowManager = createOptionalModule('Window Manager', () => new WindowManager(actionEngine), logStartup);
+  await Promise.resolve().then(() => windowManager.restoreAll()).catch(error => logStartup('Hidden-window recovery needs attention.', error));
   registerWindowIpcHandlers(windowManager);
 
   const fileSyncManager = new FileSyncManager({
@@ -621,7 +622,7 @@ async function bootstrap(): Promise<void> {
   registerClipboardIpcHandlers(clipboardManager);
   clipboardManager.init().catch(err => logStartup('ClipboardManager init error', err));
 
-  const automationTriggerManager = new AutomationTriggerManager(actionEngine);
+  const automationTriggerManager = createOptionalModule('Automation Triggers', () => new AutomationTriggerManager(actionEngine), logStartup);
   registerAutomationTriggerIpc(automationTriggerManager);
   automationTriggerManager.init();
 

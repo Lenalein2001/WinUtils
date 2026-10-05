@@ -299,6 +299,7 @@ export class WindowManager {
   }
 
   async execute(command: WindowCommand): Promise<WindowCommandResult> {
+    validateWindowCommand(command);
     const target = (await this.getState()).windows.find(window => window.id === command.windowId);
     if (!target) {
       return {
@@ -342,6 +343,10 @@ export class WindowManager {
   }
 
   async saveLayout(input: SaveWindowLayoutInput): Promise<WindowManagerState> {
+    if (!input || typeof input.name !== 'string' || input.name.length > 200 || !Array.isArray(input.windowIds)
+      || input.windowIds.length > 200 || !input.windowIds.every(id => typeof id === 'string' && /^[0-9]{1,20}$/.test(id))) {
+      throw new Error('Invalid window layout request.');
+    }
     const name = input.name.trim();
     if (!name) throw new Error('Enter a name for the window layout.');
     const windowIds = [...new Set(input.windowIds)];
@@ -362,10 +367,11 @@ export class WindowManager {
       createdAt: replacementIndex >= 0 ? this.layouts[replacementIndex].createdAt : new Date().toISOString(),
       placements,
     };
+    const previousLayouts = this.layouts;
     this.layouts = replacementIndex >= 0
       ? this.layouts.map((item, index) => index === replacementIndex ? layout : item)
       : [...this.layouts, layout];
-    this.persistLayouts();
+    try { this.persistLayouts(); } catch (error) { this.layouts = previousLayouts; throw error; }
     this.registerLayoutActions();
     return this.getState();
   }
@@ -373,8 +379,9 @@ export class WindowManager {
   async deleteLayout(layoutId: string): Promise<WindowManagerState> {
     const next = this.layouts.filter(layout => layout.id !== layoutId);
     if (next.length === this.layouts.length) throw new Error('Window layout not found.');
+    const previousLayouts = this.layouts;
     this.layouts = next;
-    this.persistLayouts();
+    try { this.persistLayouts(); } catch (error) { this.layouts = previousLayouts; throw error; }
     this.registerLayoutActions();
     return this.getState();
   }
@@ -545,8 +552,8 @@ export class WindowManager {
     if (!fs.existsSync(this.layoutsPath)) return [];
     try {
       const parsed = JSON.parse(fs.readFileSync(this.layoutsPath, 'utf8')) as unknown;
-      if (!Array.isArray(parsed)) throw new Error('The saved layout file is not an array.');
-      return parsed.filter(isSavedWindowLayout);
+      if (!Array.isArray(parsed) || !parsed.every(isSavedWindowLayout)) throw new Error('The saved layout file contains invalid records; original retained.');
+      return parsed;
     } catch (error) {
       throw new Error(`Could not read window layouts: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -764,7 +771,24 @@ function isSavedWindowLayout(value: unknown): value is SavedWindowLayout {
   return typeof candidate.id === 'string'
     && typeof candidate.name === 'string'
     && typeof candidate.createdAt === 'string'
-    && Array.isArray(candidate.placements);
+    && Number.isFinite(Date.parse(candidate.createdAt))
+    && Array.isArray(candidate.placements) && candidate.placements.length <= 200
+    && candidate.placements.every(placement => !!placement && typeof placement.processName === 'string'
+      && typeof placement.title === 'string' && typeof placement.alwaysOnTop === 'boolean'
+      && (placement.displayId === null || typeof placement.displayId === 'string')
+      && ['normal', 'minimized', 'maximized'].includes(placement.state)
+      && !!placement.relativeBounds && ['x', 'y', 'width', 'height'].every(key => Number.isFinite(placement.relativeBounds[key as keyof typeof placement.relativeBounds]))
+      && placement.relativeBounds.width > 0 && placement.relativeBounds.height > 0);
+}
+
+function validateWindowCommand(command: WindowCommand): void {
+  const types = ['focus', 'minimize', 'maximize', 'restore', 'close', 'hide', 'show', 'set-always-on-top', 'move-resize', 'apply-preset'];
+  if (!command || !types.includes(command.type) || typeof command.windowId !== 'string' || !/^[0-9]{1,20}$/.test(command.windowId)) throw new Error('Invalid window command.');
+  if (command.type === 'set-always-on-top' && typeof command.enabled !== 'boolean') throw new Error('Invalid always-on-top value.');
+  if (command.type === 'move-resize' && (![command.x, command.y, command.width, command.height].every(value => Number.isSafeInteger(value) && Math.abs(value) <= 100000)
+    || command.width <= 0 || command.height <= 0)) throw new Error('Invalid window bounds.');
+  if (command.type === 'apply-preset' && (typeof command.displayId !== 'string'
+    || !['left-half', 'right-half', 'top-left', 'top-right', 'bottom-left', 'bottom-right', 'center', 'fullscreen'].includes(command.preset))) throw new Error('Invalid window preset.');
 }
 
 function wait(milliseconds: number): Promise<void> {
