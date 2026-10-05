@@ -55,5 +55,13 @@ export interface AutomationActionResult {
 export interface AutomationActivity {
   paused: boolean;
   pending: number;
-  running: Array<{ id: string; actionId: string; startedAt: string }>;
+  running: Array<{ id: string; actionId: string; label: string; startedAt: string }>;
+  recent: AutomationActionHistory[];
+}
+
+export interface AutomationActionHistory extends AutomationActionResult {
+  id: string;
+  label: string;
+  finishedAt: string;
+  durationMs: number;
 }

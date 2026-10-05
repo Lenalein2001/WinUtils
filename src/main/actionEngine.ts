@@ -5,6 +5,8 @@ import type {
   AutomationActionDefinition,
   AutomationActionRequest,
   AutomationActionResult,
+  AutomationActionHistory,
+  AutomationActivity,
 } from '../shared/actions';
 
 export type AutomationActionHandler = (parameters: Record<string, unknown>) => Promise<void> | void;
@@ -20,10 +22,15 @@ export class ActionEngine {
   private paused = false;
   private generation = 0;
   private pending = 0;
+  private recent: AutomationActionHistory[] = [];
 
-  getActivity() {
-    return { paused: this.paused, pending: Math.max(0, this.pending - this.running.size), running: [...this.running].map(([id, run]) => ({ id, actionId: run.actionId, startedAt: run.startedAt })) };
+  getActivity(): AutomationActivity {
+    return { paused: this.paused, pending: Math.max(0, this.pending - this.running.size),
+      running: [...this.running].map(([id, run]) => ({ id, actionId: run.actionId,
+        label: this.registrations.get(run.actionId)?.definition.label ?? run.actionId, startedAt: run.startedAt })),
+      recent: this.recent.map(item => ({ ...item })) };
   }
+  clearHistory(): AutomationActivity { this.recent = []; return this.getActivity(); }
   cancelAll(): void {
     this.paused = true; this.generation++;
     for (const run of this.running.values()) run.controller.abort();
@@ -68,6 +75,19 @@ export class ActionEngine {
   }
 
   async execute(request: AutomationActionRequest): Promise<AutomationActionResult> {
+    const started = performance.now();
+    const nested = Boolean(actionContext.getStore());
+    const result = await this.executeRequest(request);
+    if (!nested) {
+      this.recent.unshift({ ...result, error: result.error?.slice(0, 2048), id: randomUUID(),
+        label: (this.registrations.get(result.actionId)?.definition.label ?? result.actionId).slice(0, 200),
+        finishedAt: new Date().toISOString(), durationMs: Math.max(0, Math.round(performance.now() - started)) });
+      this.recent.length = Math.min(this.recent.length, 50);
+    }
+    return result;
+  }
+
+  private async executeRequest(request: AutomationActionRequest): Promise<AutomationActionResult> {
     if (!request || typeof request.actionId !== 'string') throw new Error('Invalid action request.');
     const executedAt = new Date().toISOString();
     const registration = this.registrations.get(request.actionId);
@@ -97,7 +117,7 @@ export class ActionEngine {
             if (this.paused || generation !== this.generation) throw new Error('Automation was stopped before execution.');
             const id = randomUUID(), controller = new AbortController();
             const deadline = setTimeout(() => controller.abort(new Error('Action execution timed out.')), 65_000);
-            this.running.set(id, { actionId: request.actionId, controller, startedAt: executedAt });
+            this.running.set(id, { actionId: request.actionId, controller, startedAt: new Date().toISOString() });
             try {
               await actionContext.run({ signal: controller.signal, depth: 0 }, () => registration.handler(parameters));
               controller.signal.throwIfAborted();

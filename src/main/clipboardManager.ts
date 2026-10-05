@@ -452,6 +452,10 @@ export class ClipboardManager {
   }
 
   async setRetention(settings: Pick<ClipboardSettings, 'retentionDays' | 'maxEntries'>): Promise<ClipboardState> {
+    if (!settings || !Number.isSafeInteger(settings.maxEntries) || settings.maxEntries < 0 || settings.maxEntries > 10000
+      || !Number.isSafeInteger(settings.retentionDays) || settings.retentionDays < 0 || settings.retentionDays > 3650) {
+      throw new Error('Retention requires whole numbers: 0–10000 entries and 0–3650 days.');
+    }
     const file = await this.load();
     file.settings = normalizeSettings({ ...file.settings, ...settings });
     await this.pruneEntries(file);

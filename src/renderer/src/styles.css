@@ -6685,3 +6685,9 @@ code {
 
 .automation-safety { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 0 0 16px; min-width: 0; }
 .automation-safety small, .automation-safety .error-banner { flex-basis: 100%; overflow-wrap: anywhere; }
+.automation-history { flex-basis: 100%; min-width: 0; overflow-wrap: anywhere; }
+.automation-history summary { cursor: pointer; }
+.automation-history ol { max-height: 260px; overflow-y: auto; padding-left: 24px; }
+.automation-history li { margin: 8px 0; }
+.clipboard-clear-confirm { margin: 12px 0; padding: 12px; border: 1px solid var(--panel-border); border-radius: 8px; overflow-wrap: anywhere; }
+.clipboard-clear-confirm button + button { margin-left: 8px; }

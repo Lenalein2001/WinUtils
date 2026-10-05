@@ -23,6 +23,7 @@ import type { ExplorerContextMenuState, ExplorerContextMenuUpdate } from '../sha
 const api = {
   actions: {
     activity: (): Promise<AutomationActivity> => ipcRenderer.invoke('actions:activity'),
+    clearHistory: (): Promise<AutomationActivity> => ipcRenderer.invoke('actions:clearHistory'),
     stop: (): Promise<AutomationActivity> => ipcRenderer.invoke('actions:stop'),
     resume: (): Promise<AutomationActivity> => ipcRenderer.invoke('actions:resume'),
     list: (): Promise<AutomationActionDefinition[]> => ipcRenderer.invoke('actions:list'),

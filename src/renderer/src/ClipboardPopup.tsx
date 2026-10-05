@@ -8,6 +8,7 @@ export function ClipboardPopup(): ReactElement {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
+  const copying = useRef(false);
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -25,6 +26,8 @@ export function ClipboardPopup(): ReactElement {
   }, [search, state?.entries]);
 
   const selectEntry = useCallback(async (entry: ClipboardEntry): Promise<void> => {
+    if (copying.current) return;
+    copying.current = true;
     setBusyId(entry.id);
     setError(null);
     try {
@@ -33,7 +36,7 @@ export function ClipboardPopup(): ReactElement {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
       setBusyId(null);
-    }
+    } finally { copying.current = false; setBusyId(null); }
   }, []);
 
   useEffect(() => {
@@ -64,7 +67,7 @@ export function ClipboardPopup(): ReactElement {
   const handleKeyDown = (event: React.KeyboardEvent): void => {
     if (event.key === 'ArrowDown') {
       event.preventDefault();
-      setSelectedIndex(index => Math.min(index + 1, entries.length - 1));
+      setSelectedIndex(index => Math.max(0, Math.min(index + 1, entries.length - 1)));
     } else if (event.key === 'ArrowUp') {
       event.preventDefault();
       setSelectedIndex(index => Math.max(index - 1, 0));

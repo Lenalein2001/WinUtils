@@ -1,4 +1,4 @@
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useState, type ReactElement } from 'react';
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
 import type { ClipboardEntry, ClipboardFilter, ClipboardSettings, ClipboardState } from '../../shared/clipboard';
 
 const filterOptions: Array<{ value: ClipboardFilter; label: string; title: string }> = [
@@ -29,18 +29,22 @@ export function ClipboardTab(): ReactElement {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [retentionDraft, setRetentionDraft] = useState({ maxEntries: '350', retentionDays: '0' });
+  const retentionDirty = useRef(false);
+  const [clearMode, setClearMode] = useState<'all' | 'unpinned' | null>(null);
+  const mounted = useRef(false);
+  const requestGeneration = useRef(0);
 
-  const loadState = useCallback(async (cancelled = false, showSpinner = true): Promise<void> => {
-    if (showSpinner) setLoading(true);
-    setError(null);
+  const loadState = useCallback(async (showSpinner = true): Promise<void> => {
+    const generation = ++requestGeneration.current;
+    if (showSpinner) { setLoading(true); setError(null); }
 
     try {
       const nextState = await window.winUtils.clipboard.getState({ limit: 500 });
-      if (!cancelled) setState(nextState);
+      if (mounted.current && generation === requestGeneration.current) setState(nextState);
     } catch (caughtError) {
-      if (!cancelled) setError(getErrorMessage(caughtError, 'Unable to load clipboard history.'));
+      if (mounted.current && generation === requestGeneration.current) setError(getErrorMessage(caughtError, 'Unable to load clipboard history.'));
     } finally {
-      if (!cancelled && showSpinner) setLoading(false);
+      if (mounted.current && generation === requestGeneration.current) setLoading(false);
     }
   }, []);
 
@@ -56,27 +60,28 @@ export function ClipboardTab(): ReactElement {
   }, [allEntries.length, entries.length, state]);
 
   useEffect(() => {
-    let cancelled = false;
+    mounted.current = true;
     const handle = window.setTimeout(() => {
-      void loadState(cancelled);
+      void loadState();
     }, 120);
 
     return () => {
-      cancelled = true;
+      mounted.current = false;
+      requestGeneration.current++;
       window.clearTimeout(handle);
     };
   }, [loadState]);
 
   useEffect(() => {
     const unsubscribe = window.winUtils.clipboard.onChanged(() => {
-      void loadState(false, false);
+      void loadState(false);
     });
 
     return unsubscribe;
   }, [loadState]);
 
   useEffect(() => {
-    if (!state) return;
+    if (!state || retentionDirty.current) return;
     setRetentionDraft({
       maxEntries: String(state.settings.maxEntries),
       retentionDays: String(state.settings.retentionDays),
@@ -91,7 +96,7 @@ export function ClipboardTab(): ReactElement {
     try {
       await action();
       if (success) setMessage(success);
-      await loadState(false, false);
+      await loadState(false);
     } catch (caughtError) {
       setError(getErrorMessage(caughtError, `Unable to ${label}.`));
     } finally {
@@ -132,12 +137,17 @@ export function ClipboardTab(): ReactElement {
       () => window.winUtils.clipboard.setRetention({
         retentionDays: patch.retentionDays ?? current.retentionDays,
         maxEntries: patch.maxEntries ?? current.maxEntries,
-      }).then(() => undefined),
+      }).then(next => { retentionDirty.current = false; setState(next); setRetentionDraft({ maxEntries: String(next.settings.maxEntries), retentionDays: String(next.settings.retentionDays) }); }),
       'Clipboard retention updated.',
     );
   }, [runAction, state?.settings]);
 
   const applyRetentionDraft = useCallback(async (): Promise<void> => {
+    if (!/^\d+$/.test(retentionDraft.maxEntries) || !/^\d+$/.test(retentionDraft.retentionDays)
+      || Number(retentionDraft.maxEntries) > 10000 || Number(retentionDraft.retentionDays) > 3650) {
+      setError('Enter whole numbers: 0–10000 entries and 0–3650 days. Zero means unlimited.');
+      return;
+    }
     await updateRetention({
       maxEntries: Number(retentionDraft.maxEntries),
       retentionDays: Number(retentionDraft.retentionDays),
@@ -257,8 +267,7 @@ export function ClipboardTab(): ReactElement {
             value={retentionDraft.maxEntries}
             min={0}
             max={10000}
-            onChange={(event) => setRetentionDraft((draft) => ({ ...draft, maxEntries: event.target.value }))}
-            onBlur={() => void applyRetentionDraft()}
+            onChange={(event) => { retentionDirty.current = true; setRetentionDraft((draft) => ({ ...draft, maxEntries: event.target.value })); }}
             onKeyDown={(event) => { if (event.key === 'Enter') void applyRetentionDraft(); }}
             disabled={busy !== null || !state}
           />
@@ -271,22 +280,29 @@ export function ClipboardTab(): ReactElement {
             value={retentionDraft.retentionDays}
             min={0}
             max={3650}
-            onChange={(event) => setRetentionDraft((draft) => ({ ...draft, retentionDays: event.target.value }))}
-            onBlur={() => void applyRetentionDraft()}
+            onChange={(event) => { retentionDirty.current = true; setRetentionDraft((draft) => ({ ...draft, retentionDays: event.target.value })); }}
             onKeyDown={(event) => { if (event.key === 'Enter') void applyRetentionDraft(); }}
             disabled={busy !== null || !state}
           />
         </label>
+        <button className="micro-button" type="button" disabled={busy !== null || !state} onClick={() => void applyRetentionDraft()}>Save retention</button>
+        <small>Saving can remove unpinned items beyond these limits. Pinned items are kept.</small>
         <div className="clipboard-clear-actions">
-          <button className="micro-button" type="button" onClick={() => void handleClear('unpinned')} disabled={busy !== null || !state?.total} title="Delete unpinned clipboard entries while keeping pinned items.">
+          <button className="micro-button" type="button" onClick={() => setClearMode('unpinned')} disabled={busy !== null || !state?.total} title="Delete unpinned clipboard entries while keeping pinned items.">
             Clear Unpinned
           </button>
-          <button className="micro-button micro-button--danger" type="button" onClick={() => void handleClear('all')} disabled={busy !== null || !state?.total} title="Delete all stored clipboard history, including pinned items and stored image files.">
+          <button className="micro-button micro-button--danger" type="button" onClick={() => setClearMode('all')} disabled={busy !== null || !state?.total} title="Delete all stored clipboard history, including pinned items and stored image files.">
             Clear All
           </button>
         </div>
       </div>
 
+      {clearMode && <div className="clipboard-clear-confirm" role="alertdialog" aria-labelledby="clipboard-clear-title" aria-describedby="clipboard-clear-description" onKeyDown={event => { if (event.key === 'Escape' && !busy) setClearMode(null); }}>
+        <strong id="clipboard-clear-title">Clear {clearMode === 'all' ? 'all clipboard history' : 'unpinned history'}?</strong>
+        <p id="clipboard-clear-description">{clearMode === 'all' ? 'Pinned items and stored images will also be deleted.' : 'Pinned items will be kept.'} Matching Windows clipboard history is also cleared. This cannot be undone.</p>
+        <button className="secondary-button" disabled={busy !== null} autoFocus onClick={() => setClearMode(null)}>Cancel</button>
+        <button className="micro-button micro-button--danger" disabled={busy !== null} onClick={() => { const mode = clearMode; setClearMode(null); void handleClear(mode); }}>Confirm clear</button>
+      </div>}
       <div className="clipboard-list-header">
         <strong>{visibleSummary}</strong>
         <span>{busy ? `Working: ${busy}...` : state?.settings.monitoring ? 'Watching clipboard' : 'Monitoring paused'}</span>

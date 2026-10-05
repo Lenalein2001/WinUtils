@@ -24,6 +24,7 @@ export function registerAutomationIpcHandlers(actions: ActionEngine, hotkeys: Ho
 
 export function registerAutomationSafetyIpc(actions: ActionEngine, stop: () => Promise<void>, resume: () => Promise<void>): void {
   handleTrustedIpc('actions:activity', () => actions.getActivity());
+  handleTrustedIpc('actions:clearHistory', () => actions.clearHistory());
   handleTrustedIpc('actions:stop', async () => { actions.cancelAll(); await stop(); return actions.getActivity(); });
   handleTrustedIpc('actions:resume', async () => { await resume(); actions.resume(); return actions.getActivity(); });
 }

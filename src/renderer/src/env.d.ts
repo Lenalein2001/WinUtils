@@ -27,6 +27,7 @@ declare global {
     winUtils: {
       actions: {
         activity: () => Promise<AutomationActivity>;
+        clearHistory: () => Promise<AutomationActivity>;
         stop: () => Promise<AutomationActivity>;
         resume: () => Promise<AutomationActivity>;
         list: () => Promise<AutomationActionDefinition[]>;
