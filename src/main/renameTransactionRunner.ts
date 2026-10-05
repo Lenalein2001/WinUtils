@@ -3,6 +3,7 @@ import { lstat, readFile, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import type { RenameFileIdentity, RenameTransaction, RenameTransactionOperation } from '../shared/renamer';
 import { isMissingFile, writeJsonAtomically } from './atomicFile';
+import { handleFileOperation } from './handleFileOperations';
 
 interface PlannedRename extends RenameTransactionOperation {
   identity: RenameFileIdentity;
@@ -66,11 +67,11 @@ export class RenameTransactionRunner {
     try {
       for (const operation of planned) {
         await assertIdentity(operation.fromPath, operation.identity);
-        await renameWithoutReplacement(operation.fromPath, operation.tempPath);
+        await renameWithoutReplacement(operation.fromPath, operation.tempPath, operation.identity);
       }
       for (const operation of planned) {
         await assertIdentity(operation.tempPath, operation.identity);
-        await renameWithoutReplacement(operation.tempPath, operation.toPath);
+        await renameWithoutReplacement(operation.tempPath, operation.toPath, operation.identity);
       }
       journal.phase = 'committed';
       await writeJsonAtomically(this.journalPath, journal);
@@ -108,11 +109,11 @@ export class RenameTransactionRunner {
       const operation = journal.operations[index];
       if (pathKey(locations[index]) === pathKey(operation.tempPath)) continue;
       await assertIdentity(locations[index], operation.identity);
-      await renameWithoutReplacement(locations[index], operation.tempPath);
+      await renameWithoutReplacement(locations[index], operation.tempPath, operation.identity);
     }
     for (const operation of journal.operations) {
       await assertIdentity(operation.tempPath, operation.identity);
-      await renameWithoutReplacement(operation.tempPath, operation.fromPath);
+      await renameWithoutReplacement(operation.tempPath, operation.fromPath, operation.identity);
     }
   }
 }
@@ -143,7 +144,8 @@ async function pathExists(filePath: string): Promise<boolean> {
   }
 }
 
-async function renameWithoutReplacement(sourcePath: string, destinationPath: string): Promise<void> {
+async function renameWithoutReplacement(sourcePath: string, destinationPath: string, identity?: RenameFileIdentity): Promise<void> {
+  if (await handleFileOperation('move', sourcePath, destinationPath, identity && { device: identity.device, fileId: identity.inode })) return;
   if (await pathExists(destinationPath)) throw new Error(`Recovery/rename target already exists: ${destinationPath}`);
   await rename(sourcePath, destinationPath);
 }

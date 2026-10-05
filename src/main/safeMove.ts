@@ -3,6 +3,7 @@ import { createReadStream } from 'node:fs';
 import { copyFile, lstat, mkdir, open, readdir, rename, rmdir, unlink, utimes } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { handleFileOperation, type HandleGuard, type HandleRootGuard } from './handleFileOperations';
 
 async function digest(file: string): Promise<string> {
   const hash = createHash('sha256');
@@ -11,8 +12,9 @@ async function digest(file: string): Promise<string> {
 }
 
 /** EXDEV fallback commits a flushed, verified copy before removing its source. */
-export async function moveFileSafely(source: string, target: string): Promise<void> {
+export async function moveFileSafely(source: string, target: string, guard?: HandleGuard, roots?: HandleRootGuard[]): Promise<void> {
   await mkdir(path.dirname(target), { recursive: true });
+  if (await handleFileOperation('move', source, target, guard, roots)) return;
   try { await lstat(target); throw new Error(`Move destination already exists: ${target}`); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   try { await rename(source, target); return; }
