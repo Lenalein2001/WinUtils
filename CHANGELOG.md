@@ -1,18 +1,38 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 - 2026-10-05
+
+This release strengthens recovery and privacy, adds safer settings controls, and simplifies everyday use.
 
 ### Added
 
+- Added crash recovery for Focus Audio, a file recovery browser, and reviewed app-preference import/export.
+- Added optional clipboard encryption, app exclusions, storage limits, and a diagnostic summary export.
 - Added recent automation results with readable action names, failure details and elapsed time.
 - Added automation activity and emergency stop/resume controls, durable hidden-window recovery, and a restore-all control.
-- Added Windows CI, regression tests, and native DLL rebuilds before packaging.
+- Added Windows build validation and native DLL rebuilds before packaging.
 - Added centralized action hotkeys and compact Clipboard/Command Palette popups.
 - Added reusable system, application, process, audio-session, window, clipboard, file, notification, PowerShell, and Explorer actions.
 - Added direct Command Palette commands, advanced macro control flow, a multi-monitor Window Manager with saved layouts, persisted Automation Triggers, and configurable Explorer context-menu actions.
 
+### Changed
+
+- Simplified clipboard controls and settings previews; advanced privacy options are expandable.
+- New clipboard profiles keep unpinned items for 30 days and use a 256 MB storage limit. Existing retention choices and pinned items are preserved.
+- File recovery lists copies from new sync runs; older quarantine folders remain on disk.
+- Unsigned builds open GitHub for manual updates; automatic installation requires a verified Windows publisher.
+
+### Security
+
+- Startup permission requests now elevate only a restricted helper; automation stays at normal permissions.
+- Windows file moves and final deletion use pinned handles and refuse collisions, replaced identities and reparse points.
+- Encrypted clipboard backups require the original Windows account and the saved encryption key; back up the whole history folder.
+
 ### Fixed
 
+- Fixed failed saves leaving unsaved settings in memory, damaged files replacing valid backups, and moving a macro to a missing folder losing it.
+- Added update download cancellation and fail-stop cleanup after unexpected main-process errors.
+- OCR reads encrypted images through stdin without writing plaintext temporary images.
 - Clipboard retention now saves explicitly, keeps drafts during background updates, and rejects invalid limits before pruning history.
 - Bulk clipboard clearing now asks for confirmation; quick access handles empty-list navigation and repeated Enter presses safely.
 - Fixed native hook ownership and acknowledged teardown, including cleanup after the worker exits.

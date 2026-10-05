@@ -59,12 +59,6 @@ Start as a built desktop app (without packaging):
 npm run start:desktop
 ```
 
-Build and run safety regression tests (isolated temporary files and a hidden Electron window; no real startup changes):
-
-```bash
-npm test
-```
-
 Run type checks:
 
 ```bash
@@ -96,7 +90,7 @@ npm run package:portable
 - Startup changes persist restore records before disabling entries and retain them until restoration succeeds. Cache mutations are serialized and published atomically; invalid cache files are preserved rather than replaced with empty data.
 - Batch Renamer journals each batch before moving files and recovers interrupted batches on startup. Undo uses staged renames for swaps and case-only changes, and new transactions track filesystem IDs to reject replacement files. If recovery cannot restore an original path safely, the journal and affected files are retained and the error identifies the recovery paths. Filesystems without stable file IDs are rejected for safety.
 
-- Editing `HKLM` startup entries may require elevated privileges depending on the target machine and how the app is launched.
+- Editing system startup entries may request permission for a restricted helper; the WinUtils application continues at normal permissions.
 - Startup folder entries are restored from WinUtils cache storage, so deleting the cache files manually will prevent restore for those disabled items.
 - The cache is stored in Electron's `app.getPath('userData')` location for the installed app.
 - Always Active is best-effort because Windows only has one true foreground window. Prevent Deactivation uses a native window hook and may be blocked by protected, elevated, fullscreen, or anti-cheat apps.
@@ -104,10 +98,13 @@ npm run package:portable
 - Automation trigger and saved-window-layout definitions are stored locally under the app user data directory. Clipboard trigger checks remain local.
 - Explorer integration writes only WinUtils-owned keys below `HKCU\Software\Classes`; the Context Menu module can remove them again without administrator access.
 - File Sync starts with local folder-to-folder jobs only. Always review Analyze results first; Sync rejects nested endpoints, uses temporary verified copies, preserves copied file timestamps, syncs true empty folders, and moves replaced/deleted files into the WinUtils quarantine folder instead of hard-deleting them. Automation triggers require one successful manual sync before they can apply changes.
+- Clipboard Privacy and storage controls offer app exclusions and a saved-history limit. New profiles use 30-day retention; existing retention choices and pinned items are preserved.
+- File recovery restores recorded copies from new runs and deliberately purges completed copies. Existing destinations and incomplete recovery copies are protected.
+- Settings exports theme, startup and tray preferences, previews imports before applying, and can save a diagnostic summary.
 - Packaging generates installer and portable EXE artifacts in `release/`.
-- Packaging rebuilds the native hook and application before creating artifacts; `npm run native:build`, `npm run typecheck`, and `npm test` are available for local validation. Windows CI validates and creates unsigned artifacts without publishing them.
+- Packaging rebuilds the native hook and application before creating artifacts; `npm run native:build` and `npm run typecheck` are available for build validation. Windows CI validates and creates unsigned artifacts without publishing them.
 - Emergency stop pauses automation, cancels cooperating actions, stops macros/file sync between operations, and attempts owned audio/window restoration. Resume enables actions/file sync; audio and Always Active require explicit re-enabling.
 - Hidden-window recovery persists window identities before hiding and retries restoration on startup. The Windows module also provides Restore all hidden windows; failed restorations retain recovery records.
-- Current review status and remaining work are tracked in [PROJECT_REVIEW.md](PROJECT_REVIEW.md). Clipboard history remains plaintext local storage, and forced audio-worker termination can lose in-memory restoration baselines.
-- Auto-update support uses the public GitHub release feed. Publish `latest.yml`, the installer EXE, and its blockmap with each installer release; portable users are shown a download link for the new portable EXE.
+- Current review status and remaining work are tracked in [PROJECT_REVIEW.md](PROJECT_REVIEW.md). Clipboard encryption is optional and tied to the Windows account and saved key. Focus Audio records recovery baselines before changing sessions and retries pending restoration on startup.
+- Update checks use the public GitHub release feed. Unsigned builds use manual downloads; automatic installation requires a verified Windows publisher. Publish `latest.yml`, the installer EXE, and its blockmap with each installer release; portable users are shown a download link for the new portable EXE.
 - Release EXEs are published as GitHub release assets and are not tracked in Git.
