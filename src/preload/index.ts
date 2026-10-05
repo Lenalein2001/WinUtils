@@ -8,8 +8,83 @@ import type { RenameApplyResult, RenamePreview, RenameRule, RenameTransaction, R
 import type { AppUpdateInfo, UpdateState } from '../shared/updater';
 import type { ClipboardClearMode, ClipboardQuery, ClipboardSettings, ClipboardState } from '../shared/clipboard';
 import type { FileSyncAnalyzeResult, FileSyncApplyResult, FileSyncJobInput, FileSyncState } from '../shared/fileSync';
+import type { AutomationActivity, AutomationActionDefinition, AutomationActionRequest, AutomationActionResult } from '../shared/actions';
+import type { HotkeyActionBindingInput, HotkeyState, HotkeyUpdateInput, HotkeyUpdateResult } from '../shared/hotkeys';
+import type {
+  SaveWindowLayoutInput,
+  WindowCommand,
+  WindowCommandResult,
+  WindowLayoutApplyResult,
+  WindowManagerState,
+} from '../shared/windowManager';
+import type { AutomationTriggerInput, AutomationTriggerState } from '../shared/automationTriggers';
+import type { ExplorerContextMenuState, ExplorerContextMenuUpdate } from '../shared/contextMenu';
 
 const api = {
+  actions: {
+    activity: (): Promise<AutomationActivity> => ipcRenderer.invoke('actions:activity'),
+    stop: (): Promise<AutomationActivity> => ipcRenderer.invoke('actions:stop'),
+    resume: (): Promise<AutomationActivity> => ipcRenderer.invoke('actions:resume'),
+    list: (): Promise<AutomationActionDefinition[]> => ipcRenderer.invoke('actions:list'),
+    execute: (request: AutomationActionRequest): Promise<AutomationActionResult> => ipcRenderer.invoke('actions:execute', request),
+  },
+  hotkeys: {
+    getState: (): Promise<HotkeyState> => ipcRenderer.invoke('hotkeys:getState'),
+    update: (input: HotkeyUpdateInput): Promise<HotkeyUpdateResult> => ipcRenderer.invoke('hotkeys:update', input),
+    createActionBinding: (input: HotkeyActionBindingInput): Promise<HotkeyUpdateResult> =>
+      ipcRenderer.invoke('hotkeys:createActionBinding', input),
+    deleteActionBinding: (bindingId: string): Promise<HotkeyState> =>
+      ipcRenderer.invoke('hotkeys:deleteActionBinding', bindingId),
+    onChanged: (cb: () => void): (() => void) => {
+      const listener = (): void => cb();
+      ipcRenderer.on('hotkeys:changed', listener);
+      return () => ipcRenderer.removeListener('hotkeys:changed', listener);
+    },
+  },
+  commandPalette: {
+    hide: (): Promise<void> => ipcRenderer.invoke('commandPalette:hide'),
+    onOpenRequested: (cb: () => void): (() => void) => {
+      const listener = (): void => cb();
+      ipcRenderer.on('commandPalette:open', listener);
+      return () => ipcRenderer.removeListener('commandPalette:open', listener);
+    },
+  },
+  navigation: {
+    onOpenModule: (cb: (moduleId: string) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, moduleId: string): void => cb(moduleId);
+      ipcRenderer.on('navigation:openModule', listener);
+      return () => ipcRenderer.removeListener('navigation:openModule', listener);
+    },
+  },
+  windows: {
+    restoreAll: (): Promise<WindowManagerState> => ipcRenderer.invoke('windows:restoreAll'),
+    getState: (): Promise<WindowManagerState> => ipcRenderer.invoke('windows:getState'),
+    execute: (command: WindowCommand): Promise<WindowCommandResult> => ipcRenderer.invoke('windows:execute', command),
+    saveLayout: (input: SaveWindowLayoutInput): Promise<WindowManagerState> =>
+      ipcRenderer.invoke('windows:saveLayout', input),
+    deleteLayout: (layoutId: string): Promise<WindowManagerState> =>
+      ipcRenderer.invoke('windows:deleteLayout', layoutId),
+    applyLayout: (layoutId: string): Promise<WindowLayoutApplyResult> =>
+      ipcRenderer.invoke('windows:applyLayout', layoutId),
+  },
+  triggers: {
+    getState: (): Promise<AutomationTriggerState> => ipcRenderer.invoke('triggers:getState'),
+    upsert: (input: AutomationTriggerInput): Promise<AutomationTriggerState> =>
+      ipcRenderer.invoke('triggers:upsert', input),
+    delete: (id: string): Promise<AutomationTriggerState> => ipcRenderer.invoke('triggers:delete', id),
+    runNow: (id: string): Promise<AutomationTriggerState> => ipcRenderer.invoke('triggers:runNow', id),
+    onChanged: (cb: () => void): (() => void) => {
+      const listener = (): void => cb();
+      ipcRenderer.on('triggers:changed', listener);
+      return () => ipcRenderer.removeListener('triggers:changed', listener);
+    },
+  },
+  contextMenu: {
+    getState: (): Promise<ExplorerContextMenuState> => ipcRenderer.invoke('contextMenu:getState'),
+    update: (input: ExplorerContextMenuUpdate): Promise<ExplorerContextMenuState> =>
+      ipcRenderer.invoke('contextMenu:update', input),
+    uninstall: (): Promise<ExplorerContextMenuState> => ipcRenderer.invoke('contextMenu:uninstall'),
+  },
   startupApps: {
     list: (): Promise<StartupEntry[]> => ipcRenderer.invoke('startup-apps:list'),
     disable: (id: string): Promise<StartupEntry[]> => ipcRenderer.invoke('startup-apps:disable', id),
@@ -145,6 +220,7 @@ const api = {
     clear: (mode: ClipboardClearMode): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:clear', mode),
     rerunOcr: (id: string): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:rerunOcr', id),
     openQuickAccess: (): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:openQuickAccess'),
+    hideQuickAccess: (): Promise<void> => ipcRenderer.invoke('clipboard:hideQuickAccess'),
     onChanged: (cb: () => void): (() => void) => {
       const listener = (): void => cb();
       ipcRenderer.on('clipboard:changed', listener);

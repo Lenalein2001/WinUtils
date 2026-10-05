@@ -1,8 +1,11 @@
-import { BrowserWindow, dialog, ipcMain } from 'electron';
+import { automationSignal } from './actionContext';
+import { handleTrustedIpc } from './ipcSecurity';
+import { BrowserWindow, dialog } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import { writeFileSync, appendFileSync } from 'node:fs';
-import { readFile, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
+import { readBoundedUtf8 } from './boundedFile';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { ChildProcess } from 'node:child_process';
@@ -20,8 +23,11 @@ import type {
   MacroState,
 } from '../shared/macro';
 import { normalizeMacroPlayback } from '../shared/macro';
-import { executeMacro, stopMacroExecutor, warmMacroExecutor } from './macroExecutor';
-import { getHotkeyDiagnostics, replaceHotkeys, startHook, stopHook } from './macroHook';
+import { normalizeHotkey as normalizeGlobalHotkey } from '../shared/hotkeys';
+import type { ActionEngine } from './actionEngine';
+import { executeMacro, stopMacroExecutor, warmMacroExecutor, type MacroExecutionResult } from './macroExecutor';
+import type { HotkeyManager, RuntimeHotkeyRegistration } from './hotkeyManager';
+import { getHotkeyDiagnostics } from './macroHook';
 import { MacroStore } from './macroStore';
 
 interface MacroPlaybackState {
@@ -38,8 +44,11 @@ function boundedRunCount(value: number): number {
 }
 
 export class MacroManager {
+  private destroyed = false;
+  private readonly executions = new Set<Promise<MacroExecutionResult>>();
   private readonly store = new MacroStore();
   private initialized = false;
+  private initializing: Promise<void> | null = null;
   private logPath = path.join(tmpdir(), 'winutils-focus-debug.log');
   private readonly playbackStates = new Map<string, MacroPlaybackState>();
 
@@ -64,12 +73,23 @@ export class MacroManager {
   private focusMonitorRestartCount = 0;
   private lastFocusSampleAt: string | null = null;
 
+  constructor(
+    private readonly actions: ActionEngine,
+    private readonly hotkeys: HotkeyManager,
+  ) {}
+
   async init(): Promise<void> {
+    if (this.destroyed || this.initialized) return;
+    if (!this.initializing) this.initializing = this.initInternal().then(() => { this.initialized = true; }).finally(() => { this.initializing = null; });
+    return this.initializing;
+  }
+
+  private async initInternal(): Promise<void> {
     if (this.initialized) return;
-    this.initialized = true;
     writeFileSync(this.logPath, '=== MacroManager init ===\n', 'utf8');
     this.log('Starting');
     await this.store.load();
+    if (this.destroyed) return;
     const cfg = this.store['_config'] as MacroConfig;
     this.manualProfile = cfg.activeProfile;
 
@@ -88,12 +108,12 @@ export class MacroManager {
       await this.store.save();
     }
 
-    await startHook();
     try {
       await warmMacroExecutor();
     } catch (error) {
       this.log(`Macro input worker warmup failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+    if (this.destroyed) return;
     this.rebuildHotkeys();
     this.startFocusMonitor();
   }
@@ -504,28 +524,71 @@ while ($true) {
     this.stopAllHotkeyPlayback();
     const profile = this.store.getActiveProfile();
     const allMacros = [...profile.macros, ...profile.folders.flatMap(f => f.macros)];
-    const hotkeys = [];
+    const hotkeys: RuntimeHotkeyRegistration[] = [];
+
+    this.actions.replaceOwnerActions('macros', allMacros.map(macro => ({
+      definition: {
+        id: `macro.run.${macro.id}`,
+        ownerId: 'macros',
+        ownerLabel: 'Macros',
+        label: macro.name || '(unnamed)',
+        description: `Run macro from the ${profile.name} profile`,
+        category: 'macro',
+        keywords: ['macro', profile.name, macro.name].filter(Boolean),
+      },
+      handler: () => this.runMacro(macro.id),
+    })));
 
     for (const macro of allMacros) {
-      if (macro.enabled && macro.hotkey.trim()) {
+      if (macro.hotkey.trim()) {
         const registeredMacro: Macro = { ...macro, playback: normalizeMacroPlayback(macro.playback) };
         hotkeys.push({
+          id: `macro.hotkey.${registeredMacro.id}`,
+          actionId: `macro.run.${registeredMacro.id}`,
+          ownerId: 'macros',
+          ownerLabel: 'Macros',
+          label: registeredMacro.name || '(unnamed)',
+          description: `Run macro from the ${profile.name} profile`,
           hotkey: registeredMacro.hotkey,
-          callback: {
-            down: () => {
-              this.handleHotkeyDown(registeredMacro);
-            },
-            up: registeredMacro.playback.mode === 'while-pressed'
-              ? () => {
-                this.handleHotkeyUp(registeredMacro.id);
-              }
-              : undefined,
+          enabled: registeredMacro.hotkeyEnabled ?? true,
+          available: registeredMacro.enabled,
+          editable: true,
+          source: 'macro',
+          suppressWhenAppFocused: true,
+          onDown: () => {
+            this.handleHotkeyDown(registeredMacro);
           },
+          onUp: registeredMacro.playback.mode === 'while-pressed'
+            ? () => {
+              this.handleHotkeyUp(registeredMacro.id);
+            }
+            : undefined,
+          onUpdate: input => this.updateMacroHotkey(registeredMacro.id, input),
         });
       }
     }
 
-    replaceHotkeys(hotkeys);
+    this.hotkeys.replaceOwnerBindings('macros', hotkeys);
+  }
+
+  private async updateMacroHotkey(
+    macroId: string,
+    input: { hotkey: string; enabled: boolean },
+  ): Promise<void> {
+    const macro = this.collectMacros(this.store.getActiveProfile()).find(item => item.id === macroId);
+    if (!macro) throw new Error(`Macro "${macroId}" could not be found in the active profile.`);
+    const previous = { hotkey: macro.hotkey, hotkeyEnabled: macro.hotkeyEnabled };
+    macro.hotkey = input.hotkey;
+    macro.hotkeyEnabled = input.enabled;
+    try {
+      await this.store.save();
+    } catch (error) {
+      macro.hotkey = previous.hotkey;
+      macro.hotkeyEnabled = previous.hotkeyEnabled;
+      throw error;
+    }
+    this.rebuildHotkeys();
+    this.pushStateToRenderer();
   }
 
   private getPlaybackState(macroId: string): MacroPlaybackState {
@@ -582,10 +645,29 @@ while ($true) {
     this.cleanupPlaybackState(macroId, state);
   }
 
+  private stopGeneration = 0;
+  async stopAll(): Promise<void> {
+    this.stopGeneration++;
+    this.stopAllHotkeyPlayback();
+    await Promise.allSettled([...this.executions]);
+  }
+
+  private async executeMacroActions(macro: Macro, shouldCancel?: () => boolean): Promise<MacroExecutionResult> {
+    if (this.destroyed) throw new Error('Macros are shutting down.');
+    if (this.actions.getActivity?.().paused) return 'stopped';
+    const generation = this.stopGeneration;
+    const execution = executeMacro(macro, async request => {
+      const result = await this.actions.execute(request);
+      if (!result.ok) throw new Error(result.error ?? `Action "${request.actionId}" failed.`);
+    }, () => this.destroyed || generation !== this.stopGeneration || Boolean(automationSignal()?.aborted) || Boolean(shouldCancel?.()));
+    this.executions.add(execution);
+    try { return await execution; } finally { this.executions.delete(execution); }
+  }
+
   private async runSingleHotkeyMacro(macro: Macro, state: MacroPlaybackState): Promise<void> {
     state.running = true;
     try {
-      await executeMacro(macro);
+      await this.executeMacroActions(macro, () => state.cancelRequested);
     } catch (error) {
       this.log(`Macro "${macro.name}" failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -599,7 +681,8 @@ while ($true) {
     try {
       const count = boundedRunCount(playback.repeatCount);
       for (let index = 0; index < count && !state.cancelRequested; index++) {
-        await executeMacro(macro);
+        const result = await this.executeMacroActions(macro, () => state.cancelRequested);
+        if (result === 'stopped') break;
       }
     } catch (error) {
       state.queue = 0;
@@ -614,7 +697,8 @@ while ($true) {
     state.running = true;
     try {
       while (state.toggleActive && !state.cancelRequested) {
-        await executeMacro(macro);
+        const result = await this.executeMacroActions(macro, () => state.cancelRequested || !state.toggleActive);
+        if (result === 'stopped') break;
       }
     } catch (error) {
       this.log(`Macro "${macro.name}" failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -629,7 +713,8 @@ while ($true) {
     state.running = true;
     try {
       while (state.holdActive && !state.cancelRequested) {
-        await executeMacro(macro);
+        const result = await this.executeMacroActions(macro, () => state.cancelRequested || !state.holdActive);
+        if (result === 'stopped') break;
       }
     } catch (error) {
       this.log(`Macro "${macro.name}" failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -645,7 +730,11 @@ while ($true) {
     try {
       while (state.queue > 0 && !state.cancelRequested) {
         state.queue -= 1;
-        await executeMacro(macro);
+        const result = await this.executeMacroActions(macro, () => state.cancelRequested);
+        if (result === 'stopped') {
+          state.queue = 0;
+          break;
+        }
       }
     } catch (error) {
       this.log(`Macro "${macro.name}" failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -679,7 +768,7 @@ while ($true) {
   }
 
   private normalizeHotkey(hotkey: string): string {
-    return hotkey.trim().toLowerCase().replace(/\s+/g, '');
+    return normalizeGlobalHotkey(hotkey);
   }
 
   private splitHotkeyTokens(hotkey: string): { modifiers: string[]; key: string | null } {
@@ -740,7 +829,7 @@ while ($true) {
   }
 
   private buildHotkeyConflicts(profile: MacroProfile): MacroHotkeyConflict[] {
-    const allMacros = this.collectMacros(profile).filter(macro => macro.enabled && macro.hotkey.trim());
+    const allMacros = this.collectMacros(profile).filter(macro => macro.enabled && (macro.hotkeyEnabled ?? true) && macro.hotkey.trim());
     const grouped = new Map<string, Macro[]>();
     const used = new Set<string>();
 
@@ -824,10 +913,25 @@ while ($true) {
       : this.store.getActiveProfile();
 
     const normalizedHotkey = this.normalizeHotkey(normalizedMacro.hotkey);
-    if (normalizedHotkey) {
-      const conflict = this.collectMacros(profile).find(other => other.id !== normalizedMacro.id && this.normalizeHotkey(other.hotkey) === normalizedHotkey);
+    if (normalizedHotkey && normalizedMacro.enabled && (normalizedMacro.hotkeyEnabled ?? true)) {
+      const conflict = this.collectMacros(profile).find(other => (
+        other.id !== normalizedMacro.id
+        && other.enabled
+        && (other.hotkeyEnabled ?? true)
+        && this.normalizeHotkey(other.hotkey) === normalizedHotkey
+      ));
       if (conflict) {
         throw new Error(`Hotkey "${normalizedMacro.hotkey}" is already assigned to "${conflict.name || '(unnamed)'}".`);
+      }
+      const featureConflict = this.hotkeys.getState().bindings.find(binding => (
+        binding.id !== `macro.hotkey.${normalizedMacro.id}`
+        && binding.source !== 'macro'
+        && binding.enabled
+        && binding.available
+        && binding.normalizedHotkey === normalizedHotkey
+      ));
+      if (featureConflict) {
+        throw new Error(`Hotkey "${normalizedMacro.hotkey}" is already assigned to "${featureConflict.ownerLabel}: ${featureConflict.label}".`);
       }
     }
 
@@ -945,7 +1049,7 @@ while ($true) {
     const profile = this.store.getActiveProfile();
     const all = [...profile.macros, ...profile.folders.flatMap(f => f.macros)];
     const macro = all.find(m => m.id === macroId);
-    if (macro) await executeMacro(macro);
+    if (macro) await this.executeMacroActions(macro);
   }
 
   async reorderActions(macroId: string, actions: MacroAction[]): Promise<MacroState> {
@@ -1000,6 +1104,7 @@ while ($true) {
   private cloneMacroForImport(macro: Macro): Macro {
     return {
       ...macro,
+      hotkeyEnabled: false,
       id: randomUUID(),
       playback: normalizeMacroPlayback(macro.playback),
       actions: macro.actions.map(action => this.cloneActionForImport(action)),
@@ -1009,7 +1114,7 @@ while ($true) {
   private cloneProfileForImport(input: MacroProfile): MacroProfile {
     return {
       name: input.name?.trim() || 'Imported Profile',
-      processBindings: this.sanitizeBindings(input.processBindings ?? []),
+      processBindings: [],
       macros: (input.macros ?? []).map(macro => this.cloneMacroForImport(macro)),
       folders: (input.folders ?? []).map(folder => ({
         ...folder,
@@ -1065,7 +1170,7 @@ while ($true) {
       return this.getState();
     }
 
-    const raw = await readFile(result.filePaths[0], 'utf8');
+    const raw = await readBoundedUtf8(result.filePaths[0], 5 * 1024 * 1024);
     const parsed = JSON.parse(raw) as { profile?: MacroProfile } | MacroProfile;
     const importedProfile = (parsed as { profile?: MacroProfile }).profile ?? (parsed as MacroProfile);
 
@@ -1116,85 +1221,89 @@ while ($true) {
     });
   }
 
-  destroy(): void {
+  async destroy(): Promise<void> {
+    this.destroyed = true;
+    await this.initializing?.catch(() => undefined);
     this.stopFocusMonitor();
     this.stopAllHotkeyPlayback();
-    stopMacroExecutor();
-    stopHook();
+    await Promise.allSettled([...this.executions]);
+    await stopMacroExecutor();
+    await this.store.drain();
+    this.actions.replaceOwnerActions('macros', []);
+    this.hotkeys.replaceOwnerBindings('macros', []);
   }
 }
 
 export function registerMacroIpcHandlers(manager: MacroManager): void {
-  ipcMain.handle('macros:getState', async () => {
+  handleTrustedIpc('macros:getState', async () => {
     await manager.init();
     return manager['getState']();
   });
 
-  ipcMain.handle('macros:upsertMacro', async (_e, macro: Macro, profileName?: string) => {
+  handleTrustedIpc('macros:upsertMacro', async (_e, macro: Macro, profileName?: string) => {
     await manager.init();
     return manager.upsertMacro(macro, profileName);
   });
 
-  ipcMain.handle('macros:deleteMacro', async (_e, macroId: string) => {
+  handleTrustedIpc('macros:deleteMacro', async (_e, macroId: string) => {
     return manager.deleteMacro(macroId);
   });
 
-  ipcMain.handle('macros:runMacro', async (_e, macroId: string) => {
+  handleTrustedIpc('macros:runMacro', async (_e, macroId: string) => {
     return manager.runMacro(macroId);
   });
 
-  ipcMain.handle('macros:reorderActions', async (_e, macroId: string, actions: MacroAction[]) => {
+  handleTrustedIpc('macros:reorderActions', async (_e, macroId: string, actions: MacroAction[]) => {
     return manager.reorderActions(macroId, actions);
   });
 
-  ipcMain.handle('macros:moveMacroToFolder', async (_e, macroId: string, folderId: string | null) => {
+  handleTrustedIpc('macros:moveMacroToFolder', async (_e, macroId: string, folderId: string | null) => {
     return manager.moveMacroToFolder(macroId, folderId);
   });
 
-  ipcMain.handle('macros:upsertFolder', async (_e, folder: MacroFolder) => {
+  handleTrustedIpc('macros:upsertFolder', async (_e, folder: MacroFolder) => {
     return manager.upsertFolder(folder);
   });
 
-  ipcMain.handle('macros:deleteFolder', async (_e, folderId: string) => {
+  handleTrustedIpc('macros:deleteFolder', async (_e, folderId: string) => {
     return manager.deleteFolder(folderId);
   });
 
-  ipcMain.handle('macros:switchProfile', async (_e, name: string) => {
+  handleTrustedIpc('macros:switchProfile', async (_e, name: string) => {
     return manager.switchProfile(name);
   });
 
-  ipcMain.handle('macros:addProfile', async (_e, name: string) => {
+  handleTrustedIpc('macros:addProfile', async (_e, name: string) => {
     return manager.addProfile(name);
   });
 
-  ipcMain.handle('macros:deleteProfile', async (_e, name: string) => {
+  handleTrustedIpc('macros:deleteProfile', async (_e, name: string) => {
     return manager.deleteProfile(name);
   });
 
-  ipcMain.handle('macros:updateProcessBindings', async (_e, profileName: string, bindings: string[]) => {
+  handleTrustedIpc('macros:updateProcessBindings', async (_e, profileName: string, bindings: string[]) => {
     return manager.updateProcessBindings(profileName, bindings);
   });
 
-  ipcMain.handle('macros:getActiveApps', async () => {
+  handleTrustedIpc('macros:getActiveApps', async () => {
     return manager.getActiveApps();
   });
 
-  ipcMain.handle('macros:getRuntimeStats', async () => {
+  handleTrustedIpc('macros:getRuntimeStats', async () => {
     return manager.getRuntimeStats();
   });
 
-  ipcMain.handle('macros:exportProfile', async (_e, profileName?: string) => {
+  handleTrustedIpc('macros:exportProfile', async (_e, profileName?: string) => {
     return manager.exportProfile(profileName);
   });
 
-  ipcMain.handle('macros:importProfile', async () => {
+  handleTrustedIpc('macros:importProfile', async () => {
     return manager.importProfile();
   });
 
-  ipcMain.handle('macros:updateRecordHotkey', async (_e, hotkey: string) => {
+  handleTrustedIpc('macros:updateRecordHotkey', async (_e, hotkey: string) => {
     return manager.updateRecordHotkey(hotkey);
   });
 
-  ipcMain.handle('macros:newId', () => randomUUID());
+  handleTrustedIpc('macros:newId', () => randomUUID());
 }
-

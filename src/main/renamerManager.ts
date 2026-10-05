@@ -1,3 +1,4 @@
+import { evaluateRenameRules } from './boundedRegex';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readdir, readFile, stat } from 'node:fs/promises';
@@ -119,8 +120,9 @@ export class RenamerManager {
 
   async preview(input: RenamerPreviewInput): Promise<RenamePreview> {
     const selectedPaths = new Set(input.items.map((item) => normalizePathKey(item.path)));
+    const evaluated = await evaluateRenameRules(input.items, input.rules);
     const rows: RenamePreviewRow[] = input.items.map((item, index) => {
-      const applied = applyRules(item, input.rules, index);
+      const applied = evaluated[index];
       const targetName = applied.name;
       const targetPath = path.join(item.directory, targetName);
       const issues = [...applied.issues, ...validateTargetName(item, targetName, targetPath)];
@@ -455,72 +457,6 @@ export class RenamerManager {
 
 }
 
-function applyRules(item: RenamerItem, rules: RenameRule[], index: number): { name: string; issues: RenameIssue[] } {
-  let stem = item.stem;
-  let extension = item.extension;
-  const issues: RenameIssue[] = [];
-
-  for (const rule of rules) {
-    if (!rule.enabled) continue;
-
-    try {
-      switch (rule.type) {
-        case 'find-replace': {
-          if (!rule.find) break;
-          if (rule.useRegex) {
-            const flags = rule.caseSensitive ? 'g' : 'gi';
-            stem = stem.replace(new RegExp(rule.find, flags), rule.replace);
-          } else if (rule.caseSensitive) {
-            stem = stem.split(rule.find).join(rule.replace);
-          } else {
-            stem = stem.replace(new RegExp(escapeRegExp(rule.find), 'gi'), rule.replace);
-          }
-          break;
-        }
-        case 'prefix-suffix':
-          stem = `${rule.prefix}${stem}${rule.suffix}`;
-          break;
-        case 'case':
-          stem = applyCase(stem, rule.mode);
-          break;
-        case 'spaces':
-          stem = applySpaces(stem, rule.mode);
-          break;
-        case 'trim':
-          stem = stem.slice(Math.max(0, rule.start), Math.max(Math.max(0, rule.start), stem.length - Math.max(0, rule.end)));
-          break;
-        case 'clear-name':
-          stem = '';
-          break;
-        case 'numbering': {
-          const number = String(rule.start + index * rule.increment).padStart(Math.max(0, rule.padding), '0');
-          const separator = stem ? rule.separator : '';
-          stem = rule.position === 'prefix'
-            ? `${number}${separator}${stem}`
-            : `${stem}${separator}${number}`;
-          break;
-        }
-        case 'extension': {
-          if (item.kind === 'folder') break;
-          const nextExtension = rule.extension.trim();
-          extension = nextExtension ? `.${nextExtension.replace(/^\.+/, '')}` : '';
-          break;
-        }
-      }
-    } catch (error) {
-      issues.push({
-        severity: 'error',
-        message: error instanceof Error ? error.message : 'Rule failed while building this preview.',
-      });
-    }
-  }
-
-  return {
-    name: `${stem}${extension}`,
-    issues,
-  };
-}
-
 function validateTargetName(item: RenamerItem, targetName: string, targetPath: string): RenameIssue[] {
   const issues: RenameIssue[] = [];
   const baseName = item.kind === 'file' ? targetName.slice(0, targetName.length - path.extname(targetName).length) : targetName;
@@ -548,26 +484,6 @@ function validateTargetName(item: RenamerItem, targetName: string, targetPath: s
   }
 
   return issues;
-}
-
-function applyCase(value: string, mode: 'lower' | 'upper' | 'title'): string {
-  if (mode === 'lower') return value.toLowerCase();
-  if (mode === 'upper') return value.toUpperCase();
-
-  return value
-    .toLowerCase()
-    .replace(/(^|[\s_-])([a-z0-9])/g, (_match, separator: string, letter: string) => `${separator}${letter.toUpperCase()}`);
-}
-
-function applySpaces(value: string, mode: 'underscore' | 'hyphen' | 'remove' | 'collapse'): string {
-  if (mode === 'underscore') return value.replace(/\s+/g, '_');
-  if (mode === 'hyphen') return value.replace(/\s+/g, '-');
-  if (mode === 'remove') return value.replace(/\s+/g, '');
-  return value.replace(/\s+/g, ' ').trim();
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function createStableId(value: string): string {

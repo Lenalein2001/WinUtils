@@ -149,7 +149,7 @@ export function ClipboardTab(): ReactElement {
     : [formatHotkey(state?.settings.quickAccessHotkey ?? 'Ctrl+Alt+V')];
   const hotkeyLabel = registeredHotkeys.join(' / ');
   const hotkeyTitle = state?.quickAccessRegistered
-    ? `Press ${hotkeyLabel} anywhere in Windows to open WinUtils to Clipboard Manager.`
+    ? `Press ${hotkeyLabel} anywhere in Windows to open the compact clipboard history popup.`
     : state?.quickAccessRegistrationError ?? 'The clipboard quick-access hotkey could not be registered.';
   const hotkeyDetail = state?.lastQuickAccessAt
     ? `Last used ${new Date(state.lastQuickAccessAt).toLocaleTimeString()}`

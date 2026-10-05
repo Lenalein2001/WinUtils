@@ -1,7 +1,9 @@
 import type { CSSProperties, DragEvent, ReactElement } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { normalizeMacroPlayback } from '../../shared/macro';
+import type { AutomationActionDefinition, AutomationActionParameterDefinition } from '../../shared/actions';
 import type {
+  AutomationAction as RegisteredAutomationAction,
   CommandAction,
   DelayAction,
   IfAction,
@@ -55,8 +57,16 @@ function blankAction(type: MacroAction['type']): MacroAction {
     case 'launch': return { id: newId(), type: 'launch', enabled: true, path: '', arguments: '' };
     case 'command': return { id: newId(), type: 'command', enabled: true, command: '', workingDirectory: '' };
     case 'text': return { id: newId(), type: 'text', enabled: true, text: '' };
+    case 'automation': return {
+      id: newId(),
+      type: 'automation',
+      enabled: true,
+      actionId: 'system.notification',
+      parameters: { title: 'WinUtils', message: '' },
+    };
     case 'repeat': return { id: newId(), type: 'repeat', enabled: true, times: 10, actions: [] };
     case 'if': return { id: newId(), type: 'if', enabled: true, condition: blankCondition(), thenActions: [], elseActions: [] };
+    case 'stop': return { id: newId(), type: 'stop', enabled: true };
   }
 }
 
@@ -180,8 +190,10 @@ function actionLabel(a: MacroAction): string {
     case 'launch': return `Launch ${a.path.split(/[\\/]/).pop() ?? a.path}`;
     case 'command': return `Run: ${a.command.slice(0, 40)}`;
     case 'text': return `Type: ${a.text.slice(0, 30)}`;
+    case 'automation': return `Action: ${a.actionId || 'not configured'}`;
     case 'repeat': return `Repeat ${a.times}x`;
     case 'if': return `If ${conditionSourceLabels[a.condition.source]}`;
+    case 'stop': return 'Stop macro';
     default: return '';
   }
 }
@@ -209,11 +221,13 @@ const macroActionDescriptions: Record<MacroAction['type'], string> = {
   launch: 'Start an app or executable file.',
   command: 'Run a PowerShell command.',
   text: 'Type text into the focused window.',
+  automation: 'Run a reusable WinUtils action such as launching an app, focusing a window, setting the clipboard, or showing a notification.',
   repeat: 'Run a nested action group a fixed number of times.',
   if: 'Run one branch or another when a condition matches.',
+  stop: 'Stop the current macro immediately without running any remaining actions.',
 };
 
-const actionTypes: MacroAction['type'][] = ['delay', 'keyboard', 'mouse', 'text', 'repeat', 'if', 'launch', 'command'];
+const actionTypes: MacroAction['type'][] = ['delay', 'keyboard', 'mouse', 'text', 'automation', 'repeat', 'if', 'stop', 'launch', 'command'];
 
 const conditionSourceLabels: Record<MacroConditionSource, string> = {
   'active-process': 'Active process',
@@ -378,6 +392,9 @@ function loadKeyboardPreviewLayout(): KeyboardPreviewLayoutId {
 
 function normalizeHotkeyToken(token: string): string {
   const normalized = token.trim().toLowerCase().replace(/\s+/g, '').replace(/[_-]/g, '');
+  const numpadDigit = normalized.match(/^numpad([0-9])$/)?.[1];
+  if (numpadDigit) return `num${numpadDigit}`;
+
   switch (normalized) {
     case 'control':
       return 'ctrl';
@@ -410,20 +427,29 @@ function normalizeHotkeyToken(token: string): string {
     case 'del':
       return 'delete';
     case 'numadd':
+    case 'numpadadd':
     case 'num+':
       return 'numadd';
     case 'numsub':
+    case 'numpadsubtract':
     case 'num-':
       return 'numsub';
     case 'nummult':
+    case 'numpadmultiply':
     case 'num*':
       return 'nummult';
     case 'numdiv':
+    case 'numpaddivide':
     case 'num/':
       return 'numdiv';
     case 'numdec':
+    case 'numpaddecimal':
     case 'num.':
       return 'numdec';
+    case 'numpadenter':
+      return 'numenter';
+    case 'numpadclear':
+      return 'numlock';
     default:
       return normalized;
   }
@@ -1192,7 +1218,7 @@ const macroPresets: MacroPreset[] = [
 
 // ─── Hotkey capture input ─────────────────────────────────────────────────
 
-function HotkeyInput({
+export function HotkeyInput({
   value,
   onChange,
   placeholder = 'Click and press keys…',
@@ -1493,6 +1519,13 @@ function ActionEditor({
         </div>
       )}
 
+      {action.type === 'automation' && (
+        <AutomationActionFields
+          action={action as RegisteredAutomationAction}
+          onChange={updated => onChange(updated)}
+        />
+      )}
+
       {action.type === 'repeat' && (
         <div className="action-nested-editor">
           <div className="action-fields">
@@ -1597,8 +1630,172 @@ function ActionEditor({
           />
         </div>
       )}
+
+      {action.type === 'stop' ? (
+        <p className="automation-action-description">
+          Execution ends here when this action is reached. Use it inside an If branch for an early exit.
+        </p>
+      ) : null}
     </div>
   );
+}
+
+function loadAutomationActions(): Promise<AutomationActionDefinition[]> {
+  return window.winUtils.actions.list()
+    .then(actions => actions.filter(action => (
+      action.ownerId === 'system-actions'
+      || action.ownerId === 'audio-actions'
+      || action.ownerId === 'explorer-actions'
+      || action.ownerId === 'window-layouts'
+      || action.ownerId === 'window-manager'
+    )));
+}
+
+function AutomationActionFields({
+  action,
+  onChange,
+}: {
+  action: RegisteredAutomationAction;
+  onChange: (action: RegisteredAutomationAction) => void;
+}): ReactElement {
+  const [definitions, setDefinitions] = useState<AutomationActionDefinition[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const definition = definitions.find(item => item.id === action.actionId);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadAutomationActions()
+      .then(items => {
+        if (!cancelled) setDefinitions(items);
+      })
+      .catch(reason => {
+        if (!cancelled) setLoadError(reason instanceof Error ? reason.message : String(reason));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const chooseAction = (actionId: string): void => {
+    const selected = definitions.find(item => item.id === actionId);
+    onChange({
+      ...action,
+      actionId,
+      parameters: defaultActionParameters(selected),
+    });
+  };
+
+  const patchParameter = (parameter: AutomationActionParameterDefinition, value: string | number | boolean): void => {
+    onChange({
+      ...action,
+      parameters: {
+        ...action.parameters,
+        [parameter.id]: value,
+      },
+    });
+  };
+
+  return (
+    <div className="action-nested-editor automation-action-editor">
+      <div className="action-fields">
+        <label className="macro-label">WinUtils action</label>
+        <select
+          className="macro-select"
+          value={action.actionId}
+          onChange={event => chooseAction(event.target.value)}
+          title="Choose a registered Action Engine operation."
+        >
+          {definitions.length === 0 ? <option value={action.actionId}>Loading actions...</option> : null}
+          {definitions.map(item => (
+            <option key={item.id} value={item.id}>{item.ownerLabel} - {item.label}</option>
+          ))}
+        </select>
+      </div>
+
+      {loadError ? <div className="macro-inline-error">{loadError}</div> : null}
+      {definition ? <p className="automation-action-description">{definition.description}</p> : null}
+
+      {definition?.parameters?.map(parameter => (
+        <div className="action-fields" key={parameter.id}>
+          <label className="macro-label">
+            {parameter.label}
+            {parameter.required ? ' *' : ''}
+          </label>
+          <AutomationParameterInput
+            parameter={parameter}
+            value={action.parameters[parameter.id] ?? parameter.defaultValue ?? ''}
+            onChange={value => patchParameter(parameter, value)}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AutomationParameterInput({
+  parameter,
+  value,
+  onChange,
+}: {
+  parameter: AutomationActionParameterDefinition;
+  value: string | number | boolean;
+  onChange: (value: string | number | boolean) => void;
+}): ReactElement {
+  if (parameter.type === 'boolean') {
+    return (
+      <label className="macro-check-label" title={parameter.description}>
+        <input type="checkbox" checked={Boolean(value)} onChange={event => onChange(event.target.checked)} />
+        <span>{parameter.description ?? parameter.label}</span>
+      </label>
+    );
+  }
+
+  if (parameter.type === 'select') {
+    return (
+      <select
+        className="macro-select"
+        value={String(value)}
+        onChange={event => onChange(event.target.value)}
+        title={parameter.description}
+      >
+        {parameter.options?.map(option => (
+          <option key={option.value} value={option.value}>{option.label}</option>
+        ))}
+      </select>
+    );
+  }
+
+  if (parameter.multiline) {
+    return (
+      <textarea
+        className="macro-textarea"
+        rows={3}
+        value={String(value)}
+        placeholder={parameter.placeholder}
+        onChange={event => onChange(event.target.value)}
+        title={parameter.description}
+      />
+    );
+  }
+
+  return (
+    <input
+      className="macro-input"
+      type={parameter.type === 'number' ? 'number' : 'text'}
+      value={String(value)}
+      min={parameter.min}
+      max={parameter.max}
+      placeholder={parameter.placeholder}
+      onChange={event => onChange(parameter.type === 'number' ? Number(event.target.value) : event.target.value)}
+      title={parameter.description}
+    />
+  );
+}
+
+function defaultActionParameters(definition: AutomationActionDefinition | undefined): Record<string, string | number | boolean> {
+  return Object.fromEntries((definition?.parameters ?? [])
+    .filter(parameter => parameter.defaultValue !== undefined)
+    .map(parameter => [parameter.id, parameter.defaultValue as string | number | boolean]));
 }
 
 function NestedActionsEditor({
@@ -2152,44 +2349,6 @@ export function MacrosTab(): ReactElement {
           )}
         </div>
 
-        <div className="macro-keyboard-panel">
-          <div className="macro-runtime-header">
-            <span className="process-bindings-label">Keyboard preview</span>
-            <label className="macro-toggle-label" title="Experimental: disable this any time to roll back to the classic macro editor view.">
-              <input
-                type="checkbox"
-                checked={keyboardPreviewEnabled}
-                onChange={event => setKeyboardPreviewEnabled(event.target.checked)}
-              />
-              Experimental
-            </label>
-          </div>
-
-          <div className="macro-keyboard-controls">
-            <label className="macro-label" htmlFor="keyboard-layout-select">Layout</label>
-            <select
-              id="keyboard-layout-select"
-              className="macro-select"
-              value={keyboardLayoutId}
-              onChange={event => setKeyboardLayoutId(event.target.value as KeyboardPreviewLayoutId)}
-              disabled={!keyboardPreviewEnabled}
-              title="Choose the keyboard layout used for the bound-key preview."
-            >
-              {Object.values(keyboardPreviewLayouts).map(layout => (
-                <option key={layout.id} value={layout.id}>{layout.label}</option>
-              ))}
-            </select>
-          </div>
-
-          {keyboardPreviewEnabled ? (
-            <KeyboardHotkeyPreview macros={allMacros} layoutId={keyboardLayoutId} />
-          ) : (
-            <div className="process-apps-empty">
-              Enable the experimental preview to visualize all bound hotkeys on a keyboard layout.
-            </div>
-          )}
-        </div>
-
         {/* Tree actions */}
         <div className="macros-tree-actions">
           <button type="button" className="ghost-button ghost-button--sm" title="Create a new macro in the active profile." onClick={() => {
@@ -2286,6 +2445,44 @@ export function MacrosTab(): ReactElement {
 
       {/* ── Right panel: macro editor ── */}
       <div className="macros-editor">
+        <div className="macro-keyboard-panel">
+          <div className="macro-runtime-header">
+            <span className="process-bindings-label">Keyboard preview</span>
+            <label className="macro-toggle-label" title="Experimental: disable this any time to roll back to the classic macro editor view.">
+              <input
+                type="checkbox"
+                checked={keyboardPreviewEnabled}
+                onChange={event => setKeyboardPreviewEnabled(event.target.checked)}
+              />
+              Experimental
+            </label>
+          </div>
+
+          <div className="macro-keyboard-controls">
+            <label className="macro-label" htmlFor="keyboard-layout-select">Layout</label>
+            <select
+              id="keyboard-layout-select"
+              className="macro-select"
+              value={keyboardLayoutId}
+              onChange={event => setKeyboardLayoutId(event.target.value as KeyboardPreviewLayoutId)}
+              disabled={!keyboardPreviewEnabled}
+              title="Choose the keyboard layout used for the bound-key preview."
+            >
+              {Object.values(keyboardPreviewLayouts).map(layout => (
+                <option key={layout.id} value={layout.id}>{layout.label}</option>
+              ))}
+            </select>
+          </div>
+
+          {keyboardPreviewEnabled ? (
+            <KeyboardHotkeyPreview macros={allMacros} layoutId={keyboardLayoutId} />
+          ) : (
+            <div className="process-apps-empty">
+              Enable the experimental preview to visualize all bound hotkeys on a keyboard layout.
+            </div>
+          )}
+        </div>
+
         {selectedMacro ? (
           <MacroEditor
             macro={selectedMacro}
@@ -2361,6 +2558,46 @@ function KeyboardHotkeyPreview({
     : null;
   const assignedHotkeyCount = macros.reduce((count, macro) => (macro.hotkey.trim() ? count + 1 : count), 0);
   const conflictKeyCount = [...keyBindings.values()].filter(list => list.length > 1).length;
+  const keysById = new Map(
+    layout.rows.flat().filter(key => !key.spacer).map(key => [key.id, key] as const),
+  );
+
+  const renderKey = (key: KeyboardPreviewKey, className = ''): ReactElement => {
+    const bindings = keyBindings.get(key.id) ?? [];
+    const style = { '--key-width-units': String(key.width ?? 1) } as CSSProperties;
+    const detail = bindings.slice(0, 3).map(binding => binding.macroName).join(', ');
+    const extra = bindings.length > 3 ? ` (+${bindings.length - 3} more)` : '';
+    const title = bindings.length > 0 ? `${key.label}: ${detail}${extra}` : key.label;
+
+    return (
+      <button
+        key={key.id}
+        type="button"
+        className={`macro-key${className}${bindings.length > 0 ? ' macro-key--bound' : ''}${bindings.length > 1 ? ' macro-key--conflict' : ''}${selectedKeyId === key.id ? ' macro-key--selected' : ''}`}
+        style={style}
+        title={title}
+        onClick={() => setSelectedKeyId(key.id)}
+        role="gridcell"
+      >
+        <span className="macro-key-label">{key.label}</span>
+        {bindings.length > 0 ? <span className="macro-key-count">{bindings.length}</span> : null}
+      </button>
+    );
+  };
+
+  const renderKeyIds = (ids: string[], className = ''): ReactElement[] => ids
+    .map(id => keysById.get(id))
+    .filter((key): key is KeyboardPreviewKey => Boolean(key))
+    .map(key => renderKey(key, className));
+
+  const fullSizeMainRows = [
+    ['escape', 'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10', 'f11', 'f12'],
+    ['backquote', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'minus', 'equal', 'backspace'],
+    ['tab', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', 'bracketleft', 'bracketright', 'backslash'],
+    ['capslock', 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'semicolon', 'quote', 'enter'],
+    ['shift-left', 'z', 'x', 'c', 'v', 'b', 'n', 'm', 'comma', 'period', 'slash', 'shift-right'],
+    ['ctrl-left', 'win-left', 'alt-left', 'space', 'alt-right', 'fn', 'menu', 'ctrl-right'],
+  ];
 
   return (
     <div className="macro-keyboard-preview">
@@ -2371,37 +2608,47 @@ function KeyboardHotkeyPreview({
         </span>
       </div>
 
-      <div className="macro-keyboard-layout" role="grid" aria-label={`Keyboard preview (${layout.label})`}>
-        {layout.rows.map((row, rowIndex) => (
-          <div className="macro-keyboard-row" key={`${layout.id}-row-${rowIndex}`} role="row">
-            {row.map(key => {
-              const bindings = key.spacer ? [] : (keyBindings.get(key.id) ?? []);
-              const style = { '--key-width-units': String(key.width ?? 1) } as CSSProperties;
-              if (key.spacer) return <span key={key.id} className="macro-key macro-key--spacer" style={style} aria-hidden />;
-
-              const detail = bindings.slice(0, 3).map(binding => binding.macroName).join(', ');
-              const extra = bindings.length > 3 ? ` (+${bindings.length - 3} more)` : '';
-              const title = bindings.length > 0
-                ? `${key.label}: ${detail}${extra}`
-                : key.label;
-
-              return (
-                <button
-                  key={key.id}
-                  type="button"
-                  className={`macro-key${bindings.length > 0 ? ' macro-key--bound' : ''}${bindings.length > 1 ? ' macro-key--conflict' : ''}${selectedKeyId === key.id ? ' macro-key--selected' : ''}`}
-                  style={style}
-                  title={title}
-                  onClick={() => setSelectedKeyId(key.id)}
-                  role="gridcell"
-                >
-                  <span className="macro-key-label">{key.label}</span>
-                  {bindings.length > 0 ? <span className="macro-key-count">{bindings.length}</span> : null}
-                </button>
-              );
-            })}
-          </div>
-        ))}
+      <div className="macro-keyboard-layout-wrap">
+        <div className={`macro-keyboard-layout${layout.id === 'ansi-full' ? ' macro-keyboard-layout--full' : ''}`} role="grid" aria-label={`Keyboard preview (${layout.label})`}>
+          {layout.id === 'ansi-full' ? (
+            <div className="macro-keyboard-clusters">
+              <div className="macro-keyboard-main">
+                {fullSizeMainRows.map((row, rowIndex) => (
+                  <div className="macro-keyboard-row" key={`main-row-${rowIndex}`} role="row">
+                    {renderKeyIds(row)}
+                  </div>
+                ))}
+              </div>
+              <div className="macro-keyboard-nav">
+                <div className="macro-keyboard-nav-row">{renderKeyIds(['printscreen', 'insert', 'home', 'pageup'])}</div>
+                <div className="macro-keyboard-nav-row">{renderKeyIds(['delete', 'end', 'pagedown'])}</div>
+                <div className="macro-keyboard-nav-gap" />
+                <div className="macro-keyboard-nav-row macro-keyboard-nav-row--up">{renderKeyIds(['up'])}</div>
+                <div className="macro-keyboard-nav-row">{renderKeyIds(['left', 'down', 'right'])}</div>
+              </div>
+              <div className="macro-keyboard-numpad">
+                {renderKeyIds(['numlock', 'numdiv', 'nummult', 'numsub'], ' macro-key--numpad')}
+                {renderKeyIds(['num7', 'num8', 'num9'], ' macro-key--numpad')}
+                {renderKeyIds(['numadd'], ' macro-key--numpad macro-key--numpad-add')}
+                {renderKeyIds(['num4', 'num5', 'num6'], ' macro-key--numpad')}
+                {renderKeyIds(['num1', 'num2', 'num3'], ' macro-key--numpad')}
+                {renderKeyIds(['numenter'], ' macro-key--numpad macro-key--numpad-enter')}
+                {renderKeyIds(['num0'], ' macro-key--numpad macro-key--numpad-zero')}
+                {renderKeyIds(['numdec'], ' macro-key--numpad')}
+              </div>
+            </div>
+          ) : layout.rows.map((row, rowIndex) => (
+            <div className="macro-keyboard-row" key={`${layout.id}-row-${rowIndex}`} role="row">
+              {row.map(key => {
+                if (key.spacer) {
+                  const style = { '--key-width-units': String(key.width ?? 1) } as CSSProperties;
+                  return <span key={key.id} className="macro-key macro-key--spacer" style={style} aria-hidden />;
+                }
+                return renderKey(key);
+              })}
+            </div>
+          ))}
+        </div>
       </div>
 
       {selectedBindings.length > 0 ? (
@@ -2423,8 +2670,18 @@ function KeyboardHotkeyPreview({
       )}
 
       {unmatchedBindings.length > 0 ? (
-        <div className="macro-runtime-warning">
-          {unmatchedBindings.length} hotkey(s) could not be mapped to this layout.
+        <div className="macro-keyboard-unmapped">
+          <div className="macro-keyboard-details-title">Unmapped hotkeys</div>
+          <div className="macro-keyboard-binding-list macro-keyboard-binding-list--compact">
+            {unmatchedBindings.map(binding => (
+              <div key={`${binding.macroId}-${binding.hotkey}`} className="macro-keyboard-binding-item macro-keyboard-binding-item--unmapped">
+                <span>{binding.macroName}</span>
+                <code>{binding.hotkey}</code>
+                {binding.modifiers.length > 0 ? <span className="macro-tool-hint">{binding.modifiers.join(' + ')}</span> : null}
+                {!binding.enabled ? <span className="status-pill status-pill--disabled">disabled</span> : null}
+              </div>
+            ))}
+          </div>
         </div>
       ) : null}
     </div>
@@ -2539,7 +2796,12 @@ function MacroEditor({
     }
 
     const normalizedHotkey = normalizeMacroHotkey(trimmedHotkey);
-    const conflictMacro = allMacros.find(item => item.id !== macro.id && normalizeMacroHotkey(item.hotkey) === normalizedHotkey);
+    const conflictMacro = allMacros.find(item => (
+      item.id !== macro.id
+      && item.enabled
+      && (item.hotkeyEnabled ?? true)
+      && normalizeMacroHotkey(item.hotkey) === normalizedHotkey
+    ));
     if (conflictMacro) {
       setHotkeyError(`"${trimmedHotkey}" is already assigned to "${conflictMacro.name || '(unnamed)'}".`);
       return;

@@ -77,7 +77,7 @@ export function SettingsTab({
   const loadChangelog = async (includeHistory: boolean): Promise<void> => {
     setChangelogError(null);
     if (includeHistory && releaseHistory) return;
-    if (!includeHistory && (latestRelease || updateState?.update?.releaseNotes)) return;
+    if (!includeHistory && latestRelease) return;
 
     setChangelogBusy(true);
     try {
@@ -118,7 +118,7 @@ export function SettingsTab({
   const updateBadgeTone = updateState ? getUpdateBadgeTone(updateState) : 'info';
   const updateDisabled = updateBusy || updateState?.status === 'checking' || updateState?.status === 'downloading';
   const updatePercent = Math.max(0, Math.min(100, updateState?.progress?.percent ?? 0));
-  const changelogRelease = updateState?.update ?? latestRelease;
+  const changelogRelease = latestRelease ?? updateState?.update ?? null;
   const changelogReleases = showAllChangelogs ? releaseHistory ?? [] : changelogRelease ? [changelogRelease] : [];
 
   return (

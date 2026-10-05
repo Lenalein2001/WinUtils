@@ -1,6 +1,6 @@
 import type { ReactElement } from 'react';
 import { useEffect, useMemo, useState } from 'react';
-import type { RegexRenamerExport } from '../../shared/regexLab';
+import type { RegexMatchResult, RegexRenamerExport } from '../../shared/regexLab';
 
 interface RegexLabTabProps {
   onExportToRenamer: (payload: RegexRenamerExport) => void;
@@ -24,15 +24,6 @@ interface RegexSegment {
   options: SegmentOption[];
 }
 
-interface RegexMatchResult {
-  error: string | null;
-  matches: Array<{
-    value: string;
-    index: number;
-    groups: string[];
-  }>;
-}
-
 const DEFAULT_SAMPLE = '';
 const regexFlagDescriptions: Record<string, string> = {
   g: 'Global: find every match instead of stopping after the first one.',
@@ -52,10 +43,33 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
   const [exportMessage, setExportMessage] = useState<string | null>(null);
 
   const segments = useMemo(() => buildSegments(sampleText), [sampleText]);
-  const matchResult = useMemo(
-    () => testPattern(patternDraft, flags, sampleText),
-    [flags, patternDraft, sampleText],
-  );
+  const [matchResult, setMatchResult] = useState<RegexMatchResult>({ error: null, matches: [] });
+  const [previewPending, setPreviewPending] = useState(false);
+
+  useEffect(() => {
+    if (!patternDraft) { setMatchResult({ error: null, matches: [] }); setPreviewPending(false); return; }
+    setPreviewPending(true);
+    setMatchResult({ error: null, matches: [] });
+    let worker: Worker | undefined;
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const debounce = setTimeout(() => {
+
+      const finish = (result: RegexMatchResult): void => {
+        clearTimeout(deadline);
+        worker?.terminate();
+        setMatchResult(result);
+        setPreviewPending(false);
+      };
+      try {
+        worker = new Worker(new URL('./regexPreview.worker.ts', import.meta.url), { type: 'module' });
+      } catch { finish({ error: 'Regex preview worker could not start.', matches: [] }); return; }
+      worker.onmessage = (event: MessageEvent<RegexMatchResult>) => finish(event.data);
+      worker.onerror = () => finish({ error: 'Regex preview worker failed.', matches: [] });
+      deadline = setTimeout(() => finish({ error: 'Regex preview timed out. Simplify the pattern or shorten the input.', matches: [] }), 1500);
+      worker.postMessage({ pattern: patternDraft, flags, sampleText });
+    }, 180);
+    return () => { clearTimeout(debounce); clearTimeout(deadline); worker?.terminate(); };
+  }, [flags, patternDraft, sampleText]);
 
   useEffect(() => {
     const nextSelectedOptions: Record<string, string> = {};
@@ -162,7 +176,7 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
   };
 
   const handleExport = (): void => {
-    if (!patternDraft.trim() || matchResult.error) return;
+    if (!patternDraft.trim() || matchResult.error || previewPending) return;
 
     onExportToRenamer({
       id: newId(),
@@ -184,6 +198,7 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
           <input
             className="macro-input"
             title="Paste a filename or text sample here. The builder splits it into clickable regex tokens."
+            maxLength={50000}
             value={sampleText}
             onChange={(event) => { setSampleText(event.target.value); setExportMessage(null); }}
           />
@@ -301,6 +316,7 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
 
           <textarea
             className="macro-textarea regex-pattern-box"
+            maxLength={4096}
             value={patternDraft}
             onChange={(event) => { setPatternDraft(event.target.value); setExportMessage(null); }}
             spellCheck={false}
@@ -323,7 +339,7 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
               className="toggle-button"
               type="button"
               onClick={handleExport}
-              disabled={!patternDraft.trim() || Boolean(matchResult.error)}
+              disabled={!patternDraft.trim() || Boolean(matchResult.error) || previewPending}
               title="Send this regex and replacement into Batch Renamer as a Find / Replace rule."
             >
               Send to Renamer
@@ -335,12 +351,12 @@ export function RegexLabTab({ onExportToRenamer }: RegexLabTabProps): ReactEleme
             <div className="regex-card-header regex-card-header--compact">
               <p className="section-kicker">Matches</p>
               <span className={`status-pill ${matchResult.error ? 'renamer-status--error' : 'renamer-status--ready'}`}>
-                {matchResult.error ? 'Invalid' : matchResult.matches.length}
+                {previewPending ? 'Checking…' : matchResult.error ? 'Invalid' : matchResult.matches.length}
               </span>
             </div>
 
             {matchResult.error ? <div className="error-banner">{matchResult.error}</div> : null}
-            {!matchResult.error && matchResult.matches.length === 0 ? <div className="empty-state">No matches.</div> : null}
+            {!previewPending && !matchResult.error && matchResult.matches.length === 0 ? <div className="empty-state">No matches.</div> : null}
             {!matchResult.error && matchResult.matches.length > 0 ? (
               <div className="regex-match-list">
                 {matchResult.matches.map((match) => (
@@ -501,33 +517,6 @@ function getSegmentCapture(
 
 function hasSegmentValue(values: Record<string, boolean>, segmentId: string): boolean {
   return Object.prototype.hasOwnProperty.call(values, segmentId);
-}
-
-function testPattern(pattern: string, flags: string, sampleText: string): RegexMatchResult {
-  if (!pattern) return { error: null, matches: [] };
-
-  try {
-    const testFlags = flags.includes('g') ? flags : `${flags}g`;
-    const regex = new RegExp(pattern, testFlags);
-    const matches: RegexMatchResult['matches'] = [];
-    let match: RegExpExecArray | null;
-
-    while ((match = regex.exec(sampleText)) !== null) {
-      matches.push({
-        value: match[0],
-        index: match.index,
-        groups: match.slice(1),
-      });
-
-      if (match[0] === '') {
-        regex.lastIndex += 1;
-      }
-    }
-
-    return { error: null, matches };
-  } catch (error) {
-    return { error: error instanceof Error ? error.message : 'Invalid regular expression.', matches: [] };
-  }
 }
 
 function escapeRegex(value: string): string {

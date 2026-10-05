@@ -1,28 +1,29 @@
+import { handleTrustedIpc } from './ipcSecurity';
 import { spawn } from 'node:child_process';
-import { app, dialog, ipcMain } from 'electron';
+import { app, dialog } from 'electron';
 import type { StartupEntry } from '../shared/startup';
 import { AdminRequiredError, StartupManager } from './startupManager';
 
 export function registerIpcHandlers(startupManager: StartupManager, prepareForAdminRelaunch: () => void): void {
-  ipcMain.handle('startup-apps:list', async () => startupManager.listEntries());
-  ipcMain.handle('startup-apps:disable', async (event, id: string) =>
+  handleTrustedIpc('startup-apps:list', async () => startupManager.listEntries());
+  handleTrustedIpc('startup-apps:disable', async (event, id: string) =>
     handleStartupMutation(() => startupManager.disableEntry(id)));
-  ipcMain.handle('startup-apps:enable', async (event, id: string) =>
+  handleTrustedIpc('startup-apps:enable', async (event, id: string) =>
     handleStartupMutation(() => startupManager.enableEntry(id)));
-  ipcMain.handle('startup-apps:delete', async (event, id: string) =>
+  handleTrustedIpc('startup-apps:delete', async (event, id: string) =>
     handleStartupMutation(() => startupManager.deleteEntry(id)));
-  ipcMain.handle(
+  handleTrustedIpc(
     'startup-apps:add',
     async (event, input: { name: string; executablePath: string; arguments?: string; scope: 'current-user' | 'all-users' }) =>
       handleStartupMutation(() => startupManager.addEntry(input)),
   );
-  ipcMain.handle(
+  handleTrustedIpc(
     'startup-apps:update',
     async (event, input: { id: string; executablePath: string; arguments?: string }) =>
       handleStartupMutation(() => startupManager.updateEntry(input)),
   );
-  ipcMain.handle('startup-apps:restartAsAdmin', () => restartAsAdmin(prepareForAdminRelaunch));
-  ipcMain.handle('startup-apps:pickExecutable', async () => {
+  handleTrustedIpc('startup-apps:restartAsAdmin', () => restartAsAdmin(prepareForAdminRelaunch));
+  handleTrustedIpc('startup-apps:pickExecutable', async () => {
     const result = await dialog.showOpenDialog({
       properties: ['openFile'],
       filters: [

@@ -87,6 +87,14 @@ export interface TextAction {
   text: string;
 }
 
+export interface AutomationAction {
+  id: string;
+  type: 'automation';
+  enabled: boolean;
+  actionId: string;
+  parameters: Record<string, string | number | boolean>;
+}
+
 export interface RepeatAction {
   id: string;
   type: 'repeat';
@@ -104,6 +112,12 @@ export interface IfAction {
   elseActions: MacroAction[];
 }
 
+export interface StopAction {
+  id: string;
+  type: 'stop';
+  enabled: boolean;
+}
+
 export type MacroAction =
   | DelayAction
   | KeyboardAction
@@ -111,8 +125,10 @@ export type MacroAction =
   | LaunchAction
   | CommandAction
   | TextAction
+  | AutomationAction
   | RepeatAction
-  | IfAction;
+  | IfAction
+  | StopAction;
 
 // ─── Macro ────────────────────────────────────────────────────────────────
 
@@ -120,6 +136,7 @@ export interface Macro {
   id: string;
   name: string;
   hotkey: string; // e.g. "Ctrl+Alt+M"
+  hotkeyEnabled?: boolean;
   actions: MacroAction[];
   enabled: boolean;
   playback: MacroPlaybackOptions;

@@ -10,10 +10,62 @@ import type { RenameApplyResult, RenamePreview, RenameRule, RenameTransaction, R
 import type { AppUpdateInfo, UpdateState } from '../../shared/updater';
 import type { ClipboardClearMode, ClipboardQuery, ClipboardSettings, ClipboardState } from '../../shared/clipboard';
 import type { FileSyncAnalyzeResult, FileSyncApplyResult, FileSyncJobInput, FileSyncState } from '../../shared/fileSync';
+import type { AutomationActivity, AutomationActionDefinition, AutomationActionRequest, AutomationActionResult } from '../../shared/actions';
+import type { HotkeyActionBindingInput, HotkeyState, HotkeyUpdateInput, HotkeyUpdateResult } from '../../shared/hotkeys';
+import type {
+  SaveWindowLayoutInput,
+  WindowCommand,
+  WindowCommandResult,
+  WindowLayoutApplyResult,
+  WindowManagerState,
+} from '../../shared/windowManager';
+import type { AutomationTriggerInput, AutomationTriggerState } from '../../shared/automationTriggers';
+import type { ExplorerContextMenuState, ExplorerContextMenuUpdate } from '../../shared/contextMenu';
 
 declare global {
   interface Window {
     winUtils: {
+      actions: {
+        activity: () => Promise<AutomationActivity>;
+        stop: () => Promise<AutomationActivity>;
+        resume: () => Promise<AutomationActivity>;
+        list: () => Promise<AutomationActionDefinition[]>;
+        execute: (request: AutomationActionRequest) => Promise<AutomationActionResult>;
+      };
+      hotkeys: {
+        getState: () => Promise<HotkeyState>;
+        update: (input: HotkeyUpdateInput) => Promise<HotkeyUpdateResult>;
+        createActionBinding: (input: HotkeyActionBindingInput) => Promise<HotkeyUpdateResult>;
+        deleteActionBinding: (bindingId: string) => Promise<HotkeyState>;
+        onChanged: (cb: () => void) => () => void;
+      };
+      commandPalette: {
+        hide: () => Promise<void>;
+        onOpenRequested: (cb: () => void) => () => void;
+      };
+      navigation: {
+        onOpenModule: (cb: (moduleId: string) => void) => () => void;
+      };
+      windows: {
+        restoreAll: () => Promise<WindowManagerState>;
+        getState: () => Promise<WindowManagerState>;
+        execute: (command: WindowCommand) => Promise<WindowCommandResult>;
+        saveLayout: (input: SaveWindowLayoutInput) => Promise<WindowManagerState>;
+        deleteLayout: (layoutId: string) => Promise<WindowManagerState>;
+        applyLayout: (layoutId: string) => Promise<WindowLayoutApplyResult>;
+      };
+      triggers: {
+        getState: () => Promise<AutomationTriggerState>;
+        upsert: (input: AutomationTriggerInput) => Promise<AutomationTriggerState>;
+        delete: (id: string) => Promise<AutomationTriggerState>;
+        runNow: (id: string) => Promise<AutomationTriggerState>;
+        onChanged: (cb: () => void) => () => void;
+      };
+      contextMenu: {
+        getState: () => Promise<ExplorerContextMenuState>;
+        update: (input: ExplorerContextMenuUpdate) => Promise<ExplorerContextMenuState>;
+        uninstall: () => Promise<ExplorerContextMenuState>;
+      };
       startupApps: {
         list: () => Promise<StartupEntry[]>;
         disable: (id: string) => Promise<StartupEntry[]>;
@@ -113,6 +165,7 @@ declare global {
         clear: (mode: ClipboardClearMode) => Promise<ClipboardState>;
         rerunOcr: (id: string) => Promise<ClipboardState>;
         openQuickAccess: () => Promise<ClipboardState>;
+        hideQuickAccess: () => Promise<void>;
         onChanged: (cb: () => void) => () => void;
         onOpenRequested: (cb: () => void) => () => void;
       };

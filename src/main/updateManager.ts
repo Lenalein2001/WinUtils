@@ -3,8 +3,8 @@ import { createRequire } from 'node:module';
 import type { ProgressInfo, UpdateInfo } from 'electron-updater';
 import type { AppUpdateInfo, UpdateDownloadProgress, UpdateInstallMode, UpdateState, UpdateStatus } from '../shared/updater';
 
-const require = createRequire(import.meta.url);
-const { autoUpdater } = require('electron-updater') as typeof import('electron-updater');
+const requireUpdater = createRequire(import.meta.url);
+const { autoUpdater } = requireUpdater('electron-updater') as typeof import('electron-updater');
 
 const GITHUB_OWNER = 'Lenalein2001';
 const GITHUB_REPO = 'WinUtils';
@@ -40,8 +40,10 @@ export class UpdateManager {
   private error: string | null = null;
   private lastCheckedAt: string | null = null;
   private initialized = false;
+  private checking: Promise<UpdateState> | null = null;
+  private downloading: Promise<UpdateState> | null = null;
 
-  constructor(private readonly beforeInstall: () => void) {}
+  constructor(private readonly beforeInstall: () => void | Promise<void>) {}
 
   init(): void {
     if (this.initialized) return;
@@ -88,6 +90,12 @@ export class UpdateManager {
   }
 
   async checkForUpdates(): Promise<UpdateState> {
+    if (this.downloading || this.status === 'downloaded') return this.getState();
+    if (!this.checking) this.checking = this.checkInternal().finally(() => { this.checking = null; });
+    return this.checking;
+  }
+
+  private async checkInternal(): Promise<UpdateState> {
     const installMode = this.getInstallMode();
 
     if (installMode === 'development') {
@@ -112,6 +120,13 @@ export class UpdateManager {
   }
 
   async downloadUpdate(): Promise<UpdateState> {
+    if (this.downloading) return this.downloading;
+    if (this.status !== 'available') throw new Error('Check for an available update before downloading.');
+    this.downloading = this.downloadInternal().finally(() => { this.downloading = null; });
+    return this.downloading;
+  }
+
+  private async downloadInternal(): Promise<UpdateState> {
     const installMode = this.getInstallMode();
 
     if (installMode === 'portable') {
@@ -138,7 +153,7 @@ export class UpdateManager {
     if (this.getInstallMode() !== 'installer') throw new Error('Only installed builds can apply updates in-app.');
     if (this.status !== 'downloaded') throw new Error('No downloaded update is ready to install.');
 
-    this.beforeInstall();
+    await this.beforeInstall();
     autoUpdater.quitAndInstall(true, true);
     return this.getState();
   }
@@ -192,6 +207,7 @@ export class UpdateManager {
 
   private async fetchGitHubRelease(url: string): Promise<unknown> {
     const response = await fetch(url, {
+      signal: AbortSignal.timeout(15_000),
       headers: {
         Accept: 'application/vnd.github+json',
         'User-Agent': 'WinUtils',
@@ -213,8 +229,8 @@ export class UpdateManager {
       releaseName: release.name ?? null,
       releaseDate: release.published_at ?? null,
       releaseNotes: release.body ?? null,
-      releaseUrl: release.html_url ?? GITHUB_RELEASES_URL,
-      downloadUrl: portableAsset?.browser_download_url ?? release.html_url ?? GITHUB_RELEASES_URL,
+      releaseUrl: validateReleaseUrl(release.html_url ?? GITHUB_RELEASES_URL),
+      downloadUrl: validateReleaseUrl(portableAsset?.browser_download_url ?? release.html_url ?? GITHUB_RELEASES_URL),
     };
   }
 
@@ -277,6 +293,16 @@ function normalizeReleaseNotes(value: unknown): string | null {
     .filter(Boolean);
 
   return notes.length ? notes.join('\n\n') : null;
+}
+
+function validateReleaseUrl(value: string): string {
+  const url = new URL(value);
+  const prefix = `/${GITHUB_OWNER}/${GITHUB_REPO}/releases/`;
+  if (url.protocol !== 'https:' || url.hostname !== 'github.com' || url.port
+    || url.username || url.password || !url.pathname.toLowerCase().startsWith(prefix.toLowerCase())) {
+    throw new Error('Update response contains an untrusted release URL.');
+  }
+  return url.href;
 }
 
 function normalizeVersion(version: string): string {

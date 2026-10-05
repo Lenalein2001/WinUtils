@@ -7,12 +7,14 @@ import { app, BrowserWindow, globalShortcut } from 'electron';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createRequire } from 'node:module';
 import type { UiohookKeyboardEvent } from 'uiohook-napi';
+import { normalizeHotkey } from '../shared/hotkeys';
 
 type UiohookModule = typeof import('uiohook-napi');
 
 export interface HotkeyCallbacks {
   down: () => void;
   up?: () => void;
+  suppressWhenAppFocused?: boolean;
 }
 
 export type HotkeyBackend = 'electron' | 'uiohook' | 'modifier-worker' | 'none';
@@ -53,12 +55,10 @@ const pressedHotkeys = new Set<string>();
 const pendingStandaloneModifierHotkeys = new Set<string>();
 const modifierWorkerHotkeys = new Set<string>();
 
-function normalizeHotkey(raw: string): string {
-  return raw.trim().toLowerCase().replace(/\s+/g, '');
-}
-
 function toCallbacks(callback: (() => void) | HotkeyCallbacks): HotkeyCallbacks {
-  return typeof callback === 'function' ? { down: callback } : callback;
+  return typeof callback === 'function'
+    ? { down: callback, suppressWhenAppFocused: true }
+    : { ...callback, suppressWhenAppFocused: callback.suppressWhenAppFocused ?? true };
 }
 
 function isWinUtilsFocused(): boolean {
@@ -936,7 +936,7 @@ function modifierStateMatches(actual: boolean, expected: boolean, isTriggerKey: 
 function fireHotkeyDown(hotkey: string, fromElectron: boolean): void {
   const callback = callbacks.get(hotkey);
   if (!callback) return;
-  if (isWinUtilsFocused()) return;
+  if (callback.suppressWhenAppFocused && isWinUtilsFocused()) return;
   const canTrackRelease = uiohookRunning && uiohookCombos.has(hotkey);
 
   if (fromElectron && canTrackRelease) {

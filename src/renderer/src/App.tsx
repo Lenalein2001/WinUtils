@@ -1,16 +1,21 @@
+import { AutomationSafetyPanel } from './AutomationSafetyPanel';
 ﻿import type { ReactElement } from 'react';
-import { useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import type { StartupEntry } from '../../shared/startup';
 import type { AppSettings, AppTheme } from '../../shared/settings';
 import type { RegexRenamerExport } from '../../shared/regexLab';
-import { AlwaysActiveTab } from './AlwaysActiveTab';
-import { ClipboardTab } from './ClipboardTab';
-import { FileSyncTab } from './FileSyncTab';
-import { FocusAudioTab } from './FocusAudioTab';
-import { MacrosTab } from './MacrosTab';
-import { RegexLabTab } from './RegexLabTab';
-import { RenamerTab } from './RenamerTab';
-import { SettingsTab } from './SettingsTab';
+const AlwaysActiveTab = lazy(() => import('./AlwaysActiveTab').then(module => ({ default: module.AlwaysActiveTab })));
+const ClipboardTab = lazy(() => import('./ClipboardTab').then(module => ({ default: module.ClipboardTab })));
+const FileSyncTab = lazy(() => import('./FileSyncTab').then(module => ({ default: module.FileSyncTab })));
+const FocusAudioTab = lazy(() => import('./FocusAudioTab').then(module => ({ default: module.FocusAudioTab })));
+const HotkeysTab = lazy(() => import('./HotkeysTab').then(module => ({ default: module.HotkeysTab })));
+const MacrosTab = lazy(() => import('./MacrosTab').then(module => ({ default: module.MacrosTab })));
+const RegexLabTab = lazy(() => import('./RegexLabTab').then(module => ({ default: module.RegexLabTab })));
+const RenamerTab = lazy(() => import('./RenamerTab').then(module => ({ default: module.RenamerTab })));
+const SettingsTab = lazy(() => import('./SettingsTab').then(module => ({ default: module.SettingsTab })));
+const WindowManagerTab = lazy(() => import('./WindowManagerTab').then(module => ({ default: module.WindowManagerTab })));
+const AutomationTriggersTab = lazy(() => import('./AutomationTriggersTab').then(module => ({ default: module.AutomationTriggersTab })));
+const ContextMenuTab = lazy(() => import('./ContextMenuTab').then(module => ({ default: module.ContextMenuTab })));
 
 const modules = [
   {
@@ -30,6 +35,14 @@ const modules = [
     hero: 'Build profiles, record inputs, and switch macros automatically around the app or game in focus.',
   },
   {
+    id: 'hotkeys',
+    label: 'Hotkeys',
+    eyebrow: 'Shortcut Control',
+    overview: 'centralized global shortcuts with conflict and registration diagnostics',
+    compact: 'central hotkeys',
+    hero: 'Manage every WinUtils shortcut in one place, resolve conflicts, and see which bindings Windows accepted.',
+  },
+  {
     id: 'focus-audio',
     label: 'Focus Audio',
     eyebrow: 'Audio Focus',
@@ -44,6 +57,30 @@ const modules = [
     overview: 'best-effort active-window rules for selected apps',
     compact: 'always-active apps',
     hero: 'Select apps that should keep receiving active-window signals or return to the foreground when Windows focus changes.',
+  },
+  {
+    id: 'windows',
+    label: 'Windows',
+    eyebrow: 'Window Manager',
+    overview: 'live window controls with monitor-aware positioning presets',
+    compact: 'window layouts',
+    hero: 'Inspect open windows, focus or resize them, move them between monitors, and apply precise desktop layouts.',
+  },
+  {
+    id: 'automation',
+    label: 'Automation',
+    eyebrow: 'Event Triggers',
+    overview: 'actions launched by applications, windows, files, schedules, and system events',
+    compact: 'event-driven actions',
+    hero: 'Combine reusable WinUtils actions with persistent, observable triggers and safe concurrency controls.',
+  },
+  {
+    id: 'context-menu',
+    label: 'Context Menu',
+    eyebrow: 'Explorer Integration',
+    overview: 'reversible file and folder actions in the Windows Explorer menu',
+    compact: 'Explorer actions',
+    hero: 'Add safe WinUtils actions to Explorer without installing a shell extension or requiring administrator access.',
   },
   {
     id: 'renamer',
@@ -88,6 +125,10 @@ const modules = [
 ] as const;
 
 type ActiveTab = (typeof modules)[number]['id'];
+
+function isActiveTab(value: string): value is ActiveTab {
+  return modules.some(module => module.id === value);
+}
 
 function joinFeatureList(features: readonly string[], finalJoin = 'and'): string {
   if (features.length === 0) return '';
@@ -155,6 +196,12 @@ function App(): ReactElement {
   useEffect(() => {
     return window.winUtils.clipboard.onOpenRequested(() => {
       setActiveTab('clipboard');
+    });
+  }, []);
+
+  useEffect(() => {
+    return window.winUtils.navigation.onOpenModule((moduleId) => {
+      if (isActiveTab(moduleId)) setActiveTab(moduleId);
     });
   }, []);
 
@@ -339,6 +386,8 @@ function App(): ReactElement {
         ) : null}
       </header>
 
+      <AutomationSafetyPanel />
+      <Suspense fallback={<p role="status">Loading module…</p>}>
       <main className="main-grid">
         <aside className="sidebar-card">
           <p className="sidebar-label">Modules</p>
@@ -367,6 +416,14 @@ function App(): ReactElement {
           </section>
         ) : null}
 
+        {activeTab === 'hotkeys' ? (
+          <section className="content-card content-card--hotkeys">
+            <div className="module-host module-host--hotkeys">
+              <HotkeysTab />
+            </div>
+          </section>
+        ) : null}
+
         {activeTab === 'focus-audio' ? (
           <section className="content-card content-card--focus-audio">
             <div className="module-host module-host--focus-audio">
@@ -379,6 +436,30 @@ function App(): ReactElement {
           <section className="content-card content-card--always-active">
             <div className="module-host module-host--always-active">
               <AlwaysActiveTab />
+            </div>
+          </section>
+        ) : null}
+
+        {activeTab === 'windows' ? (
+          <section className="content-card content-card--windows">
+            <div className="module-host module-host--windows">
+              <WindowManagerTab />
+            </div>
+          </section>
+        ) : null}
+
+        {activeTab === 'automation' ? (
+          <section className="content-card content-card--automation">
+            <div className="module-host module-host--automation">
+              <AutomationTriggersTab />
+            </div>
+          </section>
+        ) : null}
+
+        {activeTab === 'context-menu' ? (
+          <section className="content-card content-card--context-menu">
+            <div className="module-host module-host--context-menu">
+              <ContextMenuTab />
             </div>
           </section>
         ) : null}
@@ -626,6 +707,7 @@ function App(): ReactElement {
           </div>
         </section>
       </main>
+      </Suspense>
 
       {adminPrompt ? (
         <div className="modal-backdrop" role="presentation">

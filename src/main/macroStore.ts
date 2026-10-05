@@ -1,7 +1,7 @@
 import { app } from 'electron';
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { readFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
+import { isMissingFile, SerialTaskQueue, writeJsonAtomically } from './atomicFile';
 import { normalizeMacroPlayback, type Macro, type MacroConfig, type MacroProfile, type MacroState } from '../shared/macro';
 
 function normalizeStoredMacro(macro: Macro): Macro {
@@ -42,6 +42,8 @@ function defaultConfig(): MacroConfig {
 }
 
 export class MacroStore {
+  private readonly saveQueue = new SerialTaskQueue();
+  private loading: Promise<MacroConfig> | null = null;
   private get configPath(): string {
     return path.join(app.getPath('userData'), 'macros.json');
   }
@@ -53,33 +55,27 @@ export class MacroStore {
   private _config: MacroConfig | null = null;
 
   async load(): Promise<MacroConfig> {
-    if (this._config) return this._config;
+    if (this._config) return this._config!;
+    if (!this.loading) this.loading = this.loadInternal().finally(() => { this.loading = null; });
+    return this.loading;
+  }
 
+  private async loadInternal(): Promise<MacroConfig> {
     await mkdir(this.configDir, { recursive: true });
-
-    if (!existsSync(this.configPath)) {
-      this._config = defaultConfig();
-      await this.save();
-      return this._config;
-    }
-
-    for (const tryPath of [this.configPath, this.configPath + '.bak']) {
-      if (!existsSync(tryPath)) continue;
+    let invalid = false;
+    for (const candidate of [this.configPath, this.configPath + '.bak']) {
+      let raw: string;
+      try { raw = await readFile(candidate, 'utf8'); }
+      catch (error) { if (isMissingFile(error)) continue; throw error; }
       try {
-        const raw = await readFile(tryPath, 'utf8');
         const parsed = JSON.parse(raw) as MacroConfig;
-        if (parsed && Array.isArray(parsed.profiles)) {
-          this._config = normalizeStoredConfig(parsed);
-          if (JSON.stringify(this._config) !== JSON.stringify(parsed)) {
-            await this.save();
-          }
-          return this._config;
-        }
-      } catch {
-        // try backup
-      }
+        if (!Array.isArray(parsed.profiles) || !parsed.profiles.length) throw new Error('No valid macro profiles.');
+        const normalized = normalizeStoredConfig(parsed);
+        this._config = normalized;
+        return normalized;
+      } catch { invalid = true; }
     }
-
+    if (invalid) throw new Error('Macro configuration and backup could not be read. Original files were preserved.');
     this._config = defaultConfig();
     await this.save();
     return this._config;
@@ -87,15 +83,19 @@ export class MacroStore {
 
   async save(): Promise<void> {
     if (!this._config) return;
-    await mkdir(this.configDir, { recursive: true });
-    const tmp = this.configPath + '.tmp';
-    await writeFile(tmp, JSON.stringify(this._config, null, 2), 'utf8');
-    if (existsSync(this.configPath)) {
-      await writeFile(this.configPath + '.bak', await readFile(this.configPath, 'utf8'), 'utf8');
-    }
-    await writeFile(this.configPath, await readFile(tmp, 'utf8'), 'utf8');
-    try { await import('node:fs/promises').then(fs => fs.unlink(tmp)); } catch { /* ignore */ }
+    const snapshot = structuredClone(this._config);
+    await this.saveQueue.run(async () => {
+      let previous: unknown;
+      try {
+        const raw = await readFile(this.configPath, 'utf8');
+        try { previous = normalizeStoredConfig(JSON.parse(raw)); } catch { /* Preserve a good backup when the primary is damaged. */ }
+      } catch (error) { if (!isMissingFile(error)) throw error; }
+      if (previous) await writeJsonAtomically(this.configPath + '.bak', previous);
+      await writeJsonAtomically(this.configPath, snapshot);
+    });
   }
+
+  async drain(): Promise<void> { await this.saveQueue.drain(); }
 
   getActiveProfile(): MacroProfile {
     const cfg = this._config!;

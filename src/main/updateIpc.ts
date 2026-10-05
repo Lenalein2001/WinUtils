@@ -1,12 +1,13 @@
-import { ipcMain } from 'electron';
+import { handleTrustedIpc } from './ipcSecurity';
+
 import type { UpdateManager } from './updateManager';
 
 export function registerUpdateIpcHandlers(manager: UpdateManager): void {
-  ipcMain.handle('updates:getState', () => manager.getState());
-  ipcMain.handle('updates:check', () => manager.checkForUpdates());
-  ipcMain.handle('updates:download', () => manager.downloadUpdate());
-  ipcMain.handle('updates:install', () => manager.installUpdate());
-  ipcMain.handle('updates:openReleasePage', () => manager.openReleasePage());
-  ipcMain.handle('updates:getLatestRelease', () => manager.getLatestRelease());
-  ipcMain.handle('updates:getReleaseHistory', () => manager.getReleaseHistory());
+  handleTrustedIpc('updates:getState', () => manager.getState());
+  handleTrustedIpc('updates:check', () => manager.checkForUpdates());
+  handleTrustedIpc('updates:download', () => manager.downloadUpdate());
+  handleTrustedIpc('updates:install', () => manager.installUpdate());
+  handleTrustedIpc('updates:openReleasePage', () => manager.openReleasePage());
+  handleTrustedIpc('updates:getLatestRelease', () => manager.getLatestRelease());
+  handleTrustedIpc('updates:getReleaseHistory', () => manager.getReleaseHistory());
 }

@@ -1,9 +1,13 @@
+import { testBoundedRegex } from './boundedRegex';
+import { stopWorkerGracefully } from './workerLifecycle';
+import { splitWindowsArguments } from './windowsArguments';
 import { execFile, spawn } from 'node:child_process';
 import type { ChildProcess, ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { clipboard } from 'electron';
 import type { IfAction, Macro, MacroAction, MacroCondition, RepeatAction } from '../shared/macro';
+import type { AutomationActionRequest } from '../shared/actions';
 
 const execFileAsync = promisify(execFile);
 
@@ -171,7 +175,8 @@ public static class WinAPI {
 
   private static void SendInputBatch(INPUT[] inputs) {
     if (inputs == null || inputs.Length == 0) return;
-    SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+    uint sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(INPUT)));
+    if (sent != (uint)inputs.Length) throw new InvalidOperationException("Windows accepted " + sent + " of " + inputs.Length + " input events. Check the target application's elevation and input restrictions.");
   }
 
   public static void SendKey(ushort vk, uint flags) {
@@ -213,7 +218,7 @@ public static class WinAPI {
     var inp = new INPUT[1];
     inp[0].type = 0;
     inp[0].u.mi.flags = flags;
-    SendInput(1, inp, Marshal.SizeOf(typeof(INPUT)));
+    SendInputBatch(inp);
   }
   public static bool AreKeysPressed(ushort[] keys) {
     if (keys == null || keys.Length == 0) return false;
@@ -227,7 +232,7 @@ public static class WinAPI {
       var inps = new INPUT[2];
       inps[0].type = 1; inps[0].u.ki.wScan = c; inps[0].u.ki.dwFlags = 4;
       inps[1].type = 1; inps[1].u.ki.wScan = c; inps[1].u.ki.dwFlags = 6;
-      SendInput(2, inps, Marshal.SizeOf(typeof(INPUT)));
+      SendInputBatch(inps);
       Delay(1);
     }
   }
@@ -237,7 +242,7 @@ public static class WinAPI {
     inps[0].u.mi.flags = down;
     inps[1].type = 0;
     inps[1].u.mi.flags = up;
-    SendInput(2, inps, Marshal.SizeOf(typeof(INPUT)));
+    SendInputBatch(inps);
   }
   public static void MouseDoubleClick(uint down, uint up) {
     MouseClick(down, up);
@@ -338,16 +343,25 @@ class MacroInputWorker {
     const payload = Buffer.from(script, 'utf8').toString('base64');
 
     return new Promise<string>((resolve, reject) => {
-      this.pending.set(requestId, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(requestId);
+        reject(new Error('Macro input worker timed out.'));
+        this.killCurrentWorker();
+      }, 30_000);
+      this.pending.set(requestId, {
+        resolve: output => { clearTimeout(timer); resolve(output); },
+        reject: error => { clearTimeout(timer); reject(error); },
+      });
       child.stdin.write(`${requestId} ${payload}\n`, (error) => {
         if (!error) return;
         this.pending.delete(requestId);
+        clearTimeout(timer);
         reject(error);
       });
     });
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     const child = this.child;
     this.child = null;
     this.ready = false;
@@ -357,9 +371,9 @@ class MacroInputWorker {
     this.rejectPending(new Error('Macro input worker stopped.'));
 
     if (!child || child.killed) return;
-    child.stdin.write('__WINUTILS_EXIT__\n', () => {
-      child.stdin.end();
-    });
+    await stopWorkerGracefully(child, () => new Promise<void>((resolve, reject) => {
+      child.stdin.write('__WINUTILS_EXIT__\n', error => error ? reject(error) : resolve());
+    }));
   }
 
   private async ensureStarted(): Promise<void> {
@@ -405,13 +419,15 @@ class MacroInputWorker {
         this.stderrBuffer = `${this.stderrBuffer}${chunk}`.slice(-4000);
       });
       child.once('error', (error) => {
-        if (this.child === child) this.child = null;
+        if (this.child !== child) return;
+        this.child = null;
         this.ready = false;
         this.rejectReady?.(error instanceof Error ? error : new Error(String(error)));
         this.rejectPending(error instanceof Error ? error : new Error(String(error)));
       });
       child.once('exit', (code, signal) => {
-        if (this.child === child) this.child = null;
+        if (this.child !== child) return;
+        this.child = null;
         this.ready = false;
         const detail = this.stderrBuffer.trim();
         const suffix = detail ? ` ${detail}` : '';
@@ -451,6 +467,7 @@ class MacroInputWorker {
     const child = this.child;
     this.child = null;
     this.ready = false;
+    this.rejectPending(new Error('Macro input worker stopped.'));
     if (child && !child.killed) child.kill();
   }
 
@@ -484,6 +501,21 @@ interface ForegroundWindowInfo {
 }
 
 const inputWorker = new MacroInputWorker();
+const MAX_ACTION_EXECUTIONS = 100_000;
+const MAX_CONTROL_FLOW_DEPTH = 32;
+
+class MacroControlFlowSignal extends Error {}
+class MacroCanceledSignal extends MacroControlFlowSignal {}
+class MacroStoppedSignal extends MacroControlFlowSignal {}
+export type MacroExecutionResult = 'completed' | 'canceled' | 'stopped';
+
+interface MacroExecutionContext {
+  signal: AbortSignal;
+  shouldCancel?: () => boolean;
+  actionExecutions: number;
+  heldKeys: Set<number>;
+  heldMouseButtons: Map<string, number>;
+}
 
 const KEY_STATE_MONITOR_SCRIPT = String.raw`
 $ErrorActionPreference = "Stop"
@@ -586,9 +618,9 @@ export async function warmMacroExecutor(): Promise<void> {
   await inputWorker.warm();
 }
 
-export function stopMacroExecutor(): void {
+export async function stopMacroExecutor(): Promise<void> {
   keyStateMonitor.stop();
-  inputWorker.stop();
+  await inputWorker.stop();
 }
 
 async function runPwsh(script: string): Promise<void> {
@@ -611,6 +643,29 @@ function mouseFlags(button: string): { down: number; up: number } {
     case 'middle': return { down: 0x0020, up: 0x0040 };
     default: return { down: 0x0002, up: 0x0004 };
   }
+}
+
+function trackHeldInput(action: MacroAction, context: MacroExecutionContext): void {
+  if (action.type === 'keyboard') {
+    const keys = keysForString(action.key);
+    if (action.pressType === 'down') keys.forEach(key => context.heldKeys.add(key));
+    if (action.pressType === 'up') keys.forEach(key => context.heldKeys.delete(key));
+    return;
+  }
+  if (action.type !== 'mouse') return;
+  const flags = mouseFlags(action.button);
+  if (action.actionType === 'down') context.heldMouseButtons.set(action.button, flags.up);
+  if (action.actionType === 'up') context.heldMouseButtons.delete(action.button);
+}
+
+async function releaseHeldInputs(context: MacroExecutionContext): Promise<void> {
+  const releases = [
+    ...[...context.heldKeys].reverse().map(key => `[void][WinAPI]::SendKeyCombo((${buildVkArray([key])}), 2, 0)`),
+    ...[...context.heldMouseButtons.values()].map(flag => `[void][WinAPI]::SendMouse(${flag})`),
+  ];
+  context.heldKeys.clear();
+  context.heldMouseButtons.clear();
+  if (releases.length > 0) await runPwsh(releases.join('\n'));
 }
 
 async function getForegroundWindowInfo(): Promise<ForegroundWindowInfo> {
@@ -655,7 +710,7 @@ public static class ForegroundHelper {
   return { processName, title };
 }
 
-function compareConditionText(actual: string, condition: MacroCondition): boolean {
+async function compareConditionText(actual: string, condition: MacroCondition): Promise<boolean> {
   if (!condition.value) return false;
 
   const expected = condition.caseSensitive ? condition.value : condition.value.toLowerCase();
@@ -666,20 +721,8 @@ function compareConditionText(actual: string, condition: MacroCondition): boolea
     case 'not-contains': return !candidate.includes(expected);
     case 'equals': return candidate === expected;
     case 'not-equals': return candidate !== expected;
-    case 'matches': {
-      try {
-        return new RegExp(condition.value, condition.caseSensitive ? '' : 'i').test(actual);
-      } catch {
-        return false;
-      }
-    }
-    case 'not-matches': {
-      try {
-        return !new RegExp(condition.value, condition.caseSensitive ? '' : 'i').test(actual);
-      } catch {
-        return true;
-      }
-    }
+    case 'matches': return testBoundedRegex(condition.value, actual, Boolean(condition.caseSensitive));
+    case 'not-matches': return !(await testBoundedRegex(condition.value, actual, Boolean(condition.caseSensitive)));
     default:
       return false;
   }
@@ -771,7 +814,13 @@ function appendInputAction(action: MacroAction, parts: string[]): boolean {
   }
 }
 
-async function executeNonInputAction(action: MacroAction): Promise<void> {
+export type MacroAutomationActionRunner = (request: AutomationActionRequest) => Promise<void>;
+
+async function executeNonInputAction(
+  action: MacroAction,
+  runAutomationAction?: MacroAutomationActionRunner,
+  signal?: AbortSignal,
+): Promise<void> {
   switch (action.type) {
     case 'delay':
     case 'keyboard':
@@ -779,6 +828,7 @@ async function executeNonInputAction(action: MacroAction): Promise<void> {
     case 'text':
     case 'repeat':
     case 'if':
+    case 'stop':
       break;
 
     case 'launch': {
@@ -788,22 +838,34 @@ async function executeNonInputAction(action: MacroAction): Promise<void> {
       if (ext === 'ps1') {
         await execFileAsync('powershell.exe', [
           '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', p,
-          ...(action.arguments ? action.arguments.split(' ') : []),
-        ]);
+          ...(splitWindowsArguments(action.arguments ?? '')),
+        ], { signal, timeout: 30_000, windowsHide: true });
       } else if (ext === 'bat' || ext === 'cmd') {
-        await execFileAsync('cmd.exe', ['/C', p, ...(action.arguments ? action.arguments.split(' ') : [])]);
+        await execFileAsync('cmd.exe', ['/C', p, ...(splitWindowsArguments(action.arguments ?? ''))], { signal, timeout: 30_000, windowsHide: true });
       } else {
-        execFile(p, action.arguments ? action.arguments.split(' ') : [], { shell: true }, () => {});
+        await new Promise<void>((resolve, reject) => {
+          const child = spawn(p, splitWindowsArguments(action.arguments ?? ''), { detached: true, stdio: 'ignore', windowsHide: true });
+          child.once('error', reject);
+          child.once('spawn', () => { child.unref(); resolve(); });
+        });
       }
       break;
     }
 
     case 'command': {
-      const escaped = action.command.replace(/"/g, '\\"');
       await execFileAsync('powershell.exe', [
-        '-NoProfile', '-ExecutionPolicy', 'Bypass',
-        '-Command', `& { ${escaped} }`,
-      ], { cwd: action.workingDirectory || process.cwd() });
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', action.command,
+      ], { cwd: action.workingDirectory || process.cwd(), signal, timeout: 30_000, windowsHide: true });
+      break;
+    }
+
+    case 'automation': {
+      if (!action.actionId) throw new Error('Automation action is not configured.');
+      if (!runAutomationAction) throw new Error(`Automation action "${action.actionId}" cannot run in this context.`);
+      await runAutomationAction({
+        actionId: action.actionId,
+        parameters: action.parameters,
+      });
       break;
     }
   }
@@ -833,18 +895,45 @@ function appendOptimizedRepeatAction(action: RepeatAction, parts: string[]): boo
   return true;
 }
 
-async function executeActions(actions: MacroAction[], inputBatch: string[]): Promise<void> {
+async function executeActions(
+  actions: MacroAction[],
+  inputBatch: string[],
+  runAutomationAction: MacroAutomationActionRunner | undefined,
+  context: MacroExecutionContext,
+  depth = 0,
+): Promise<void> {
+  if (depth > MAX_CONTROL_FLOW_DEPTH) {
+    throw new Error(`Macro nesting cannot exceed ${MAX_CONTROL_FLOW_DEPTH} levels.`);
+  }
   for (const action of actions) {
     if (!action.enabled) continue;
+    assertMacroCanContinue(context);
+    context.actionExecutions += 1;
+    if (context.actionExecutions > MAX_ACTION_EXECUTIONS) {
+      throw new Error(`Macro exceeded the ${MAX_ACTION_EXECUTIONS.toLocaleString()} action execution safety limit.`);
+    }
+
+    if (action.type === 'stop') {
+      await runPwshBatch(inputBatch);
+      throw new MacroStoppedSignal();
+    }
+
+    if (action.type === 'delay' && context.shouldCancel && delayMilliseconds(action.milliseconds) > 25) {
+      await runPwshBatch(inputBatch);
+      await waitWithCancellation(delayMilliseconds(action.milliseconds), context);
+      continue;
+    }
 
     if (action.type === 'repeat') {
       const repeatAction = action as RepeatAction;
-      if (appendOptimizedRepeatAction(repeatAction, inputBatch)) continue;
+      if (!context.shouldCancel && appendOptimizedRepeatAction(repeatAction, inputBatch)) continue;
 
       await runPwshBatch(inputBatch);
       const times = repeatTimes(repeatAction.times);
       for (let index = 0; index < times; index++) {
-        await executeActions(repeatAction.actions, inputBatch);
+        assertMacroCanContinue(context);
+        await executeActions(repeatAction.actions, inputBatch, runAutomationAction, context, depth + 1);
+        if (context.shouldCancel) await runPwshBatch(inputBatch);
       }
       continue;
     }
@@ -853,21 +942,60 @@ async function executeActions(actions: MacroAction[], inputBatch: string[]): Pro
       await runPwshBatch(inputBatch);
       const ifAction = action as IfAction;
       const branch = await evaluateCondition(ifAction.condition) ? ifAction.thenActions : ifAction.elseActions;
-      await executeActions(branch, inputBatch);
+      await executeActions(branch, inputBatch, runAutomationAction, context, depth + 1);
       continue;
     }
 
-    if (appendInputAction(action, inputBatch)) continue;
+    function assertMacroCanContinue(context: MacroExecutionContext): void {
+      if (context.shouldCancel?.()) throw new MacroCanceledSignal();
+    }
+
+    async function waitWithCancellation(milliseconds: number, context: MacroExecutionContext): Promise<void> {
+      const deadline = Date.now() + milliseconds;
+      while (Date.now() < deadline) {
+        assertMacroCanContinue(context);
+        await new Promise(resolve => setTimeout(resolve, Math.min(25, deadline - Date.now())));
+      }
+    }
+
+    if (appendInputAction(action, inputBatch)) {
+      trackHeldInput(action, context);
+      continue;
+    }
 
     await runPwshBatch(inputBatch);
-    await executeNonInputAction(action);
+    await executeNonInputAction(action, runAutomationAction, context.signal);
   }
 }
 
 // ─── Public executor ───────────────────────────────────────────────────────
 
-export async function executeMacro(macro: Macro): Promise<void> {
+export async function executeMacro(
+  macro: Macro,
+  runAutomationAction?: MacroAutomationActionRunner,
+  shouldCancel?: () => boolean,
+): Promise<MacroExecutionResult> {
   const inputBatch: string[] = [];
-  await executeActions(macro.actions, inputBatch);
-  await runPwshBatch(inputBatch);
+  const controller = new AbortController();
+  const cancellation = shouldCancel ? setInterval(() => { if (shouldCancel()) controller.abort(); }, 25) : undefined;
+  const context: MacroExecutionContext = {
+    signal: controller.signal,
+    shouldCancel,
+    actionExecutions: 0,
+    heldKeys: new Set(),
+    heldMouseButtons: new Map(),
+  };
+  try {
+    await executeActions(macro.actions, inputBatch, runAutomationAction, context);
+    await runPwshBatch(inputBatch);
+    return 'completed';
+  } catch (error) {
+    if (controller.signal.aborted) return 'canceled';
+    if (error instanceof MacroStoppedSignal) return 'stopped';
+    if (error instanceof MacroCanceledSignal) return 'canceled';
+    throw error;
+  } finally {
+    clearInterval(cancellation);
+    await releaseHeldInputs(context);
+  }
 }

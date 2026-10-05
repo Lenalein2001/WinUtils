@@ -4,7 +4,10 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { app, clipboard as electronClipboard, globalShortcut, nativeImage } from 'electron';
+import { app, clipboard as electronClipboard, nativeImage } from 'electron';
+import { SerialTaskQueue, writeJsonAtomically } from './atomicFile';
+import { TaskPool } from './taskPool';
+import { isClipboardExcluded } from './clipboardPrivacy';
 import type {
   ClipboardCategory,
   ClipboardClearMode,
@@ -15,6 +18,9 @@ import type {
   ClipboardSettings,
   ClipboardState,
 } from '../shared/clipboard';
+import { formatHotkey } from '../shared/hotkeys';
+import type { ActionEngine } from './actionEngine';
+import type { HotkeyManager } from './hotkeyManager';
 
 const execFile = promisify(execFileCallback);
 
@@ -31,7 +37,6 @@ const DEFAULT_SETTINGS: ClipboardSettings = {
   retentionDays: 0,
   maxEntries: 350,
 };
-const QUICK_ACCESS_FALLBACK_HOTKEY = 'Ctrl+Shift+Alt+V';
 const AVAILABLE_CATEGORIES: ClipboardCategory[] = ['plain-text', 'url', 'email', 'code', 'file-path', 'image'];
 
 interface ClipboardHistoryFile {
@@ -309,41 +314,76 @@ Write-SyncResult 'success' $matches.Count $deleted @() $null
 `;
 
 export class ClipboardManager {
+  private readonly saveQueue = new SerialTaskQueue();
+  private closing = false;
+  private readonly ocrQueue = new TaskPool(2);
+  private readonly queuedOcrTasks = new Set<string>();
+  private readonly ocrAbort = new AbortController();
+  private loading: Promise<ClipboardHistoryFile> | null = null;
   private cache: ClipboardHistoryFile | null = null;
   private pollHandle: NodeJS.Timeout | null = null;
   private lastSignature: string | null = null;
   private pollInFlight = false;
-  private quickAccessRegistered = false;
-  private registeredQuickAccessHotkey: string | null = null;
-  private registeredQuickAccessHotkeys: string[] = [];
-  private quickAccessRegistrationError: string | null = null;
   private lastQuickAccessAt: string | null = null;
   private readonly activeOcrTasks = new Set<string>();
 
-  constructor(private readonly options: ClipboardManagerOptions = {}) {}
+  constructor(
+    private readonly actions: ActionEngine,
+    private readonly hotkeys: HotkeyManager,
+    private readonly options: ClipboardManagerOptions = {},
+  ) {}
 
   async init(): Promise<void> {
     await this.load();
+    if (this.closing) return;
+    this.actions.replaceOwnerActions('clipboard', [{
+      definition: {
+        id: 'clipboard.openQuickAccess',
+        ownerId: 'clipboard',
+        ownerLabel: 'Clipboard Manager',
+        label: 'Open quick access',
+        description: 'Open Clipboard Manager and focus the search field',
+        category: 'clipboard',
+        keywords: ['clipboard', 'history', 'paste', 'quick access'],
+      },
+      handler: () => {
+        this.triggerQuickAccess();
+      },
+    }]);
+    this.hotkeys.registerFeatureBinding({
+      id: 'clipboard.quickAccess',
+      actionId: 'clipboard.openQuickAccess',
+      ownerId: 'clipboard',
+      ownerLabel: 'Clipboard Manager',
+      label: 'Open quick access',
+      description: 'Open Clipboard Manager and focus the search field',
+      defaultHotkey: this.cache?.settings.quickAccessHotkey ?? DEFAULT_SETTINGS.quickAccessHotkey,
+      suppressWhenAppFocused: false,
+    });
     this.startPolling();
-    this.registerQuickAccessShortcut();
     await this.captureNow();
   }
 
-  destroy(): void {
+  async destroy(): Promise<void> {
+    this.closing = true;
+    this.ocrAbort.abort();
     this.stopPolling();
-
-    for (const accelerator of this.registeredQuickAccessHotkeys) {
-      globalShortcut.unregister(accelerator);
+    this.actions.replaceOwnerActions('clipboard', []);
+    while (this.pollInFlight || this.queuedOcrTasks.size) await new Promise(resolve => setTimeout(resolve, 25));
+    if (this.cache) {
+      for (const entry of this.cache.entries) if (entry.ocrStatus === 'pending') {
+        entry.ocrStatus = 'none'; entry.ocrError = 'OCR was interrupted during shutdown. Retry to resume.';
+      }
+      await this.save(this.cache);
     }
-
-    this.quickAccessRegistered = false;
-    this.registeredQuickAccessHotkey = null;
-    this.registeredQuickAccessHotkeys = [];
+    await this.saveQueue.drain();
   }
 
   async getState(query: ClipboardQuery = {}): Promise<ClipboardState> {
     const file = await this.load();
     const entries = this.applyQuery(file.entries, query);
+    const quickAccess = this.hotkeys.getBinding('clipboard.quickAccess');
+    const quickAccessRegistered = quickAccess?.status === 'active';
 
     return {
       entries,
@@ -352,11 +392,14 @@ export class ClipboardManager {
       textCount: file.entries.filter((entry) => entry.type === 'text').length,
       imageCount: file.entries.filter((entry) => entry.type === 'image').length,
       fileCount: file.entries.filter((entry) => entry.type === 'files').length,
-      settings: file.settings,
-      quickAccessRegistered: this.quickAccessRegistered,
-      registeredQuickAccessHotkey: this.registeredQuickAccessHotkey,
-      registeredQuickAccessHotkeys: this.registeredQuickAccessHotkeys,
-      quickAccessRegistrationError: this.quickAccessRegistrationError,
+      settings: {
+        ...file.settings,
+        quickAccessHotkey: quickAccess?.hotkey ?? file.settings.quickAccessHotkey,
+      },
+      quickAccessRegistered,
+      registeredQuickAccessHotkey: quickAccessRegistered ? quickAccess?.hotkey ?? null : null,
+      registeredQuickAccessHotkeys: quickAccessRegistered && quickAccess ? [quickAccess.hotkey] : [],
+      quickAccessRegistrationError: quickAccess?.registrationError ?? null,
       lastQuickAccessAt: this.lastQuickAccessAt,
       availableCategories: AVAILABLE_CATEGORIES,
     };
@@ -529,6 +572,7 @@ export class ClipboardManager {
   }
 
   private imagePath(fileName: string): string {
+    if (!/^[a-z0-9_-]+\.png$/i.test(fileName)) throw new Error('Invalid clipboard image filename.');
     return path.join(this.imagesDir, fileName);
   }
 
@@ -548,14 +592,14 @@ export class ClipboardManager {
   }
 
   private startPolling(): void {
-    if (this.pollHandle) return;
+    if (this.closing || this.pollHandle) return;
 
     const settings = this.cache?.settings ?? DEFAULT_SETTINGS;
     if (!settings.monitoring) return;
 
     this.pollHandle = setTimeout(() => {
       this.pollHandle = null;
-      if (this.pollInFlight) {
+      if (this.closing || this.pollInFlight) {
         this.startPolling();
         return;
       }
@@ -569,41 +613,6 @@ export class ClipboardManager {
     }, CLIPBOARD_POLL_MS);
   }
 
-  private registerQuickAccessShortcut(): void {
-    for (const accelerator of this.registeredQuickAccessHotkeys) {
-      globalShortcut.unregister(accelerator);
-    }
-
-    const settings = this.cache?.settings ?? DEFAULT_SETTINGS;
-    const candidates = buildQuickAccessCandidates(settings.quickAccessHotkey);
-    let lastError: string | null = null;
-
-    this.quickAccessRegistered = false;
-    this.registeredQuickAccessHotkey = null;
-    this.registeredQuickAccessHotkeys = [];
-    this.quickAccessRegistrationError = null;
-
-    for (const accelerator of candidates) {
-      try {
-        if (globalShortcut.register(accelerator, () => this.triggerQuickAccess())) {
-          this.registeredQuickAccessHotkeys.push(accelerator);
-        }
-      } catch (error) {
-        lastError = error instanceof Error ? error.message : String(error);
-      }
-    }
-
-    this.quickAccessRegistered = this.registeredQuickAccessHotkeys.length > 0;
-    this.registeredQuickAccessHotkey = this.registeredQuickAccessHotkeys[0] ?? null;
-
-    if (this.quickAccessRegistered) {
-      return;
-    }
-
-    const preferred = candidates[0] ?? DEFAULT_SETTINGS.quickAccessHotkey;
-    this.quickAccessRegistrationError = lastError ?? `${formatAccelerator(preferred)} is already used by another app or Windows.`;
-  }
-
   private triggerQuickAccess(): void {
     this.lastQuickAccessAt = new Date().toISOString();
     this.options.onQuickAccess?.();
@@ -611,7 +620,7 @@ export class ClipboardManager {
   }
 
   private async captureClipboard(): Promise<void> {
-    if (this.pollInFlight) return;
+    if (this.closing || this.pollInFlight) return;
     this.pollInFlight = true;
 
     try {
@@ -655,6 +664,7 @@ export class ClipboardManager {
   }
 
   private async readClipboardSnapshot(settings: ClipboardSettings): Promise<ClipboardSnapshot | null> {
+    if (isClipboardExcluded()) return null;
     const filePaths = readClipboardFilePaths();
     if (filePaths.length > 0) {
       const text = filePaths.join('\n');
@@ -670,9 +680,10 @@ export class ClipboardManager {
     if (settings.captureImages) {
       const image = electronClipboard.readImage();
       if (!image.isEmpty()) {
+        const size = image.getSize();
+        if (size.width * size.height > 16_000_000) return null;
         const png = image.toPNG();
-        if (png.length > 0) {
-          const size = image.getSize();
+        if (png.length > 0 && png.length <= 16 * 1024 * 1024) {
           return {
             type: 'image',
             hash: hashContent('image', png),
@@ -685,11 +696,11 @@ export class ClipboardManager {
       }
     }
 
-    const rawText = electronClipboard.readText().trim();
-    if (!rawText) return null;
+    const rawText = electronClipboard.readText();
+    if (!rawText || rawText.length > CLIPBOARD_TEXT_LIMIT) return null;
 
-    const text = rawText.length > CLIPBOARD_TEXT_LIMIT ? rawText.slice(0, CLIPBOARD_TEXT_LIMIT) : rawText;
-    const detectedPaths = detectExistingFilePaths(text);
+    const text = rawText;
+    const detectedPaths = text.length <= 32768 ? detectExistingFilePaths(text) : [];
     const type: ClipboardEntryType = detectedPaths.length > 0 && detectedPaths.join('\n') === text ? 'files' : 'text';
 
     return {
@@ -745,6 +756,16 @@ export class ClipboardManager {
   }
 
   private async runOcr(entryId: string, imagePath: string): Promise<void> {
+    if (this.closing || this.queuedOcrTasks.has(entryId)) return;
+    this.queuedOcrTasks.add(entryId);
+    try {
+      await this.ocrQueue.run(async () => {
+        if (!this.closing) await this.runOcrInternal(entryId, imagePath);
+      });
+    } finally { this.queuedOcrTasks.delete(entryId); }
+  }
+
+  private async runOcrInternal(entryId: string, imagePath: string): Promise<void> {
     if (this.activeOcrTasks.has(entryId)) return;
     this.activeOcrTasks.add(entryId);
 
@@ -762,7 +783,7 @@ export class ClipboardManager {
       const { stdout } = await execFile(
         'powershell.exe',
         ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, imagePath],
-        { encoding: 'utf8', timeout: 30_000, windowsHide: true, maxBuffer: 1024 * 1024 },
+        { signal: this.ocrAbort.signal, encoding: 'utf8', timeout: 30_000, windowsHide: true, maxBuffer: 1024 * 1024 },
       );
 
       const text = stdout.trim();
@@ -909,6 +930,12 @@ export class ClipboardManager {
   }
 
   private async load(): Promise<ClipboardHistoryFile> {
+    if (this.cache) return this.cache!;
+    if (!this.loading) this.loading = this.loadInternal().finally(() => { this.loading = null; });
+    return this.loading;
+  }
+
+  private async loadInternal(): Promise<ClipboardHistoryFile> {
     if (this.cache) return this.cache;
 
     await mkdir(this.historyDir, { recursive: true });
@@ -937,17 +964,16 @@ export class ClipboardManager {
         await this.save(this.cache);
       }
       return this.cache;
-    } catch {
-      this.cache = { version: 1, settings: DEFAULT_SETTINGS, entries: [] };
-      await this.save(this.cache);
-      return this.cache;
+    } catch (error) {
+      this.cache = null;
+      throw new Error(`Clipboard history could not be read; the original file was preserved. ${String(error)}`);
     }
   }
 
   private async save(file: ClipboardHistoryFile): Promise<void> {
     this.cache = file;
-    await mkdir(this.historyDir, { recursive: true });
-    await writeFile(this.filePath, JSON.stringify(file, null, 2), 'utf8');
+    const snapshot = structuredClone(file);
+    await this.saveQueue.run(() => writeJsonAtomically(this.filePath, snapshot));
   }
 
   private notifyStateChanged(): void {
@@ -966,6 +992,10 @@ function normalizeSettings(settings: Partial<ClipboardSettings> | undefined): Cl
   };
 }
 
+function normalizeQuickAccessHotkey(hotkey: string | undefined): string {
+  return formatHotkey(hotkey?.trim() || DEFAULT_SETTINGS.quickAccessHotkey);
+}
+
 function normalizeRetentionDays(value: number | undefined): number {
   const days = Math.trunc(Number(value));
   return Number.isFinite(days) ? Math.max(0, Math.min(days, 3650)) : DEFAULT_SETTINGS.retentionDays;
@@ -981,28 +1011,9 @@ function retentionCutoffTime(retentionDays: number): number | null {
   return Date.now() - retentionDays * 24 * 60 * 60 * 1000;
 }
 
-function buildQuickAccessCandidates(preferredHotkey: string): string[] {
-  return Array.from(new Set([
-    normalizeQuickAccessHotkey(preferredHotkey),
-    QUICK_ACCESS_FALLBACK_HOTKEY,
-  ]));
-}
-
-function normalizeQuickAccessHotkey(hotkey: string | undefined): string {
-  const value = hotkey?.trim() || DEFAULT_SETTINGS.quickAccessHotkey;
-  return value
-    .replace(/CommandOrControl|CmdOrCtrl/gi, process.platform === 'darwin' ? 'Command' : 'Ctrl')
-    .replace(/Control/gi, 'Ctrl');
-}
-
-function formatAccelerator(accelerator: string): string {
-  return accelerator
-    .replace(/CommandOrControl|CmdOrCtrl/gi, process.platform === 'darwin' ? 'Command' : 'Ctrl')
-    .replace(/Control/gi, 'Ctrl');
-}
-
 function normalizeEntry(entry: ClipboardEntry): ClipboardEntry | null {
   if (!entry || typeof entry.id !== 'string' || typeof entry.hash !== 'string') return null;
+  if (entry.image && (typeof entry.image.fileName !== 'string' || !/^[a-z0-9_-]+\.png$/i.test(entry.image.fileName))) return null;
 
   return {
     ...entry,
