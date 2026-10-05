@@ -5,6 +5,8 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { app } from 'electron';
+import { stopWorkerGracefully } from './workerLifecycle';
+import { SerialTaskQueue, writeJsonAtomically } from './atomicFile';
 import type {
   AlwaysActiveForegroundWindow,
   AlwaysActiveMode,
@@ -185,6 +187,13 @@ public static class AlwaysActiveHelper {
   private static extern IntPtr SetWindowsHookEx(int idHook, IntPtr lpfn, IntPtr hmod, uint dwThreadId);
   [DllImport("user32.dll", SetLastError = true)]
   private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+  [DllImport("user32.dll")]
+  private static extern bool IsWindow(IntPtr hwnd);
+  [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+  private static extern bool SetProp(IntPtr hwnd, string name, IntPtr value);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+  private static extern IntPtr RemoveProp(IntPtr hwnd, string name);
+  private const string HookOwnerProperty = "WinUtils.AlwaysActive.Owner";
   [DllImport("kernel32.dll")]
   private static extern uint GetCurrentThreadId();
   [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -237,15 +246,19 @@ public static class AlwaysActiveHelper {
   }
 
   public static string ShutdownJson() {
+    lock (StateLock) { StoredEnabled = false; }
     StopPulseTimer();
-    RemoveUnwantedHooks(new HashSet<string>());
-    LastActiveRuleIds.Clear();
-    LastActionCount = 0;
-    LastErrors.Clear();
+    lock (ApplyLock) {
+      RemoveUnwantedHooks(new HashSet<string>());
+      LastActiveRuleIds.Clear();
+      LastActionCount = 0;
+      LastErrors.Clear();
+    }
     return "{}";
   }
 
   private static void Configure(ApplyRequest request) {
+    lock (ApplyLock) {
     lock (StateLock) {
       StoredEnabled = request != null && request.enabled && request.rules != null && request.rules.Count > 0;
       StoredOwnProcessId = request != null ? request.ownProcessId : 0;
@@ -261,6 +274,7 @@ public static class AlwaysActiveHelper {
         LastActionCount = 0;
         LastErrors.Clear();
       }
+    }
     }
   }
 
@@ -285,7 +299,12 @@ public static class AlwaysActiveHelper {
     }
   }
 
+  private static readonly object ApplyLock = new object();
   private static ApplyResult ApplyStoredRules(bool includeWindows) {
+    lock (ApplyLock) { return ApplyStoredRulesCore(includeWindows); }
+  }
+
+  private static ApplyResult ApplyStoredRulesCore(bool includeWindows) {
     ApplyResult result = new ApplyResult();
     result.activeRuleIds = new List<string>();
     result.actionCount = 0;
@@ -551,7 +570,7 @@ public static class AlwaysActiveHelper {
 
   private static string BuildHookKey(RuleInput rule, WindowInfo window) {
     if (rule == null || window == null || window.threadId <= 0) return "";
-    return rule.id + ":" + window.threadId.ToString();
+    return window.threadId.ToString() + ":" + window.handle;
   }
 
   private static bool InstallPreventDeactivationHook(RuleInput rule, WindowInfo window, string hookKey, List<string> errors) {
@@ -563,13 +582,26 @@ public static class AlwaysActiveHelper {
 
     if (!EnsureHookLibraryLoaded(errors)) return false;
 
+    IntPtr hwnd = ParseHandle(window.handle);
+    if (!SetProp(hwnd, HookOwnerProperty, new IntPtr(Process.GetCurrentProcess().Id))) {
+      errors.Add("Could not mark the selected window for protection.");
+      return false;
+    }
+
     IntPtr hookHandle = SetWindowsHookEx(WH_CALLWNDPROC, HookProcedure, HookModule, (uint)window.threadId);
     if (hookHandle == IntPtr.Zero) {
+      RemoveProp(hwnd, HookOwnerProperty);
       errors.Add("Prevent Deactivation hook install failed for " + window.title + " (Win32 " + Marshal.GetLastWin32Error().ToString() + ").");
       return false;
     }
 
-    IntPtr hwnd = ParseHandle(window.handle);
+    IntPtr installed;
+    if (SendMessageTimeout(hwnd, 0x8067, IntPtr.Zero, IntPtr.Zero, 3, 1500, out installed) == IntPtr.Zero || installed != new IntPtr(1)) {
+      RemoveProp(hwnd, HookOwnerProperty);
+      UnhookWindowsHookEx(hookHandle);
+      errors.Add("The selected window did not acknowledge native protection.");
+      return false;
+    }
     InstalledHooks[hookKey] = new HookRecord {
       key = hookKey,
       handle = hookHandle,
@@ -609,24 +641,32 @@ public static class AlwaysActiveHelper {
       if (!desiredHookKeys.Contains(pair.Key)) removeKeys.Add(pair.Key);
     }
 
+    List<string> errors = new List<string>();
     for (int i = 0; i < removeKeys.Count; i++) {
       HookRecord record = InstalledHooks[removeKeys[i]];
-      if (record.hwnd != IntPtr.Zero) {
-        PostMessage(record.hwnd, WINUTILS_RESTORE_MESSAGE, IntPtr.Zero, IntPtr.Zero);
+      if (record.hwnd != IntPtr.Zero && IsWindow(record.hwnd)) {
+        RemoveProp(record.hwnd, HookOwnerProperty);
+        IntPtr restored;
+        if (SendMessageTimeout(record.hwnd, WINUTILS_RESTORE_MESSAGE, IntPtr.Zero, IntPtr.Zero, 3, 1500, out restored) == IntPtr.Zero) {
+          errors.Add("Window restoration timed out: " + record.hwnd.ToString());
+          continue;
+        }
+        // The subclass may already have removed itself when ownership ended.
+        IntPtr stillProtected;
+        if (SendMessageTimeout(record.hwnd, 0x8067, IntPtr.Zero, IntPtr.Zero, 3, 1500, out stillProtected) == IntPtr.Zero || stillProtected == new IntPtr(1)) {
+          errors.Add("Window restoration could not be verified: " + record.hwnd.ToString());
+          continue;
+        }
       }
-    }
-
-    if (removeKeys.Count > 0) {
-      Thread.Sleep(160);
-    }
-
-    for (int i = 0; i < removeKeys.Count; i++) {
-      HookRecord record = InstalledHooks[removeKeys[i]];
       if (record.handle != IntPtr.Zero) {
-        UnhookWindowsHookEx(record.handle);
+        if (!UnhookWindowsHookEx(record.handle)) {
+          errors.Add("Windows refused hook removal: " + Marshal.GetLastWin32Error().ToString());
+          continue;
+        }
       }
       InstalledHooks.Remove(removeKeys[i]);
     }
+    if (errors.Count > 0) throw new InvalidOperationException(String.Join("; ", errors.ToArray()));
   }
 
   private static bool ForceForeground(IntPtr hWnd, bool restoreMinimized) {
@@ -716,6 +756,7 @@ try {
       $payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
       [Console]::Out.WriteLine($requestId + [char]9 + 'OK' + [char]9 + $payload)
       [Console]::Out.Flush()
+      if ($command -eq 'SHUTDOWN') { break }
     } catch {
       $message = $_.Exception.Message
       $payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($message))
@@ -729,6 +770,9 @@ try {
 `;
 
 export class AlwaysActiveManager {
+  private startingWorker: Promise<ChildProcessWithoutNullStreams> | null = null;
+  private readonly saveQueue = new SerialTaskQueue();
+  private loading: Promise<AlwaysActiveFile> | null = null;
   private file: AlwaysActiveFile | null = null;
   private worker: ChildProcessWithoutNullStreams | null = null;
   private workerOutput = '';
@@ -748,23 +792,24 @@ export class AlwaysActiveManager {
 
   async init(): Promise<void> {
     await this.load();
+    if (this.destroyed) return;
     this.startLoop();
     await this.refreshWindows().catch(() => undefined);
   }
 
-  destroy(): void {
+  async destroy(): Promise<void> {
+    if (this.destroyed) return;
     this.destroyed = true;
     if (this.enforcementTimer) {
       clearInterval(this.enforcementTimer);
       this.enforcementTimer = null;
     }
+    await this.startingWorker?.catch(() => undefined);
+    await this.saveQueue.drain();
     this.rejectAllPending(new Error('Always Active worker stopped.'));
     if (this.worker) {
       const worker = this.worker;
-      worker.stdin.write(`${randomUUID()}\tSHUTDOWN\n`, () => {
-        worker.kill();
-      });
-      this.worker = null;
+      await stopWorkerGracefully(worker, () => this.requestWorker('SHUTDOWN'));
     }
   }
 
@@ -927,6 +972,12 @@ export class AlwaysActiveManager {
   }
 
   private async load(): Promise<AlwaysActiveFile> {
+    if (this.file) return this.file!;
+    if (!this.loading) this.loading = this.loadInternal().finally(() => { this.loading = null; });
+    return this.loading;
+  }
+
+  private async loadInternal(): Promise<AlwaysActiveFile> {
     if (this.file) return this.file;
     await mkdir(path.dirname(this.filePath), { recursive: true });
 
@@ -944,9 +995,9 @@ export class AlwaysActiveManager {
         settings: normalizeSettings(parsed.settings),
         rules: Array.isArray(parsed.rules) ? parsed.rules.map(normalizeRule).filter((rule): rule is AlwaysActiveRule => rule !== null) : [],
       };
-    } catch {
-      this.file = { version: 1, settings: { ...DEFAULT_SETTINGS }, rules: [] };
-      await this.save(this.file);
+    } catch (error) {
+      this.file = null;
+      throw new Error(`Always Active settings could not be read; the original file was preserved. ${String(error)}`);
     }
 
     return this.file;
@@ -954,8 +1005,8 @@ export class AlwaysActiveManager {
 
   private async save(file: AlwaysActiveFile): Promise<void> {
     this.file = file;
-    await mkdir(path.dirname(this.filePath), { recursive: true });
-    await writeFile(this.filePath, JSON.stringify(file, null, 2), 'utf8');
+    const snapshot = structuredClone(file);
+    await this.saveQueue.run(() => writeJsonAtomically(this.filePath, snapshot));
   }
 
   private get filePath(): string {
@@ -974,7 +1025,8 @@ export class AlwaysActiveManager {
     return path.join(app.getAppPath(), 'resources', 'native', 'WinUtils.AlwaysActiveHook.dll');
   }
 
-  private async requestWorker<T>(command: 'LIST' | 'APPLY', payload?: unknown): Promise<T> {
+  private async requestWorker<T>(command: 'LIST' | 'APPLY' | 'SHUTDOWN', payload?: unknown): Promise<T> {
+    if (this.destroyed && command !== 'SHUTDOWN') throw new Error('Always Active is shutting down.');
     const worker = await this.ensureWorker();
     const id = randomUUID();
     const encodedPayload = payload === undefined ? '' : Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
@@ -1001,12 +1053,19 @@ export class AlwaysActiveManager {
   }
 
   private async ensureWorker(): Promise<ChildProcessWithoutNullStreams> {
+    if (this.worker) return this.worker;
+    if (!this.startingWorker) this.startingWorker = this.startWorker().finally(() => { this.startingWorker = null; });
+    return this.startingWorker;
+  }
+
+  private async startWorker(): Promise<ChildProcessWithoutNullStreams> {
     if (process.platform !== 'win32') throw new Error('Always Active is only available on Windows.');
     if (this.worker) return this.worker;
 
     await mkdir(path.dirname(this.workerScriptPath), { recursive: true });
     await writeFile(this.workerScriptPath, ALWAYS_ACTIVE_WORKER_SCRIPT, 'utf8');
 
+    if (this.destroyed) throw new Error('Always Active is shutting down.');
     this.worker = spawn('powershell.exe', [
       '-NoProfile',
       '-NonInteractive',
@@ -1014,7 +1073,7 @@ export class AlwaysActiveManager {
       'Bypass',
       '-File',
       this.workerScriptPath,
-    ], { stdio: 'pipe' });
+    ], { stdio: 'pipe', windowsHide: true });
     this.workerOutput = '';
     this.lastStartedAt = new Date().toISOString();
     this.lastError = null;
@@ -1028,6 +1087,11 @@ export class AlwaysActiveManager {
       this.worker = null;
       this.rejectAllPending(new Error(`Always Active worker exited${code === null ? '' : ` with code ${code}`}.`));
       if (!this.destroyed) this.lastError = 'Always Active worker stopped and will restart on the next request.';
+    });
+    this.worker.on('error', (error) => {
+      this.worker = null;
+      this.rejectAllPending(error);
+      this.lastError = error.message;
     });
 
     return this.worker;
