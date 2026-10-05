@@ -138,7 +138,6 @@ function joinFeatureList(features: readonly string[], finalJoin = 'and'): string
   return `${features.slice(0, -1).join(', ')}, ${finalJoin} ${features[features.length - 1]}`;
 }
 
-const sidebarDescription = `Manage ${joinFeatureList(modules.map((module) => module.compact), 'plus')}.`;
 
 function applyTheme(theme: AppTheme | undefined): void {
   const resolved = theme ?? 'winutils-blue';
@@ -410,7 +409,6 @@ function App(): ReactElement {
               </button>
             ))}
           </div>
-          <div className="sidebar-note">{sidebarDescription}</div>
         </aside>
 
         {activeTab === 'macros' ? (
@@ -512,6 +510,7 @@ function App(): ReactElement {
               <SettingsTab
                 settings={appSettings}
                 busy={settingsBusy}
+                onSettingsChanged={setAppSettings}
                 onToggleLaunchAtLogin={(value) => void updateSettings({ launchAtLogin: value })}
                 onToggleStartMinimized={(value) => void updateSettings({ startMinimized: value })}
                 onToggleMinimizeToTray={(value) => void updateSettings({ minimizeToTray: value })}

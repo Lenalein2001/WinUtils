@@ -29,6 +29,8 @@ import { MacroManager, registerMacroIpcHandlers } from './macroManager';
 import { registerRenamerIpcHandlers } from './renamerIpc';
 import { RenamerManager } from './renamerManager';
 import { registerSettingsIpcHandlers } from './settingsIpc';
+import { registerDiagnosticsIpc } from './diagnosticsIpc';
+import { stopHandleFileOperations } from './handleFileOperations';
 import { StartupManager } from './startupManager';
 import { registerAudioActions, registerSystemActions } from './systemActions';
 import { registerUpdateIpcHandlers } from './updateIpc';
@@ -52,6 +54,8 @@ let showMainAfterStartup = false;
 let rendererCrashRetries = 0;
 let handleSecondInstanceArguments: ((commandLine: string[]) => void) | null = null;
 const pendingSecondInstanceArguments: string[][] = [];
+let fatalCleanup: (() => Promise<void>) | null = null;
+let fatalStarted = false;
 
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
@@ -70,15 +74,26 @@ app.on('second-instance', (_event, commandLine) => {
 });
 
 process.on('uncaughtException', (error) => {
-  logStartup('uncaughtException', error);
-  dialog.showErrorBox('WinUtils Startup Error', error.stack ?? error.message);
+  stopAfterFatalError(error);
 });
 
 process.on('unhandledRejection', (reason) => {
-  const message = reason instanceof Error ? reason.stack ?? reason.message : String(reason);
-  logStartup('unhandledRejection', message);
-  dialog.showErrorBox('WinUtils Startup Error', message);
+  stopAfterFatalError(reason);
 });
+
+function stopAfterFatalError(reason: unknown): void {
+  if (fatalStarted) return;
+  fatalStarted = true;
+  isQuitting = true;
+  stopAcceptingIpc();
+  logStartup('Fatal main-process error; stopping automation and restoring state.', reason);
+  const deadline = setTimeout(() => app.exit(1), 20000);
+  void Promise.resolve().then(() => fatalCleanup?.()).catch(error => logStartup('Fatal cleanup failed', error)).finally(() => {
+    clearTimeout(deadline);
+    try { dialog.showErrorBox('WinUtils stopped', `An unexpected error stopped WinUtils. Cleanup was attempted and recovery data has been retained. Restart the app to retry pending recovery.\n\n${String(reason).slice(0, 4096)}`); }
+    finally { app.exit(1); }
+  });
+}
 
 function logStartup(message: string, details?: unknown): void {
   const detailText =
@@ -609,6 +624,7 @@ async function bootstrap(): Promise<void> {
   fileSyncManager.init().catch(err => logStartup('FileSyncManager init error', err));
 
   const clipboardManager = new ClipboardManager(actionEngine, hotkeyManager, {
+    getClipboardSource: () => macroManager.getClipboardSource(),
     onStateChanged: () => {
       BrowserWindow.getAllWindows().forEach((window) => {
         window.webContents.send('clipboard:changed');
@@ -624,7 +640,6 @@ async function bootstrap(): Promise<void> {
 
   const automationTriggerManager = createOptionalModule('Automation Triggers', () => new AutomationTriggerManager(actionEngine), logStartup);
   registerAutomationTriggerIpc(automationTriggerManager);
-    getClipboardSource: () => macroManager.getClipboardSource(),
   automationTriggerManager.init();
 
   registerAutomationSafetyIpc(actionEngine, async () => {
@@ -651,13 +666,17 @@ async function bootstrap(): Promise<void> {
   const prepareShutdown = async (): Promise<void> => {
     isQuitting = true;
     stopAcceptingIpc();
+    updateManager.dispose();
     await cleanup();
     await drainIpcRequests();
+    await stopHandleFileOperations();
     shutdownComplete = true;
   };
   const updateManager = new UpdateManager(prepareShutdown);
+  fatalCleanup = prepareShutdown;
   updateManager.init();
   registerUpdateIpcHandlers(updateManager);
+  registerDiagnosticsIpc();
   logStartup('IPC handlers registered.');
 
   try {

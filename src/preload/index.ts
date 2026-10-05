@@ -21,6 +21,7 @@ import type { AutomationTriggerInput, AutomationTriggerState } from '../shared/a
 import type { ExplorerContextMenuState, ExplorerContextMenuUpdate } from '../shared/contextMenu';
 
 const api = {
+  diagnostics: { export: (): Promise<boolean> => ipcRenderer.invoke('diagnostics:export') },
   actions: {
     activity: (): Promise<AutomationActivity> => ipcRenderer.invoke('actions:activity'),
     clearHistory: (): Promise<AutomationActivity> => ipcRenderer.invoke('actions:clearHistory'),
@@ -166,10 +167,14 @@ const api = {
     },
   },
   settings: {
+    export: (): Promise<boolean> => ipcRenderer.invoke('settings:export'),
+    importPreview: (): Promise<AppSettings | null> => ipcRenderer.invoke('settings:importPreview'),
+    reset: (): Promise<AppSettings> => ipcRenderer.invoke('settings:reset'),
     get: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get'),
     update: (patch: Partial<AppSettings>): Promise<AppSettings> => ipcRenderer.invoke('settings:update', patch),
   },
   updates: {
+    cancelDownload: (): Promise<UpdateState> => ipcRenderer.invoke('updates:cancelDownload'),
     getState: (): Promise<UpdateState> => ipcRenderer.invoke('updates:getState'),
     check: (): Promise<UpdateState> => ipcRenderer.invoke('updates:check'),
     download: (): Promise<UpdateState> => ipcRenderer.invoke('updates:download'),

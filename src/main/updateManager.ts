@@ -1,10 +1,11 @@
 import { app, BrowserWindow, shell } from 'electron';
 import { createRequire } from 'node:module';
+import { verifiedPublisher } from './updateTrust';
 import type { ProgressInfo, UpdateInfo } from 'electron-updater';
 import type { AppUpdateInfo, UpdateDownloadProgress, UpdateInstallMode, UpdateState, UpdateStatus } from '../shared/updater';
 
 const requireUpdater = createRequire(import.meta.url);
-const { autoUpdater } = requireUpdater('electron-updater') as typeof import('electron-updater');
+const { autoUpdater, CancellationToken } = requireUpdater('electron-updater') as typeof import('electron-updater');
 
 const GITHUB_OWNER = 'Lenalein2001';
 const GITHUB_REPO = 'WinUtils';
@@ -42,6 +43,18 @@ export class UpdateManager {
   private initialized = false;
   private checking: Promise<UpdateState> | null = null;
   private downloading: Promise<UpdateState> | null = null;
+  private downloadToken: import('electron-updater').CancellationToken | null = null;
+  private publisherCheck: Promise<string | null> | null = null;
+  private publisher: string | null = null;
+  private downloadVerified = false;
+  private downloadVerification: Promise<void> | null = null;
+  private startupTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private ensurePublisher(): Promise<string | null> {
+    if (!this.publisherCheck) this.publisherCheck = verifiedPublisher(process.execPath)
+      .then(subject => { this.publisher = subject; return subject; }).catch(() => null);
+    return this.publisherCheck;
+  }
 
   constructor(private readonly beforeInstall: () => void | Promise<void>) {}
 
@@ -50,6 +63,7 @@ export class UpdateManager {
     this.initialized = true;
 
     if (this.getInstallMode() !== 'installer') return;
+    void this.ensurePublisher().then(() => this.broadcast());
 
     autoUpdater.autoDownload = false;
     autoUpdater.autoInstallOnAppQuit = false;
@@ -58,17 +72,35 @@ export class UpdateManager {
     autoUpdater.on('checking-for-update', () => this.setState({ status: 'checking', error: null, progress: null }));
     autoUpdater.on('update-available', (info) => this.setState({ status: 'available', update: this.fromElectronUpdateInfo(info), error: null, progress: null }));
     autoUpdater.on('update-not-available', () => this.setState({ status: 'not-available', update: null, error: null, progress: null }));
-    autoUpdater.on('download-progress', (progress) => this.setState({ status: 'downloading', progress: this.fromProgressInfo(progress), error: null }));
-    autoUpdater.on('update-downloaded', (info) => this.setState({ status: 'downloaded', update: this.fromElectronUpdateInfo(info), progress: null, error: null }));
-    autoUpdater.on('error', (error) => this.setError(error));
+    autoUpdater.on('download-progress', (progress) => {
+      if (this.downloadToken && !this.downloadToken.cancelled) this.setState({ status: 'downloading', progress: this.fromProgressInfo(progress), error: null });
+    });
+    autoUpdater.on('update-downloaded', (info) => {
+      const token = this.downloadToken;
+      if (!token || token.cancelled) return;
+      this.downloadVerification = (async () => {
+        const publisher = await verifiedPublisher(info.downloadedFile);
+        if (token.cancelled) return;
+        if (!this.publisher || publisher !== this.publisher) throw new Error('Update publisher could not be verified against the installed application. Use the GitHub release page.');
+        this.downloadVerified = true;
+        this.setState({ status: 'downloaded', update: this.fromElectronUpdateInfo(info), progress: null, error: null });
+      })().catch(error => { if (!token.cancelled) this.setError(error); });
+    });
+    autoUpdater.on('error', (error) => { if (!this.downloadToken?.cancelled) this.setError(error); });
   }
 
   scheduleStartupCheck(): void {
     if (!app.isPackaged) return;
 
-    setTimeout(() => {
+    this.startupTimer = setTimeout(() => {
       void this.checkForUpdates().catch(() => undefined);
     }, 45_000);
+  }
+
+  dispose(): void {
+    if (this.startupTimer) clearTimeout(this.startupTimer);
+    this.startupTimer = null;
+    if (this.status === 'downloading') this.downloadToken?.cancel();
   }
 
   getState(): UpdateState {
@@ -85,7 +117,8 @@ export class UpdateManager {
       lastCheckedAt: this.lastCheckedAt,
       canCheck: installMode !== 'development' && !busy,
       canDownload: this.status === 'available' && !busy && (installMode === 'installer' || Boolean(this.update?.downloadUrl)),
-      canInstall: installMode === 'installer' && this.status === 'downloaded',
+      canInstall: installMode === 'installer' && this.status === 'downloaded' && this.downloadVerified,
+      automaticUpdates: Boolean(this.publisher),
     };
   }
 
@@ -110,7 +143,8 @@ export class UpdateManager {
       if (installMode === 'portable') {
         await this.checkPortableRelease();
       } else {
-        await autoUpdater.checkForUpdates();
+        if (await this.ensurePublisher()) await autoUpdater.checkForUpdates();
+        else await this.checkPortableRelease();
       }
     } catch (error) {
       this.setError(error);
@@ -126,6 +160,14 @@ export class UpdateManager {
     return this.downloading;
   }
 
+  async cancelDownload(): Promise<UpdateState> {
+    if (this.downloadToken) {
+      this.downloadToken.cancel();
+      this.setState({ status: 'available', progress: null, error: null });
+    }
+    return this.getState();
+  }
+
   private async downloadInternal(): Promise<UpdateState> {
     const installMode = this.getInstallMode();
 
@@ -137,13 +179,27 @@ export class UpdateManager {
     if (installMode !== 'installer') {
       throw new Error('Updates can only be downloaded from packaged builds.');
     }
+    if (!await this.ensurePublisher()) {
+      await this.openReleasePage();
+      return this.getState();
+    }
 
+    const token = new CancellationToken();
+    this.downloadVerified = false; this.downloadVerification = null;
+    this.downloadToken = token;
     this.setState({ status: 'downloading', progress: null, error: null });
+    const deadline = setTimeout(() => {
+      token.cancel(); this.setError(new Error('Update download timed out. Retry from Settings.'));
+    }, 600_000);
 
     try {
-      await autoUpdater.downloadUpdate();
+      await autoUpdater.downloadUpdate(token);
+      if (this.downloadVerification) await this.downloadVerification;
     } catch (error) {
-      this.setError(error);
+      if (!token.cancelled) this.setError(error);
+    } finally {
+      clearTimeout(deadline);
+      if (this.downloadToken === token) this.downloadToken = null;
     }
 
     return this.getState();
@@ -152,6 +208,7 @@ export class UpdateManager {
   async installUpdate(): Promise<UpdateState> {
     if (this.getInstallMode() !== 'installer') throw new Error('Only installed builds can apply updates in-app.');
     if (this.status !== 'downloaded') throw new Error('No downloaded update is ready to install.');
+    if (!this.downloadVerified) throw new Error('Update publisher has not been verified.');
 
     await this.beforeInstall();
     autoUpdater.quitAndInstall(true, true);

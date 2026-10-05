@@ -25,6 +25,7 @@ import type { ExplorerContextMenuState, ExplorerContextMenuUpdate } from '../../
 declare global {
   interface Window {
     winUtils: {
+      diagnostics: { export: () => Promise<boolean> };
       actions: {
         activity: () => Promise<AutomationActivity>;
         clearHistory: () => Promise<AutomationActivity>;
@@ -119,10 +120,14 @@ declare global {
         onProfileChanged: (cb: (state: MacroState) => void) => () => void;
       };
       settings: {
+        export: () => Promise<boolean>;
+        importPreview: () => Promise<AppSettings | null>;
+        reset: () => Promise<AppSettings>;
         get: () => Promise<AppSettings>;
         update: (patch: Partial<AppSettings>) => Promise<AppSettings>;
       };
       updates: {
+        cancelDownload: () => Promise<UpdateState>;
         getState: () => Promise<UpdateState>;
         check: () => Promise<UpdateState>;
         download: () => Promise<UpdateState>;

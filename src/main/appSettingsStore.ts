@@ -34,9 +34,9 @@ export class AppSettingsStore {
     await mkdir(dir, { recursive: true });
 
     if (!existsSync(this.filePath)) {
-      this._settings = { ...defaultAppSettings };
-      await this.save(this._settings);
-      return this._settings;
+      const initial = { ...defaultAppSettings };
+      await this.save(initial);
+      return initial;
     }
 
     try {
@@ -61,14 +61,16 @@ export class AppSettingsStore {
   }
 
   get(): AppSettings {
-    return this._settings ?? { ...defaultAppSettings };
+    return { ...(this._settings ?? defaultAppSettings) };
   }
 
   async save(next: AppSettings): Promise<void> {
     const dir = path.dirname(this.filePath);
     await mkdir(dir, { recursive: true });
     const snapshot = structuredClone(next);
-    await this.saveQueue.run(() => writeJsonAtomically(this.filePath, snapshot));
-    this._settings = snapshot;
+    await this.saveQueue.run(async () => {
+      await writeJsonAtomically(this.filePath, snapshot);
+      this._settings = snapshot;
+    });
   }
 }

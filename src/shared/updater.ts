@@ -28,4 +28,5 @@ export interface UpdateState {
   canCheck: boolean;
   canDownload: boolean;
   canInstall: boolean;
+  automaticUpdates: boolean;
 }

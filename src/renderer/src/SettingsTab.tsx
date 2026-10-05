@@ -1,6 +1,8 @@
 import { useEffect, useState, type ReactElement, type ReactNode } from 'react';
 import type { AppSettings, AppTheme } from '../../shared/settings';
 import type { AppUpdateInfo, UpdateState } from '../../shared/updater';
+import { SettingsTransfer } from './SettingsTransfer';
+import { DiagnosticsExport } from './DiagnosticsExport';
 
 interface SettingsTabProps {
   settings: AppSettings | null;
@@ -10,6 +12,7 @@ interface SettingsTabProps {
   onToggleMinimizeToTray: (value: boolean) => void;
   onToggleCloseToTray: (value: boolean) => void;
   onThemeChange: (value: AppTheme) => void;
+  onSettingsChanged: (settings: AppSettings) => void;
 }
 
 const themeOptions: Array<{ value: AppTheme; label: string; description: string }> = [
@@ -38,6 +41,7 @@ export function SettingsTab({
   onToggleMinimizeToTray,
   onToggleCloseToTray,
   onThemeChange,
+  onSettingsChanged,
 }: SettingsTabProps): ReactElement {
   const [updateState, setUpdateState] = useState<UpdateState | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
@@ -207,8 +211,11 @@ export function SettingsTab({
         </label>
       </div>
 
+      <SettingsTransfer current={settings} onChanged={onSettingsChanged} />
+      <DiagnosticsExport />
       <div className="settings-card settings-card--updates">
         <p className="section-kicker">Updates and release notes</p>
+        {updateState?.installMode === 'installer' && !updateState.automaticUpdates && <p>This build uses manual updates from GitHub. Automatic installation requires a verified Windows publisher.</p>}
         <div className="settings-update-header">
           <div>
             <strong>Updates</strong>
@@ -228,6 +235,8 @@ export function SettingsTab({
         {updateState?.error ? <div className="error-banner">{updateState.error}</div> : null}
 
         <div className="settings-update-actions">
+          {updateState?.status === 'downloading' && <button className="ghost-button" type="button"
+            onClick={() => void window.winUtils.updates.cancelDownload().then(setUpdateState).catch(error => setUpdateState(state => state ? { ...state, error: String(error) } : state))}>Cancel download</button>}
           <button
             className="ghost-button"
             type="button"
@@ -246,7 +255,7 @@ export function SettingsTab({
               onClick={() => void runUpdateAction(() => window.winUtils.updates.download())}
               title={updateState.installMode === 'portable' ? 'Open the release download page for the portable EXE.' : 'Download the available WinUtils update.'}
             >
-              {updateState.installMode === 'portable' ? 'Open Download' : updateState.status === 'downloading' ? 'Downloading...' : 'Download Update'}
+              {updateState.installMode === 'portable' ? 'Open Download' : !updateState.automaticUpdates ? 'Open release' : updateState.status === 'downloading' ? 'Downloading...' : 'Download Update'}
             </button>
           ) : null}
 
