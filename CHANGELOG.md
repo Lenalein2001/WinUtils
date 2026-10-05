@@ -4,6 +4,7 @@
 
 ### Added
 
+- Added recent automation results with readable action names, failure details and elapsed time.
 - Added automation activity and emergency stop/resume controls, durable hidden-window recovery, and a restore-all control.
 - Added Windows CI, regression tests, and native DLL rebuilds before packaging.
 - Added centralized action hotkeys and compact Clipboard/Command Palette popups.
@@ -12,6 +13,8 @@
 
 ### Fixed
 
+- Clipboard retention now saves explicitly, keeps drafts during background updates, and rejects invalid limits before pruning history.
+- Bulk clipboard clearing now asks for confirmation; quick access handles empty-list navigation and repeated Enter presses safely.
 - Fixed native hook ownership and acknowledged teardown, including cleanup after the worker exits.
 - Fixed cross-volume moves retaining verified recovery copies and preserving file timestamps.
 - Fixed queued automation skipping cooldown, overlapping file polls, and malformed optional-module data preventing core tools from opening.
