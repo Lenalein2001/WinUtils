@@ -19,6 +19,8 @@ export interface FocusAudioConfig {
 }
 
 export interface FocusAudioState extends FocusAudioConfig {
+  /** Last worker/restoration failure, surfaced without slow UI enumeration. */
+  lastError: string | null;
   activeAudioApps: string[];
   playingApps: string[];
   duckedApps: string[];

@@ -35,6 +35,7 @@ const createDuckRule = (): FocusAudioDuckRule => ({
 });
 
 export function FocusAudioTab(): ReactElement {
+  const [error, setError] = useState<string | null>(null);
   const [state, setState] = useState<FocusAudioState | null>(null);
   const [activeApps, setActiveApps] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -53,36 +54,48 @@ export function FocusAudioTab(): ReactElement {
     setDuckRules(rules);
   }, []);
 
-  const commitDuckRules = useCallback((next: FocusAudioDuckRule[]) => {
-    setDuckRules(next);
-    duckDirtyRef.current = true;
-    if (duckWriteRef.current) clearTimeout(duckWriteRef.current);
-    duckWriteRef.current = setTimeout(() => {
-      void window.winUtils.focusAudio.setDuckRules(next)
-        .then((config) => setState((prev) => (prev ? { ...prev, ...config } : prev)))
-        .finally(() => { duckDirtyRef.current = false; });
-    }, 450);
-  }, []);
-
   const loadState = useCallback(async () => {
     try {
       const s = await window.winUtils.focusAudio.getState();
       setState(s);
       setActiveApps(s.activeAudioApps);
       syncDuckRules(s.duckRules);
-    } catch {
-      // ignore
+      return s;
+    } catch (failure) {
+      setError(String(failure));
+      return null;
     } finally {
       setLoading(false);
     }
   }, [syncDuckRules]);
+
+  const duckWriteSequenceRef = useRef(0);
+  const commitDuckRules = useCallback((next: FocusAudioDuckRule[]) => {
+    setDuckRules(next);
+    duckDirtyRef.current = true;
+    const sequence = ++duckWriteSequenceRef.current;
+    if (duckWriteRef.current) clearTimeout(duckWriteRef.current);
+    duckWriteRef.current = setTimeout(() => {
+      void window.winUtils.focusAudio.setDuckRules(next)
+        .then((config) => {
+          if (sequence !== duckWriteSequenceRef.current) return;
+          setState((prev) => (prev ? { ...prev, ...config } : prev)); setError(null);
+        })
+        .catch(async (failure: unknown) => {
+          if (sequence !== duckWriteSequenceRef.current) return;
+          const latest = await loadState();
+          setError(latest?.lastError ? null : String(failure));
+        })
+        .finally(() => { if (sequence === duckWriteSequenceRef.current) duckDirtyRef.current = false; });
+    }, 450);
+  }, [loadState]);
 
   const refreshActiveApps = useCallback(async () => {
     setRefreshing(true);
     try {
       const apps = await window.winUtils.focusAudio.getActiveApps();
       setActiveApps(apps);
-    } finally {
+    } catch (failure) { setError(String(failure)); } finally {
       setRefreshing(false);
     }
   }, []);
@@ -107,44 +120,46 @@ export function FocusAudioTab(): ReactElement {
     setState((prev) => (prev ? { ...prev, ...config } : null));
   };
 
+  const applyRequest = async (request: Promise<FocusAudioConfig>) => {
+    try { applyConfig(await request); setError(null); }
+    catch (failure) {
+      const latest = await loadState();
+      setError(latest?.lastError ? null : String(failure));
+    }
+  };
+
   const handleToggleEnabled = async () => {
     if (!state) return;
-    const config = await window.winUtils.focusAudio.setEnabled(!state.enabled);
-    applyConfig(config);
+    await applyRequest(window.winUtils.focusAudio.setEnabled(!state.enabled));
   };
 
   const handleSetMode = async (mode: 'whitelist' | 'blacklist') => {
     if (!state || state.mode === mode) return;
-    const config = await window.winUtils.focusAudio.setMode(mode);
-    applyConfig(config);
+    await applyRequest(window.winUtils.focusAudio.setMode(mode));
   };
 
   const handleAddToWhitelist = async (name: string) => {
     if (!state || !name.trim()) return;
     const trimmed = name.trim();
     if (state.whitelist.includes(trimmed)) return;
-    const config = await window.winUtils.focusAudio.setWhitelist([...state.whitelist, trimmed]);
-    applyConfig(config);
+    await applyRequest(window.winUtils.focusAudio.setWhitelist([...state.whitelist, trimmed]));
   };
 
   const handleRemoveFromWhitelist = async (name: string) => {
     if (!state) return;
-    const config = await window.winUtils.focusAudio.setWhitelist(state.whitelist.filter((w) => w !== name));
-    applyConfig(config);
+    await applyRequest(window.winUtils.focusAudio.setWhitelist(state.whitelist.filter((w) => w !== name)));
   };
 
   const handleAddToBlacklist = async (name: string) => {
     if (!state || !name.trim()) return;
     const trimmed = name.trim();
     if (state.blacklist.includes(trimmed)) return;
-    const config = await window.winUtils.focusAudio.setBlacklist([...state.blacklist, trimmed]);
-    applyConfig(config);
+    await applyRequest(window.winUtils.focusAudio.setBlacklist([...state.blacklist, trimmed]));
   };
 
   const handleRemoveFromBlacklist = async (name: string) => {
     if (!state) return;
-    const config = await window.winUtils.focusAudio.setBlacklist(state.blacklist.filter((b) => b !== name));
-    applyConfig(config);
+    await applyRequest(window.winUtils.focusAudio.setBlacklist(state.blacklist.filter((b) => b !== name)));
   };
 
   const handleAddFromActiveToList = async (appName: string, list: 'whitelist' | 'blacklist') => {
@@ -158,8 +173,7 @@ export function FocusAudioTab(): ReactElement {
 
   const handleToggleDucking = async () => {
     if (!state) return;
-    const config = await window.winUtils.focusAudio.setDuckingEnabled(!state.duckingEnabled);
-    applyConfig(config);
+    await applyRequest(window.winUtils.focusAudio.setDuckingEnabled(!state.duckingEnabled));
   };
 
   const updateDuckRule = (id: string, patch: Partial<FocusAudioDuckRule>) => {
@@ -206,6 +220,9 @@ export function FocusAudioTab(): ReactElement {
 
   return (
     <div className="focus-audio-tab module-shell module-shell--focus-audio">
+      {(error || state.lastError) && (
+        <div className="error-banner" role="alert">{error || state.lastError}</div>
+      )}
       {/* Header */}
       <div className="fa-header">
         <div className="fa-title-block">
