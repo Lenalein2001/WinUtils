@@ -1,4 +1,6 @@
 import { writeJsonAtomicallySync } from './atomicFile';
+import { SerialTaskQueue } from './atomicFile';
+import { quoteWindowsArgument } from './windowsArguments';
 import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -43,6 +45,7 @@ export class ContextMenuManager {
   private readonly configPath = path.join(app.getPath('userData'), 'explorer-context-menu.json');
   private entries: ExplorerContextEntry[];
   private lastError: string | null = null;
+  private readonly mutations = new SerialTaskQueue();
 
   constructor(private readonly actions: ActionEngine) {
     this.entries = this.readConfig();
@@ -52,28 +55,41 @@ export class ContextMenuManager {
   async getState(): Promise<ExplorerContextMenuState> {
     return {
       installed: await registryKeyExists(FILE_ROOT) || await registryKeyExists(FOLDER_ROOT),
-      entries: this.entries,
+      entries: structuredClone(this.entries),
       executablePath: contextMenuExecutablePath(),
       error: this.lastError,
     };
   }
 
   async update(input: ExplorerContextMenuUpdate): Promise<ExplorerContextMenuState> {
+    if (!input || !Array.isArray(input.entries) || input.entries.length > ENTRY_DEFINITIONS.length
+      || input.entries.some(entry => !entry || !isContextActionId(entry.actionId) || typeof entry.enabled !== 'boolean')
+      || new Set(input.entries.map(entry => entry.actionId)).size !== input.entries.length) {
+      throw new Error('Invalid Explorer context-menu settings.');
+    }
     const requested = new Map(input.entries.map(entry => [entry.actionId, entry.enabled]));
-    this.entries = ENTRY_DEFINITIONS.map(definition => ({
-      ...definition,
-      enabled: requested.get(definition.actionId) ?? false,
-    }));
-    this.persist();
-    await this.applyRegistry();
-    return this.getState();
+    return this.mutations.run(async () => {
+      const previous = this.entries;
+      const next = ENTRY_DEFINITIONS.map(definition => ({
+        ...definition,
+        enabled: requested.get(definition.actionId) ?? false,
+      }));
+      try {
+        await this.applyRegistry(next);
+        this.persist(next);
+        this.entries = next;
+      } catch (error) {
+        try { await this.applyRegistry(previous); }
+        catch (rollback) { this.lastError = `Settings retained, but Explorer rollback failed: ${String(rollback)}`; throw new Error(`${String(error)}; ${this.lastError}`); }
+        this.lastError = String(error);
+        throw error;
+      }
+      return this.getState();
+    });
   }
 
   async uninstall(): Promise<ExplorerContextMenuState> {
-    await removeRegistryTree(FILE_ROOT);
-    await removeRegistryTree(FOLDER_ROOT);
-    this.lastError = null;
-    return this.getState();
+    return this.update({ entries: ENTRY_DEFINITIONS.map(entry => ({ actionId: entry.actionId, enabled: false })) });
   }
 
   async handleArguments(argv: string[]): Promise<boolean> {
@@ -93,12 +109,12 @@ export class ContextMenuManager {
     return true;
   }
 
-  private async applyRegistry(): Promise<void> {
+  private async applyRegistry(entries: ExplorerContextEntry[]): Promise<void> {
     try {
       await removeRegistryTree(FILE_ROOT);
       await removeRegistryTree(FOLDER_ROOT);
       for (const target of ['files', 'folders'] as const) {
-        const enabled = this.entries.filter(entry => entry.enabled && entry.targets.includes(target));
+        const enabled = entries.filter(entry => entry.enabled && entry.targets.includes(target));
         if (!enabled.length) continue;
         const root = target === 'files' ? FILE_ROOT : FOLDER_ROOT;
         await addRegistryValue(root, 'MUIVerb', 'WinUtils');
@@ -185,27 +201,23 @@ export class ContextMenuManager {
     try {
       if (fs.existsSync(this.configPath)) {
         const parsed = JSON.parse(fs.readFileSync(this.configPath, 'utf8')) as { enabled?: unknown };
-        if (Array.isArray(parsed.enabled)) {
-          enabled = new Set(parsed.enabled.filter(isContextActionId));
-        }
+        if (!Array.isArray(parsed.enabled) || parsed.enabled.length > 3 || parsed.enabled.some(id => !isContextActionId(id))) throw new Error('Invalid Explorer settings schema.');
+        enabled = new Set(parsed.enabled as ExplorerContextActionId[]);
       }
     } catch (error) {
-      this.lastError = `Could not read Explorer context-menu settings; defaults were restored: ${
-        error instanceof Error ? error.message : String(error)
-      }`;
-      enabled.clear();
+      throw new Error(`Could not read Explorer context-menu settings; the original file was preserved. ${String(error)}`);
     }
     return ENTRY_DEFINITIONS.map(definition => ({ ...definition, enabled: enabled.has(definition.actionId) }));
   }
 
-  private persist(): void {
-    writeJsonAtomicallySync(this.configPath, { enabled: this.entries.filter(entry => entry.enabled).map(entry => entry.actionId) });
+  private persist(entries: ExplorerContextEntry[]): void {
+    writeJsonAtomicallySync(this.configPath, { enabled: entries.filter(entry => entry.enabled).map(entry => entry.actionId) });
   }
 }
 
 async function registryKeyExists(key: string): Promise<boolean> {
   try {
-    await execFileAsync('reg.exe', ['query', key], { windowsHide: true });
+    await execFileAsync('reg.exe', ['query', key], { windowsHide: true, timeout: 15000, maxBuffer: 65536 });
     return true;
   } catch {
     return false;
@@ -214,15 +226,15 @@ async function registryKeyExists(key: string): Promise<boolean> {
 
 async function removeRegistryTree(key: string): Promise<void> {
   if (!await registryKeyExists(key)) return;
-  await execFileAsync('reg.exe', ['delete', key, '/f'], { windowsHide: true });
+  await execFileAsync('reg.exe', ['delete', key, '/f'], { windowsHide: true, timeout: 15000, maxBuffer: 65536 });
 }
 
 async function addRegistryValue(key: string, name: string, value: string): Promise<void> {
-  await execFileAsync('reg.exe', ['add', key, '/v', name, '/t', 'REG_SZ', '/d', value, '/f'], { windowsHide: true });
+  await execFileAsync('reg.exe', ['add', key, '/v', name, '/t', 'REG_SZ', '/d', value, '/f'], { windowsHide: true, timeout: 15000, maxBuffer: 65536 });
 }
 
 async function addRegistryDefault(key: string, value: string): Promise<void> {
-  await execFileAsync('reg.exe', ['add', key, '/ve', '/t', 'REG_SZ', '/d', value, '/f'], { windowsHide: true });
+  await execFileAsync('reg.exe', ['add', key, '/ve', '/t', 'REG_SZ', '/d', value, '/f'], { windowsHide: true, timeout: 15000, maxBuffer: 65536 });
 }
 
 function buildExplorerCommand(actionId: ExplorerContextActionId): string {
@@ -237,7 +249,7 @@ function contextMenuExecutablePath(): string {
 }
 
 function quoteArgument(value: string): string {
-  return `"${value.replace(/"/g, '\\"')}"`;
+  return quoteWindowsArgument(value);
 }
 
 function readArgument(argv: string[], prefix: string): string {

@@ -47,3 +47,7 @@ export function splitWindowsArguments(value: string): string[] {
   }
   return args;
 }
+
+export function quoteWindowsArgument(value: string): string {
+  return '"' + value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/g, '$1$1') + '"';
+}
