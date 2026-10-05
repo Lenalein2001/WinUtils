@@ -3,7 +3,7 @@ import { handleTrustedIpc } from './ipcSecurity';
 import { BrowserWindow, dialog } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
-import { writeFileSync, appendFileSync } from 'node:fs';
+import { writeFileSync, appendFileSync, mkdtempSync, unlinkSync, rmdirSync, existsSync, statSync, renameSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { readBoundedUtf8 } from './boundedFile';
 import { tmpdir } from 'node:os';
@@ -29,6 +29,8 @@ import { executeMacro, stopMacroExecutor, warmMacroExecutor, type MacroExecution
 import type { HotkeyManager, RuntimeHotkeyRegistration } from './hotkeyManager';
 import { getHotkeyDiagnostics } from './macroHook';
 import { MacroStore } from './macroStore';
+import { SerialTaskQueue } from './atomicFile';
+import { validateActions, validateMacro, validateProfile } from './macroValidation';
 
 interface MacroPlaybackState {
   running: boolean;
@@ -47,13 +49,21 @@ export class MacroManager {
   private destroyed = false;
   private readonly executions = new Set<Promise<MacroExecutionResult>>();
   private readonly store = new MacroStore();
+  private readonly mutationQueue = new SerialTaskQueue();
   private initialized = false;
   private initializing: Promise<void> | null = null;
   private logPath = path.join(tmpdir(), 'winutils-focus-debug.log');
   private readonly playbackStates = new Map<string, MacroPlaybackState>();
 
   private log(msg: string): void {
-    appendFileSync(this.logPath, `[${new Date().toISOString()}] ${msg}\n`);
+    if (!process.env.WINUTILS_MACRO_DEBUG) return;
+    try {
+      if (existsSync(this.logPath) && statSync(this.logPath).size >= 1024 * 1024) {
+        if (existsSync(`${this.logPath}.old`)) unlinkSync(`${this.logPath}.old`);
+        renameSync(this.logPath, `${this.logPath}.old`);
+      }
+      appendFileSync(this.logPath, `[${new Date().toISOString()}] ${msg.slice(0, 4096)}\n`);
+    } catch { /* Diagnostics must not stop playback. */ }
   }
 
   // ─── Focus monitor ────────────────────────────────────────────────────
@@ -72,6 +82,10 @@ export class MacroManager {
   private readonly pidTokenCacheTtlMs = 3 * 60 * 1000;
   private focusMonitorRestartCount = 0;
   private lastFocusSampleAt: string | null = null;
+  private clipboardSource: { name: string; sampledAt: number; sequence: number } | null = null;
+  getClipboardSource(): { name: string; sampledAt: number; sequence: number } | null {
+    return this.clipboardSource && Date.now() - this.clipboardSource.sampledAt < 1500 ? { ...this.clipboardSource } : null;
+  }
 
   constructor(
     private readonly actions: ActionEngine,
@@ -86,7 +100,7 @@ export class MacroManager {
 
   private async initInternal(): Promise<void> {
     if (this.initialized) return;
-    writeFileSync(this.logPath, '=== MacroManager init ===\n', 'utf8');
+    if (process.env.WINUTILS_MACRO_DEBUG) { try { writeFileSync(this.logPath, '=== MacroManager init ===\n', 'utf8'); } catch { /* Optional diagnostics. */ } }
     this.log('Starting');
     await this.store.load();
     if (this.destroyed) return;
@@ -129,7 +143,8 @@ export class MacroManager {
 
     // Write the helper script to a temp file once so Add-Type compiles only
     // once at worker startup — not on every poll tick.
-    const scriptPath = path.join(tmpdir(), 'winutils-focus-monitor.ps1');
+    const scriptDirectory = mkdtempSync(path.join(tmpdir(), 'winutils-focus-'));
+    const scriptPath = path.join(scriptDirectory, 'monitor.ps1');
     const script = `
 Add-Type -TypeDefinition @'
 using System;
@@ -142,6 +157,8 @@ public static class FocusHelper {
 
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] public static extern IntPtr GetClipboardOwner();
+    [DllImport("user32.dll")] public static extern uint GetClipboardSequenceNumber();
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
     [DllImport("user32.dll")]
@@ -250,28 +267,41 @@ public static class FocusHelper {
         // TSV payload: pid\tname\tpath\ttitle
         return processId.ToString() + "\t" + name + "\t" + fullPath + "\t" + title;
     }
+    public static string GetClipboardSourceSample() {
+        uint before = GetClipboardSequenceNumber();
+        uint pid; GetWindowThreadProcessId(GetClipboardOwner(), out pid);
+        string name = pid == 0 ? "" : GetProcessNameByPid(pid) ?? "";
+        if (before != GetClipboardSequenceNumber()) return "CLIP\t0\t";
+        return "CLIP\t" + before.ToString() + "\t" + name;
+    }
 }
 '@ -Language CSharp
 
 while ($true) {
     Start-Sleep -Milliseconds 500
     try {
+        [Console]::Out.WriteLine([FocusHelper]::GetClipboardSourceSample())
         $sample = [FocusHelper]::GetForegroundProcessSample()
         if ($sample) {
           [Console]::Out.WriteLine($sample)
-            [Console]::Out.Flush()
         }
+        [Console]::Out.Flush()
     } catch {
         [Console]::Error.WriteLine($_.Exception.Message)
     }
 }
 `.trimStart();
 
-    writeFileSync(scriptPath, script, 'utf8');
+    const removeScript = (): void => {
+      try { unlinkSync(scriptPath); rmdirSync(scriptDirectory); } catch { /* A running worker may still hold its script. */ }
+    };
+    try { writeFileSync(scriptPath, script, { encoding: 'utf8', flag: 'wx' }); }
+    catch (error) { removeScript(); throw error; }
 
     this.focusWorker = spawn('powershell.exe', [
       '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptPath,
-    ], { stdio: ['ignore', 'pipe', 'pipe'] });
+    ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    this.focusWorker.on('error', error => { this.log(`Focus worker could not start: ${String(error)}`); this.clipboardSource = null; });
 
     let buf = '';
     this.focusWorker.stdout!.on('data', (chunk: Buffer) => {
@@ -281,6 +311,11 @@ while ($true) {
       for (const line of lines) {
         const sample = line.trim();
         if (!sample) continue;
+        if (sample.startsWith('CLIP\t')) {
+          const [, sequence, name = ''] = sample.split('\t');
+          this.clipboardSource = { name: name.toLowerCase().replace(/\.exe$/i, ''), sequence: Number(sequence), sampledAt: Date.now() };
+          continue;
+        }
         const [pidRaw, nameRaw, pathRaw, titleRaw] = sample.split('\t');
         const pid = Number.parseInt(pidRaw ?? '', 10);
         const processName = (nameRaw ?? '').trim();
@@ -295,10 +330,12 @@ while ($true) {
     });
 
     this.focusWorker.on('exit', (code) => {
+      removeScript();
       this.log(`Focus worker exited with code: ${code ?? 'null'}`);
       if (this.focusWorker === null) return;
 
       this.focusWorker = null;
+      this.clipboardSource = null;
       this.focusMonitorRestartCount += 1;
       if (this.focusMonitorRestartTimer !== null) return;
 
@@ -575,20 +612,23 @@ while ($true) {
     macroId: string,
     input: { hotkey: string; enabled: boolean },
   ): Promise<void> {
-    const macro = this.collectMacros(this.store.getActiveProfile()).find(item => item.id === macroId);
-    if (!macro) throw new Error(`Macro "${macroId}" could not be found in the active profile.`);
-    const previous = { hotkey: macro.hotkey, hotkeyEnabled: macro.hotkeyEnabled };
-    macro.hotkey = input.hotkey;
-    macro.hotkeyEnabled = input.enabled;
-    try {
-      await this.store.save();
-    } catch (error) {
-      macro.hotkey = previous.hotkey;
-      macro.hotkeyEnabled = previous.hotkeyEnabled;
-      throw error;
-    }
-    this.rebuildHotkeys();
-    this.pushStateToRenderer();
+    return this.mutationQueue.run(async () => {
+      const macro = this.collectMacros(this.store.getActiveProfile()).find(item => item.id === macroId);
+      if (!macro) throw new Error(`Macro "${macroId}" could not be found in the active profile.`);
+      const previous = { hotkey: macro.hotkey, hotkeyEnabled: macro.hotkeyEnabled };
+      macro.hotkey = input.hotkey;
+      macro.hotkeyEnabled = input.enabled;
+      try {
+        await this.store.save();
+      } catch (error) {
+        macro.hotkey = previous.hotkey;
+        macro.hotkeyEnabled = previous.hotkeyEnabled;
+        throw error;
+      }
+      this.rebuildHotkeys();
+      this.pushStateToRenderer();
+
+    });
   }
 
   private getPlaybackState(macroId: string): MacroPlaybackState {
@@ -906,143 +946,170 @@ while ($true) {
   // ─── Mutations ──────────────────────────────────────────────────────────
 
   async upsertMacro(macro: Macro, profileName?: string): Promise<MacroState> {
-    const normalizedMacro: Macro = { ...macro, playback: normalizeMacroPlayback(macro.playback) };
-    const cfg = this.store['_config'] as MacroConfig;
-    const profile = profileName
-      ? cfg.profiles.find(p => p.name === profileName) ?? this.store.getActiveProfile()
-      : this.store.getActiveProfile();
+    return this.mutationQueue.run(async () => {
+      validateMacro(macro);
+      const normalizedMacro: Macro = { ...macro, playback: normalizeMacroPlayback(macro.playback) };
+      const cfg = this.store['_config'] as MacroConfig;
+      const profile = profileName
+        ? cfg.profiles.find(p => p.name === profileName) ?? this.store.getActiveProfile()
+        : this.store.getActiveProfile();
 
-    const normalizedHotkey = this.normalizeHotkey(normalizedMacro.hotkey);
-    if (normalizedHotkey && normalizedMacro.enabled && (normalizedMacro.hotkeyEnabled ?? true)) {
-      const conflict = this.collectMacros(profile).find(other => (
-        other.id !== normalizedMacro.id
-        && other.enabled
-        && (other.hotkeyEnabled ?? true)
-        && this.normalizeHotkey(other.hotkey) === normalizedHotkey
-      ));
-      if (conflict) {
-        throw new Error(`Hotkey "${normalizedMacro.hotkey}" is already assigned to "${conflict.name || '(unnamed)'}".`);
+      const normalizedHotkey = this.normalizeHotkey(normalizedMacro.hotkey);
+      if (normalizedHotkey && normalizedMacro.enabled && (normalizedMacro.hotkeyEnabled ?? true)) {
+        const conflict = this.collectMacros(profile).find(other => (
+          other.id !== normalizedMacro.id
+          && other.enabled
+          && (other.hotkeyEnabled ?? true)
+          && this.normalizeHotkey(other.hotkey) === normalizedHotkey
+        ));
+        if (conflict) {
+          throw new Error(`Hotkey "${normalizedMacro.hotkey}" is already assigned to "${conflict.name || '(unnamed)'}".`);
+        }
+        const featureConflict = this.hotkeys.getState().bindings.find(binding => (
+          binding.id !== `macro.hotkey.${normalizedMacro.id}`
+          && binding.source !== 'macro'
+          && binding.enabled
+          && binding.available
+          && binding.normalizedHotkey === normalizedHotkey
+        ));
+        if (featureConflict) {
+          throw new Error(`Hotkey "${normalizedMacro.hotkey}" is already assigned to "${featureConflict.ownerLabel}: ${featureConflict.label}".`);
+        }
       }
-      const featureConflict = this.hotkeys.getState().bindings.find(binding => (
-        binding.id !== `macro.hotkey.${normalizedMacro.id}`
-        && binding.source !== 'macro'
-        && binding.enabled
-        && binding.available
-        && binding.normalizedHotkey === normalizedHotkey
-      ));
-      if (featureConflict) {
-        throw new Error(`Hotkey "${normalizedMacro.hotkey}" is already assigned to "${featureConflict.ownerLabel}: ${featureConflict.label}".`);
-      }
-    }
 
-    const rootIdx = profile.macros.findIndex(m => m.id === normalizedMacro.id);
-    if (rootIdx >= 0) {
-      profile.macros[rootIdx] = normalizedMacro;
-    } else {
-      let found = false;
-      for (const folder of profile.folders) {
-        const fi = folder.macros.findIndex(m => m.id === normalizedMacro.id);
-        if (fi >= 0) { folder.macros[fi] = normalizedMacro; found = true; break; }
+      const rootIdx = profile.macros.findIndex(m => m.id === normalizedMacro.id);
+      if (rootIdx >= 0) {
+        profile.macros[rootIdx] = normalizedMacro;
+      } else {
+        let found = false;
+        for (const folder of profile.folders) {
+          const fi = folder.macros.findIndex(m => m.id === normalizedMacro.id);
+          if (fi >= 0) { folder.macros[fi] = normalizedMacro; found = true; break; }
+        }
+        if (!found) profile.macros.push(normalizedMacro);
       }
-      if (!found) profile.macros.push(normalizedMacro);
-    }
 
-    await this.store.save();
-    this.rebuildHotkeys();
-    return this.getState();
+      await this.store.save();
+      this.rebuildHotkeys();
+      return this.getState();
+
+    });
   }
 
   async deleteMacro(macroId: string): Promise<MacroState> {
-    const profile = this.store.getActiveProfile();
-    profile.macros = profile.macros.filter(m => m.id !== macroId);
-    for (const folder of profile.folders) {
-      folder.macros = folder.macros.filter(m => m.id !== macroId);
-    }
-    await this.store.save();
-    this.rebuildHotkeys();
-    return this.getState();
+    return this.mutationQueue.run(async () => {
+      const profile = this.store.getActiveProfile();
+      profile.macros = profile.macros.filter(m => m.id !== macroId);
+      for (const folder of profile.folders) {
+        folder.macros = folder.macros.filter(m => m.id !== macroId);
+      }
+      await this.store.save();
+      this.rebuildHotkeys();
+      return this.getState();
+
+    });
   }
 
   async moveMacroToFolder(macroId: string, folderId: string | null): Promise<MacroState> {
-    const profile = this.store.getActiveProfile();
+    return this.mutationQueue.run(async () => {
+      const profile = this.store.getActiveProfile();
 
-    // Extract macro from wherever it currently lives
-    let macro: Macro | undefined;
-    const rootIdx = profile.macros.findIndex(m => m.id === macroId);
-    if (rootIdx >= 0) {
-      [macro] = profile.macros.splice(rootIdx, 1);
-    } else {
-      for (const folder of profile.folders) {
-        const fi = folder.macros.findIndex(m => m.id === macroId);
-        if (fi >= 0) { [macro] = folder.macros.splice(fi, 1); break; }
+      if (folderId !== null && !profile.folders.some(folder => folder.id === folderId)) throw new Error('Destination macro folder no longer exists.');
+      // Extract macro from wherever it currently lives
+      let macro: Macro | undefined;
+      const rootIdx = profile.macros.findIndex(m => m.id === macroId);
+      if (rootIdx >= 0) {
+        [macro] = profile.macros.splice(rootIdx, 1);
+      } else {
+        for (const folder of profile.folders) {
+          const fi = folder.macros.findIndex(m => m.id === macroId);
+          if (fi >= 0) { [macro] = folder.macros.splice(fi, 1); break; }
+        }
       }
-    }
-    if (!macro) return this.getState();
+      if (!macro) return this.getState();
 
-    if (folderId === null) {
-      profile.macros.push(macro);
-    } else {
-      const target = profile.folders.find(f => f.id === folderId);
-      if (target) target.macros.push(macro);
-    }
+      if (folderId === null) {
+        profile.macros.push(macro);
+      } else {
+        const target = profile.folders.find(f => f.id === folderId);
+        if (target) target.macros.push(macro);
+      }
 
-    await this.store.save();
-    this.rebuildHotkeys();
-    return this.getState();
+      await this.store.save();
+      this.rebuildHotkeys();
+      return this.getState();
+
+    });
   }
 
   async upsertFolder(folder: MacroFolder): Promise<MacroState> {
-    const profile = this.store.getActiveProfile();
-    const idx = profile.folders.findIndex(f => f.id === folder.id);
-    if (idx >= 0) profile.folders[idx] = folder;
-    else profile.folders.push(folder);
-    await this.store.save();
-    return this.getState();
+    return this.mutationQueue.run(async () => {
+      validateProfile({ name: 'Folder validation', macros: [], folders: [folder] });
+      const profile = this.store.getActiveProfile();
+      const idx = profile.folders.findIndex(f => f.id === folder.id);
+      if (idx >= 0) profile.folders[idx] = folder;
+      else profile.folders.push(folder);
+      await this.store.save();
+      return this.getState();
+
+    });
   }
 
   async deleteFolder(folderId: string): Promise<MacroState> {
-    const profile = this.store.getActiveProfile();
-    const folder = profile.folders.find(f => f.id === folderId);
-    if (folder) {
-      // Move macros to root before deleting
-      profile.macros.push(...folder.macros);
-      profile.folders = profile.folders.filter(f => f.id !== folderId);
-    }
-    await this.store.save();
-    return this.getState();
+    return this.mutationQueue.run(async () => {
+      const profile = this.store.getActiveProfile();
+      const folder = profile.folders.find(f => f.id === folderId);
+      if (folder) {
+        // Move macros to root before deleting
+        profile.macros.push(...folder.macros);
+        profile.folders = profile.folders.filter(f => f.id !== folderId);
+      }
+      await this.store.save();
+      return this.getState();
+
+    });
   }
 
   async switchProfile(name: string): Promise<MacroState> {
-    const cfg = this.store['_config'] as MacroConfig;
-    if (cfg.profiles.some(p => p.name === name)) {
-      cfg.activeProfile = name;
-      // User made a manual selection — clear auto-switch state
-      this.manualProfile = name;
-      this.pidTokenCache.clear();
-      await this.store.save();
-      this.rebuildHotkeys();
-    }
-    return this.getState();
+    return this.mutationQueue.run(async () => {
+      const cfg = this.store['_config'] as MacroConfig;
+      if (cfg.profiles.some(p => p.name === name)) {
+        cfg.activeProfile = name;
+        // User made a manual selection — clear auto-switch state
+        this.manualProfile = name;
+        this.pidTokenCache.clear();
+        await this.store.save();
+        this.rebuildHotkeys();
+      }
+      return this.getState();
+
+    });
   }
 
   async addProfile(name: string): Promise<MacroState> {
-    const cfg = this.store['_config'] as MacroConfig;
-    if (!cfg.profiles.some(p => p.name === name)) {
-      const profile: MacroProfile = { name, folders: [], macros: [] };
-      cfg.profiles.push(profile);
-      await this.store.save();
-    }
-    return this.getState();
+    return this.mutationQueue.run(async () => {
+      const cfg = this.store['_config'] as MacroConfig;
+      if (!cfg.profiles.some(p => p.name === name)) {
+        const profile: MacroProfile = { name, folders: [], macros: [] };
+        cfg.profiles.push(profile);
+        await this.store.save();
+      }
+      return this.getState();
+
+    });
   }
 
   async deleteProfile(name: string): Promise<MacroState> {
-    const cfg = this.store['_config'] as MacroConfig;
-    if (name === 'Default' || cfg.profiles.length <= 1) return this.getState();
-    cfg.profiles = cfg.profiles.filter(p => p.name !== name);
-    if (cfg.activeProfile === name) cfg.activeProfile = 'Default';
-    await this.store.save();
-    this.rebuildHotkeys();
-    return this.getState();
+    return this.mutationQueue.run(async () => {
+      const cfg = this.store['_config'] as MacroConfig;
+      if (name === 'Default' || cfg.profiles.length <= 1) return this.getState();
+      cfg.profiles = cfg.profiles.filter(p => p.name !== name);
+      if (cfg.activeProfile === name) cfg.activeProfile = cfg.profiles.find(profile => profile.name === 'Default')?.name ?? cfg.profiles[0].name;
+      await this.store.save();
+      this.rebuildHotkeys();
+      return this.getState();
+
+    });
   }
 
   async runMacro(macroId: string): Promise<void> {
@@ -1053,29 +1120,39 @@ while ($true) {
   }
 
   async reorderActions(macroId: string, actions: MacroAction[]): Promise<MacroState> {
-    const profile = this.store.getActiveProfile();
-    const all = [...profile.macros, ...profile.folders.flatMap(f => f.macros)];
-    const macro = all.find(m => m.id === macroId);
-    if (macro) macro.actions = actions;
-    await this.store.save();
-    return this.getState();
+    return this.mutationQueue.run(async () => {
+      validateActions(actions);
+      const profile = this.store.getActiveProfile();
+      const all = [...profile.macros, ...profile.folders.flatMap(f => f.macros)];
+      const macro = all.find(m => m.id === macroId);
+      if (macro) macro.actions = actions;
+      await this.store.save();
+      return this.getState();
+
+    });
   }
 
   async updateRecordHotkey(hotkey: string): Promise<MacroState> {
-    const cfg = this.store['_config'] as MacroConfig;
-    cfg.recordToggleHotkey = hotkey;
-    await this.store.save();
-    return this.getState();
+    return this.mutationQueue.run(async () => {
+      const cfg = this.store['_config'] as MacroConfig;
+      cfg.recordToggleHotkey = hotkey;
+      await this.store.save();
+      return this.getState();
+
+    });
   }
 
   async updateProcessBindings(profileName: string, bindings: string[]): Promise<MacroState> {
-    const cfg = this.store['_config'] as MacroConfig;
-    const profile = cfg.profiles.find(p => p.name === profileName);
-    if (profile) {
-      profile.processBindings = this.sanitizeBindings(bindings);
-      await this.store.save();
-    }
-    return this.getState();
+    return this.mutationQueue.run(async () => {
+      const cfg = this.store['_config'] as MacroConfig;
+      const profile = cfg.profiles.find(p => p.name === profileName);
+      if (profile) {
+        profile.processBindings = this.sanitizeBindings(bindings);
+        await this.store.save();
+      }
+      return this.getState();
+
+    });
   }
 
   private cloneActionForImport(action: MacroAction): MacroAction {
@@ -1178,25 +1255,28 @@ while ($true) {
       throw new Error('Invalid macro profile file.');
     }
 
-    const cfg = this.store['_config'] as MacroConfig;
-    const profile = this.cloneProfileForImport(importedProfile);
+    validateProfile(importedProfile);
+    return this.mutationQueue.run(async () => {
+      const cfg = this.store['_config'] as MacroConfig;
+      const profile = this.cloneProfileForImport(importedProfile);
 
-    const baseName = profile.name || 'Imported Profile';
-    let nextName = baseName;
-    let index = 2;
-    while (cfg.profiles.some(item => item.name === nextName)) {
-      nextName = `${baseName} (${index})`;
-      index += 1;
-    }
-    profile.name = nextName;
+      const baseName = profile.name || 'Imported Profile';
+      let nextName = baseName;
+      let index = 2;
+      while (cfg.profiles.some(item => item.name === nextName)) {
+        nextName = `${baseName} (${index})`;
+        index += 1;
+      }
+      profile.name = nextName;
 
-    cfg.profiles.push(profile);
-    cfg.activeProfile = nextName;
-    this.manualProfile = nextName;
+      cfg.profiles.push(profile);
+      cfg.activeProfile = nextName;
+      this.manualProfile = nextName;
 
-    await this.store.save();
-    this.rebuildHotkeys();
-    return this.getState();
+      await this.store.save();
+      this.rebuildHotkeys();
+      return this.getState();
+    });
   }
 
   getActiveApps(): Promise<string[]> {
@@ -1228,6 +1308,7 @@ while ($true) {
     this.stopAllHotkeyPlayback();
     await Promise.allSettled([...this.executions]);
     await stopMacroExecutor();
+    await this.mutationQueue.drain();
     await this.store.drain();
     this.actions.replaceOwnerActions('macros', []);
     this.hotkeys.replaceOwnerBindings('macros', []);

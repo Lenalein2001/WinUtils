@@ -1,8 +1,10 @@
 import { app } from 'electron';
-import { readFile, mkdir } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { isMissingFile, SerialTaskQueue, writeJsonAtomically } from './atomicFile';
 import { normalizeMacroPlayback, type Macro, type MacroConfig, type MacroProfile, type MacroState } from '../shared/macro';
+import { validateConfig } from './macroValidation';
+import { readBoundedUtf8 } from './boundedFile';
 
 function normalizeStoredMacro(macro: Macro): Macro {
   return { ...macro, playback: normalizeMacroPlayback(macro.playback) };
@@ -53,6 +55,7 @@ export class MacroStore {
   }
 
   private _config: MacroConfig | null = null;
+  private committed: MacroConfig | null = null;
 
   async load(): Promise<MacroConfig> {
     if (this._config) return this._config!;
@@ -65,13 +68,14 @@ export class MacroStore {
     let invalid = false;
     for (const candidate of [this.configPath, this.configPath + '.bak']) {
       let raw: string;
-      try { raw = await readFile(candidate, 'utf8'); }
+      try { raw = await readBoundedUtf8(candidate, 64 * 1024 * 1024); }
       catch (error) { if (isMissingFile(error)) continue; throw error; }
       try {
         const parsed = JSON.parse(raw) as MacroConfig;
-        if (!Array.isArray(parsed.profiles) || !parsed.profiles.length) throw new Error('No valid macro profiles.');
+        validateConfig(parsed);
         const normalized = normalizeStoredConfig(parsed);
         this._config = normalized;
+        this.committed = structuredClone(normalized);
         return normalized;
       } catch { invalid = true; }
     }
@@ -84,15 +88,21 @@ export class MacroStore {
   async save(): Promise<void> {
     if (!this._config) return;
     const snapshot = structuredClone(this._config);
-    await this.saveQueue.run(async () => {
-      let previous: unknown;
-      try {
-        const raw = await readFile(this.configPath, 'utf8');
-        try { previous = normalizeStoredConfig(JSON.parse(raw)); } catch { /* Preserve a good backup when the primary is damaged. */ }
-      } catch (error) { if (!isMissingFile(error)) throw error; }
-      if (previous) await writeJsonAtomically(this.configPath + '.bak', previous);
-      await writeJsonAtomically(this.configPath, snapshot);
-    });
+    try {
+      validateConfig(snapshot);
+      if (Buffer.byteLength(JSON.stringify(snapshot), 'utf8') > 64 * 1024 * 1024) throw new Error('Macro configuration exceeds its file budget. Saved configuration was retained.');
+      await this.saveQueue.run(async () => {
+        let previous: unknown;
+        try {
+          const raw = await readBoundedUtf8(this.configPath, 64 * 1024 * 1024);
+          try { const parsed = JSON.parse(raw); validateConfig(parsed); previous = normalizeStoredConfig(parsed); }
+          catch { /* Preserve a good backup when the primary is damaged. */ }
+        } catch (error) { if (!isMissingFile(error)) throw error; }
+        if (previous) await writeJsonAtomically(this.configPath + '.bak', previous);
+        await writeJsonAtomically(this.configPath, snapshot);
+        this.committed = structuredClone(snapshot);
+      });
+    } catch (error) { this._config = this.committed ? structuredClone(this.committed) : null; throw error; }
   }
 
   async drain(): Promise<void> { await this.saveQueue.drain(); }
