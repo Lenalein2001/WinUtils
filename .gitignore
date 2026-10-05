@@ -7,6 +7,7 @@ release/
 dist/
 native/**/bin/
 native/**/obj/
+native/**/publish/
 
 # Logs and diagnostics
 *.log

@@ -8,9 +8,10 @@
     "build": "electron-vite build",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p src/renderer/tsconfig.json",
     "start:desktop": "npm run build && electron .",
-    "package:installer": "electron-builder --win nsis",
-    "package:portable": "electron-builder --win portable",
-    "package": "npm run build && npm run package:installer && npm run package:portable"
+    "package:installer": "npm run native:build && npm run build && electron-builder --win nsis",
+    "package:portable": "npm run native:build && npm run build && electron-builder --win portable",
+    "package": "npm run native:build && npm run build && electron-builder --win nsis portable",
+    "native:build": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File scripts/build-native.ps1"
   },
   "keywords": [
     "electron",
