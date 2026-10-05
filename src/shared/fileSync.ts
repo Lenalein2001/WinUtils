@@ -98,6 +98,7 @@ export interface FileSyncEntryInfo {
   size: number;
   modifiedAt: string;
   hash?: string;
+  version?: { device: string; fileId: string; modifiedNs: string };
 }
 
 export type FileSyncAction =

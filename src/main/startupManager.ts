@@ -1,7 +1,8 @@
+import { moveFileSafely } from './safeMove';
 import { execFile as execFileCallback } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants as fsConstants, existsSync } from 'node:fs';
-import { access, mkdir, readdir, rename } from 'node:fs/promises';
+import { access, mkdir, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -400,7 +401,7 @@ export class StartupManager {
       disabledAt: new Date().toISOString(),
     });
     try {
-      await rename(entry.originalPath, cachedPath);
+      await moveFileSafely(entry.originalPath, cachedPath);
     } catch (error) {
       throw this.createStartupFolderOperationError('disable', entry.scope, error);
     }
@@ -413,7 +414,7 @@ export class StartupManager {
     }
     try {
       await mkdir(path.dirname(record.originalPath), { recursive: true });
-      await rename(record.cachedPath, record.originalPath);
+      await moveFileSafely(record.cachedPath, record.originalPath);
     } catch (error) {
       throw this.createStartupFolderOperationError('enable', record.scope, error);
     }

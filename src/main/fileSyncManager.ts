@@ -1,9 +1,11 @@
+import { moveFileSafely } from './safeMove';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, watch, type FSWatcher, type Stats } from 'node:fs';
-import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, stat, unlink, utimes, writeFile } from 'node:fs/promises';
+import { createReadStream, constants as fsConstants, existsSync, watch, type FSWatcher, type Stats } from 'node:fs';
+import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, rmdir, stat, unlink, utimes } from 'node:fs/promises';
 import path from 'node:path';
 import { app } from 'electron';
-import { isMissingFile } from './atomicFile';
+import { isMissingFile, SerialTaskQueue, writeJsonAtomically } from './atomicFile';
+import { assertEntryUnchanged, assertSafeSyncPath, identifySyncRoot, type SyncRootIdentity } from './fileSyncSafety';
 import type {
   FileSyncAction,
   FileSyncAnalyzeResult,
@@ -65,6 +67,8 @@ interface ScanResult {
   errors: Array<{ relativePath: string; message: string }>;
 }
 
+interface SyncRoots { left: SyncRootIdentity; right: SyncRootIdentity }
+
 interface StoreRunResult {
   status: FileSyncRunStatus;
   appliedCount: number;
@@ -83,10 +87,16 @@ interface AutomationRuntime {
 }
 
 export class FileSyncManager {
+  private loading: Promise<FileSyncStoreFile> | null = null;
   private cache: FileSyncStoreFile | null = null;
   private readonly automation = new Map<string, AutomationRuntime>();
   private readonly automationState = new Map<string, FileSyncAutomationState>();
   private readonly activeRuns = new Set<string>();
+  private readonly runQueue = new SerialTaskQueue();
+  private paused = false;
+  async pause(): Promise<void> { this.paused = true; this.clearAutomation(); await this.runQueue.drain(); }
+  async resume(): Promise<void> { this.paused = false; await this.refreshAutomation(); }
+  private readonly saveQueue = new SerialTaskQueue();
   private destroyed = false;
 
   constructor(private readonly options: FileSyncManagerOptions = {}) {}
@@ -96,9 +106,11 @@ export class FileSyncManager {
     await this.refreshAutomation();
   }
 
-  destroy(): void {
+  async destroy(): Promise<void> {
     this.destroyed = true;
     this.clearAutomation();
+    await this.runQueue.drain();
+    await this.saveQueue.drain();
   }
 
   async getState(): Promise<FileSyncState> {
@@ -134,6 +146,7 @@ export class FileSyncManager {
   }
 
   async updateJob(id: string, input: FileSyncJobInput): Promise<FileSyncState> {
+    if (this.activeRuns.has(id)) throw new Error('Wait for this sync job to finish before editing it.');
     const store = await this.load();
     const job = store.jobs.find((item) => item.id === id);
     if (!job) throw new Error('The selected file sync job could not be found.');
@@ -156,6 +169,7 @@ export class FileSyncManager {
   }
 
   async deleteJob(id: string): Promise<FileSyncState> {
+    if (this.activeRuns.has(id)) throw new Error('Wait for this sync job to finish before deleting it.');
     const store = await this.load();
     const nextJobs = store.jobs.filter((job) => job.id !== id);
     if (nextJobs.length === store.jobs.length) throw new Error('The selected file sync job could not be found.');
@@ -167,8 +181,17 @@ export class FileSyncManager {
   }
 
   async analyze(jobId: string): Promise<FileSyncAnalyzeResult> {
+    const { roots: _roots, ...preview } = await this.analyzeInternal(jobId);
+    return preview;
+  }
+
+  private async analyzeInternal(jobId: string): Promise<FileSyncAnalyzeResult & { roots: Partial<SyncRoots> }> {
     const job = structuredClone(await this.getJob(jobId));
     const endpoints = await validateJob(job);
+    const roots = {
+      left: endpoints.leftExists ? await identifySyncRoot(job.leftPath) : undefined,
+      right: endpoints.rightExists ? await identifySyncRoot(job.rightPath) : undefined,
+    };
 
     const [leftScan, rightScan] = await Promise.all([
       this.scanEndpoint(job.leftPath, job.filters, job.options, !endpoints.leftExists),
@@ -178,6 +201,7 @@ export class FileSyncManager {
     const snapshot = (await this.load()).syncStates?.[job.id];
     const rows = this.buildPreviewRows(job, leftScan, rightScan, snapshot);
     return {
+      roots,
       job,
       rows,
       counts: countRows(rows),
@@ -186,12 +210,22 @@ export class FileSyncManager {
   }
 
   async apply(jobId: string, trigger: FileSyncTriggerType = 'manual'): Promise<FileSyncApplyResult> {
+    if (this.paused) throw new Error('File sync is paused by the emergency stop.');
+    if (this.destroyed) throw new Error('File sync is shutting down.');
     if (this.activeRuns.has(jobId)) throw new Error('This file sync job is already running.');
     this.activeRuns.add(jobId);
+    try {
+      return await this.runQueue.run(() => this.applyInternal(jobId, trigger));
+    } finally {
+      this.activeRuns.delete(jobId);
+    }
+  }
+
+  private async applyInternal(jobId: string, trigger: FileSyncTriggerType): Promise<FileSyncApplyResult> {
     const startedAt = new Date().toISOString();
     const runId = randomUUID();
     try {
-      const preview = await this.analyze(jobId);
+      const preview = await this.analyzeInternal(jobId);
 
       if (preview.counts.conflicts > 0 || preview.counts.errors > 0) {
         throw new Error('Resolve file sync conflicts and errors before applying changes.');
@@ -202,12 +236,20 @@ export class FileSyncManager {
       await validateJob(preview.job);
       await mkdir(preview.job.leftPath, { recursive: true });
       await mkdir(preview.job.rightPath, { recursive: true });
+      const roots: SyncRoots = {
+        left: preview.roots.left ?? await identifySyncRoot(preview.job.leftPath),
+        right: preview.roots.right ?? await identifySyncRoot(preview.job.rightPath),
+      };
 
       const operations: FileSyncRunOperation[] = [];
       for (const row of preview.rows) {
+        if (this.paused) {
+          operations.push({ relativePath: '.', action: 'error', status: 'failed', message: 'Stopped between operations by the emergency stop; completed copies were retained.' });
+          break;
+        }
         // A source disappearing during a run must not become a mirror deletion.
         await assertSourcesAvailable(preview.job);
-        operations.push(await this.applyRow(preview.job, runId, row));
+        operations.push(await this.applyRow(preview.job, runId, row, roots));
       }
 
       const failedCount = operations.filter((operation) => operation.status === 'failed').length;
@@ -228,7 +270,15 @@ export class FileSyncManager {
       };
 
       await this.storeRun(preview.job.id, result);
-      if (status === 'applied') await this.storeSnapshot(preview.job);
+      if (status === 'applied') {
+        try { await this.storeSnapshot(preview.job, preview.rows, roots); }
+        catch (error) {
+          result.operations.push({ relativePath: '.', action: 'error', status: 'failed', message: `Sync baseline could not be saved; previous baseline retained. ${String(error)}` });
+          result.failedCount++;
+          result.status = result.appliedCount > 0 ? 'partial' : 'failed';
+          await this.storeRun(preview.job.id, result);
+        }
+      }
       this.emitStateChanged();
       return result;
     } finally {
@@ -236,25 +286,39 @@ export class FileSyncManager {
     }
   }
 
-  private async applyRow(job: FileSyncJob, runId: string, row: FileSyncPreviewRow): Promise<FileSyncRunOperation> {
+  private async applyRow(job: FileSyncJob, runId: string, row: FileSyncPreviewRow, roots: SyncRoots): Promise<FileSyncRunOperation> {
     try {
+      if (['skip', 'conflict', 'error', 'equal'].includes(row.action)) {
+        return { relativePath: row.relativePath, action: row.action, status: 'skipped', message: row.reason };
+      }
+      for (const side of ['left', 'right'] as const) {
+        const target = safeJoin(side === 'left' ? job.leftPath : job.rightPath, row.relativePath);
+        await assertSafeSyncPath(side === 'left' ? job.leftPath : job.rightPath, roots[side], target);
+        // Directory metadata changes as files are synchronized. Identity/path
+        // checks still apply; file versions must match the analyzed version.
+        await assertEntryUnchanged(target, row[side]);
+      }
       if (row.action === 'copy-left-to-right' || row.action === 'update-left-to-right') {
         if (!row.left) throw new Error('Missing left-side source file.');
         const targetPath = safeJoin(job.rightPath, row.relativePath);
-        await this.copyFileSafely(row.left.path, targetPath, job, runId, 'right', row.relativePath);
+        await this.copyFileSafely(row.left.path, targetPath, job, runId, 'right', row.relativePath, roots, row.left, row.right);
         return { relativePath: row.relativePath, action: row.action, status: 'applied', sourcePath: row.left.path, targetPath };
       }
 
       if (row.action === 'copy-right-to-left' || row.action === 'update-right-to-left') {
         if (!row.right) throw new Error('Missing right-side source file.');
         const targetPath = safeJoin(job.leftPath, row.relativePath);
-        await this.copyFileSafely(row.right.path, targetPath, job, runId, 'left', row.relativePath);
+        await this.copyFileSafely(row.right.path, targetPath, job, runId, 'left', row.relativePath, roots, row.right, row.left);
         return { relativePath: row.relativePath, action: row.action, status: 'applied', sourcePath: row.right.path, targetPath };
       }
 
       if (row.action === 'quarantine-left') {
         if (!row.left) throw new Error('Missing left-side file to quarantine.');
         const quarantinePath = job.options.quarantineDeletes ? await this.quarantinePath(job, runId, 'left', row.relativePath) : undefined;
+        const side = row.action.endsWith('left') ? 'left' : 'right';
+        const entry = row[side]!;
+        await assertSafeSyncPath(side === 'left' ? job.leftPath : job.rightPath, roots[side], entry.path);
+        await assertEntryUnchanged(entry.path, entry);
         if (quarantinePath) await moveFile(row.left.path, quarantinePath);
         else await removePath(row.left.path);
         return { relativePath: row.relativePath, action: row.action, status: 'applied', targetPath: row.left.path, quarantinePath };
@@ -263,6 +327,10 @@ export class FileSyncManager {
       if (row.action === 'quarantine-right') {
         if (!row.right) throw new Error('Missing right-side file to quarantine.');
         const quarantinePath = job.options.quarantineDeletes ? await this.quarantinePath(job, runId, 'right', row.relativePath) : undefined;
+        const side = row.action.endsWith('left') ? 'left' : 'right';
+        const entry = row[side]!;
+        await assertSafeSyncPath(side === 'left' ? job.leftPath : job.rightPath, roots[side], entry.path);
+        await assertEntryUnchanged(entry.path, entry);
         if (quarantinePath) await moveFile(row.right.path, quarantinePath);
         else await removePath(row.right.path);
         return { relativePath: row.relativePath, action: row.action, status: 'applied', targetPath: row.right.path, quarantinePath };
@@ -284,8 +352,13 @@ export class FileSyncManager {
         if (!row.left) throw new Error('Missing left-side folder to quarantine.');
         if (!(await isDirectoryEmpty(row.left.path))) throw new Error('Folder is no longer empty; re-run Analyze before syncing.');
         const quarantinePath = job.options.quarantineDeletes ? await this.quarantinePath(job, runId, 'left', row.relativePath) : undefined;
+        const side = row.action.endsWith('left') ? 'left' : 'right';
+        const entry = row[side]!;
+        await assertSafeSyncPath(side === 'left' ? job.leftPath : job.rightPath, roots[side], entry.path);
+        await assertEntryUnchanged(entry.path, entry);
+        if (!(await isDirectoryEmpty(entry.path))) throw new Error('Folder is no longer empty; re-run Analyze before syncing.');
         if (quarantinePath) await moveFile(row.left.path, quarantinePath);
-        else await removePath(row.left.path);
+        else await rmdir(row.left.path);
         return { relativePath: row.relativePath, action: row.action, status: 'applied', targetPath: row.left.path, quarantinePath };
       }
 
@@ -293,8 +366,13 @@ export class FileSyncManager {
         if (!row.right) throw new Error('Missing right-side folder to quarantine.');
         if (!(await isDirectoryEmpty(row.right.path))) throw new Error('Folder is no longer empty; re-run Analyze before syncing.');
         const quarantinePath = job.options.quarantineDeletes ? await this.quarantinePath(job, runId, 'right', row.relativePath) : undefined;
+        const side = row.action.endsWith('left') ? 'left' : 'right';
+        const entry = row[side]!;
+        await assertSafeSyncPath(side === 'left' ? job.leftPath : job.rightPath, roots[side], entry.path);
+        await assertEntryUnchanged(entry.path, entry);
+        if (!(await isDirectoryEmpty(entry.path))) throw new Error('Folder is no longer empty; re-run Analyze before syncing.');
         if (quarantinePath) await moveFile(row.right.path, quarantinePath);
-        else await removePath(row.right.path);
+        else await rmdir(row.right.path);
         return { relativePath: row.relativePath, action: row.action, status: 'applied', targetPath: row.right.path, quarantinePath };
       }
 
@@ -303,8 +381,8 @@ export class FileSyncManager {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         const rightConflictPath = await nextAvailablePath(safeJoin(job.rightPath, conflictCopyName(row.relativePath, 'left', timestamp)));
         const leftConflictPath = await nextAvailablePath(safeJoin(job.leftPath, conflictCopyName(row.relativePath, 'right', timestamp)));
-        await this.copyFileSafely(row.left.path, rightConflictPath, job, runId, 'right', path.relative(job.rightPath, rightConflictPath));
-        await this.copyFileSafely(row.right.path, leftConflictPath, job, runId, 'left', path.relative(job.leftPath, leftConflictPath));
+        await this.copyFileSafely(row.left.path, rightConflictPath, job, runId, 'right', path.relative(job.rightPath, rightConflictPath), roots, row.left);
+        await this.copyFileSafely(row.right.path, leftConflictPath, job, runId, 'left', path.relative(job.leftPath, leftConflictPath), roots, row.right);
         return {
           relativePath: row.relativePath,
           action: row.action,
@@ -333,14 +411,25 @@ export class FileSyncManager {
     runId: string,
     targetSide: 'left' | 'right',
     relativePath: string,
+    roots: SyncRoots,
+    sourceEntry: FileSyncEntryInfo,
+    targetEntry?: FileSyncEntryInfo,
   ): Promise<void> {
+    const sourceSide = targetSide === 'left' ? 'right' : 'left';
+    const checkPaths = async (): Promise<void> => {
+      await assertSafeSyncPath(sourceSide === 'left' ? job.leftPath : job.rightPath, roots[sourceSide], sourcePath);
+      await assertSafeSyncPath(targetSide === 'left' ? job.leftPath : job.rightPath, roots[targetSide], targetPath);
+      await assertEntryUnchanged(sourcePath, sourceEntry);
+    };
+    await checkPaths();
     await mkdir(path.dirname(targetPath), { recursive: true });
+    await checkPaths();
 
     const tempPath = path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.winutils-${randomUUID()}.tmp`);
     let backupPath: string | null = null;
     try {
       const sourceStatsBeforeCopy = await stat(sourcePath);
-      await copyFile(sourcePath, tempPath);
+      await copyFile(sourcePath, tempPath, fsConstants.COPYFILE_EXCL);
       const [sourceStatsAfterCopy, tempStats] = await Promise.all([stat(sourcePath), stat(tempPath)]);
       if (!sameFileVersion(sourceStatsBeforeCopy, sourceStatsAfterCopy)) {
         throw new Error('Source file changed while it was being copied; re-run Analyze before syncing.');
@@ -352,21 +441,38 @@ export class FileSyncManager {
         if (sourceHash !== tempHash) throw new Error('Copied file checksum verification failed.');
       }
 
+      await checkPaths();
+      await assertEntryUnchanged(targetPath, targetEntry);
       if (existsSync(targetPath)) {
         if (job.options.quarantineDeletes && job.options.keepVersions) {
           backupPath = await this.quarantinePath(job, runId, targetSide, relativePath);
+          await checkPaths();
+          await assertEntryUnchanged(targetPath, targetEntry);
           await moveFile(targetPath, backupPath);
         } else {
-          await removePath(targetPath);
+          backupPath = tempPath + '.previous';
+          await rename(targetPath, backupPath);
         }
       }
 
       await rename(tempPath, targetPath);
       await applyCopiedFileMetadata(targetPath, sourceStatsBeforeCopy);
+      if (backupPath === tempPath + '.previous') await unlink(backupPath);
     } catch (error) {
-      await unlink(tempPath).catch(() => undefined);
+      // The parent may have been replaced with a junction during copying.
+      // Never follow that replacement even when cleaning up a temporary file.
+      await assertSafeSyncPath(targetSide === 'left' ? job.leftPath : job.rightPath, roots[targetSide], tempPath)
+        .then(() => unlink(tempPath)).catch(() => undefined);
       if (backupPath && existsSync(backupPath) && !existsSync(targetPath)) {
-        await moveFile(backupPath, targetPath).catch(() => undefined);
+        try {
+          await assertSafeSyncPath(targetSide === 'left' ? job.leftPath : job.rightPath, roots[targetSide], targetPath);
+          await moveFile(backupPath, targetPath);
+        } catch (restoreError) {
+          throw new Error('Copy failed and the original could not be restored. Original retained at ' + backupPath + '. ' + String(restoreError));
+        }
+      }
+      if (backupPath && existsSync(backupPath)) {
+        throw new Error(`Copy did not complete: ${String(error)}. Original retained at ${backupPath}.`);
       }
       throw error;
     }
@@ -442,12 +548,15 @@ export class FileSyncManager {
 
       if (relativeDirectory && dirents.length === 0 && !filters.excludeEmptyFolders && matchesDirectoryFilters(relativeDirectory, filters)) {
         try {
+          const info = await lstat(directoryPath, { bigint: true });
+          if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('Folder changed type during Analyze.');
           entries.set(relativeDirectory.toLowerCase(), {
             path: directoryPath,
             relativePath: relativeDirectory,
             kind: 'directory',
             size: 0,
-            modifiedAt: (await lstat(directoryPath)).mtime.toISOString(),
+            modifiedAt: info.mtime.toISOString(),
+            version: { device: String(info.dev), fileId: String(info.ino), modifiedNs: String(info.mtimeNs) },
           });
         } catch (error) {
           errors.push({ relativePath: relativeDirectory, message: errorMessage(error, 'Unable to read folder metadata.') });
@@ -496,13 +605,15 @@ export class FileSyncManager {
   }
 
   private async readEntryInfo(filePath: string, relativePath: string, compareMode: FileSyncCompareMode): Promise<FileSyncEntryInfo> {
-    const stats = await lstat(filePath);
+    const stats = await lstat(filePath, { bigint: true });
+    if (!stats.isFile() || stats.isSymbolicLink()) throw new Error('File changed type during Analyze.');
     return {
       path: filePath,
       relativePath,
       kind: 'file',
-      size: stats.size,
+      size: Number(stats.size),
       modifiedAt: stats.mtime.toISOString(),
+      version: { device: String(stats.dev), fileId: String(stats.ino), modifiedNs: String(stats.mtimeNs) },
       hash: compareMode === 'hash' ? await hashFile(filePath) : undefined,
     };
   }
@@ -532,19 +643,31 @@ export class FileSyncManager {
     };
   }
 
-  private async storeSnapshot(job: FileSyncJob): Promise<void> {
+  private async storeSnapshot(job: FileSyncJob, approvedRows: FileSyncPreviewRow[], roots: SyncRoots): Promise<void> {
+    await assertSafeSyncPath(job.leftPath, roots.left, job.leftPath);
+    await assertSafeSyncPath(job.rightPath, roots.right, job.rightPath);
     const [leftScan, rightScan] = await Promise.all([
       this.scanEndpoint(job.leftPath, job.filters, job.options),
       this.scanEndpoint(job.rightPath, job.filters, job.options),
     ]);
 
-    if (leftScan.errors.length > 0 || rightScan.errors.length > 0) return;
+    if (leftScan.errors.length > 0 || rightScan.errors.length > 0) throw new Error('The final scan reported errors.');
 
     const entries: FileSyncJobSnapshot['entries'] = {};
+    const approved = new Map(approvedRows.map(row => [row.relativePath.toLowerCase(), row]));
     const keys = Array.from(new Set([...leftScan.entries.keys(), ...rightScan.entries.keys()]));
     for (const key of keys) {
       const left = leftScan.entries.get(key);
       const right = rightScan.entries.get(key);
+      const row = approved.get(key);
+      if (!row || !left || !right || !entriesEqual(left, right, job.options.compareMode)) continue;
+      // A rescan is observation, not proof that an unrelated external change
+      // was synchronized. Retain only approved, still-identical source versions.
+      const originals = row.action.endsWith('left-to-right') ? [row.left]
+        : row.action.endsWith('right-to-left') ? [row.right] : [row.left, row.right];
+      try {
+        for (const original of originals) if (original) await assertEntryUnchanged(original.path, original);
+      } catch { continue; }
       entries[key] = {
         relativePath: left?.relativePath ?? right?.relativePath ?? key,
         left: left ? snapshotEntry(left) : undefined,
@@ -565,7 +688,7 @@ export class FileSyncManager {
   }
 
   private async refreshAutomation(): Promise<void> {
-    if (this.destroyed) return;
+    if (this.destroyed || this.paused) return;
 
     const store = await this.load();
     this.clearAutomation();
@@ -781,6 +904,12 @@ export class FileSyncManager {
   }
 
   private async load(): Promise<FileSyncStoreFile> {
+    if (this.cache) return this.cache!;
+    if (!this.loading) this.loading = this.loadInternal().finally(() => { this.loading = null; });
+    return this.loading;
+  }
+
+  private async loadInternal(): Promise<FileSyncStoreFile> {
     if (this.cache) return this.cache;
     await mkdir(path.dirname(this.storePath), { recursive: true });
 
@@ -812,15 +941,8 @@ export class FileSyncManager {
 
   private async save(store: FileSyncStoreFile): Promise<void> {
     this.cache = store;
-    await mkdir(path.dirname(this.storePath), { recursive: true });
-    const tempPath = `${this.storePath}.${process.pid}.${randomUUID()}.tmp`;
-    try {
-      await writeFile(tempPath, JSON.stringify(store, null, 2), 'utf8');
-      await rename(tempPath, this.storePath);
-    } catch (error) {
-      await unlink(tempPath).catch(() => undefined);
-      throw error;
-    }
+    const snapshot = structuredClone(store);
+    await this.saveQueue.run(() => writeJsonAtomically(this.storePath, snapshot));
   }
 }
 
@@ -833,6 +955,13 @@ async function validateJob(job: FileSyncJob): Promise<{ leftExists: boolean; rig
   const [left, right] = await Promise.all([resolveEndpoint(job.leftPath), resolveEndpoint(job.rightPath)]);
   const leftExists = left.exists;
   const rightExists = right.exists;
+  const protectedRoot = await realpath(app.getPath('userData'));
+  for (const endpoint of [left, right]) {
+    if (normalizePathKey(endpoint.canonicalPath) === normalizePathKey(protectedRoot)
+      || isNestedPath(endpoint.canonicalPath, protectedRoot) || isNestedPath(protectedRoot, endpoint.canonicalPath)) {
+      throw new Error('Sync folders cannot contain or overlap WinUtils application data and recovery files.');
+    }
+  }
   if (normalizePathKey(left.canonicalPath) === normalizePathKey(right.canonicalPath)
     || isNestedPath(left.canonicalPath, right.canonicalPath)
     || isNestedPath(right.canonicalPath, left.canonicalPath)) {
@@ -1215,12 +1344,13 @@ function escapeRegex(value: string): string {
 }
 
 async function hashFile(filePath: string): Promise<string> {
-  return createHash('sha256').update(await readFile(filePath)).digest('hex');
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(filePath)) hash.update(chunk);
+  return hash.digest('hex');
 }
 
 async function moveFile(sourcePath: string, targetPath: string): Promise<void> {
-  await mkdir(path.dirname(targetPath), { recursive: true });
-  await rename(sourcePath, targetPath);
+  await moveFileSafely(sourcePath, targetPath);
 }
 
 async function removePath(targetPath: string): Promise<void> {
