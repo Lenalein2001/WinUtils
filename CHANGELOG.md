@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Added automation activity and emergency stop/resume controls, durable hidden-window recovery, and a restore-all control.
+- Added Windows CI, regression tests, and native DLL rebuilds before packaging.
+- Added centralized action hotkeys and compact Clipboard/Command Palette popups.
+- Added reusable system, application, process, audio-session, window, clipboard, file, notification, PowerShell, and Explorer actions.
+- Added direct Command Palette commands, advanced macro control flow, a multi-monitor Window Manager with saved layouts, persisted Automation Triggers, and configurable Explorer context-menu actions.
+
+### Fixed
+
+- Fixed native hook ownership and acknowledged teardown, including cleanup after the worker exits.
+- Fixed cross-volume moves retaining verified recovery copies and preserving file timestamps.
+- Fixed queued automation skipping cooldown, overlapping file polls, and malformed optional-module data preventing core tools from opening.
+- Restricted privileged IPC to trusted application documents and moved regex evaluation into bounded workers.
+- Fixed Focus Audio restoration losing saved volume after failures or output-device changes, and unmuting apps muted by the user.
+- Focus Audio now retries failed restoration, waits for worker cleanup on exit, preserves manual mixer changes, and displays audio errors.
+- Fixed native window and reusable PowerShell actions passing arguments as source text instead of securely separated values.
+- Added bounded macro control flow and cancellation-aware waits so repeating or toggle macros can stop safely.
+
 ## v0.2.0 - 2026-08-23
 
 This release adds Focus Audio volume ducking and selectable app themes, and rebuilds the interface on a consistent layout system.

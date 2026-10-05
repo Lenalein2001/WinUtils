@@ -1,6 +1,6 @@
 # WinUtils
 
-WinUtils is a Windows desktop utility app built with Electron, React, TypeScript, and Vite. It brings startup management, process-aware macros, focus-based audio muting, beta always-active app focus rules, clipboard history, safe file sync, and tray/window behavior controls into one desktop app.
+WinUtils is a Windows desktop utility app built with Electron, React, TypeScript, and Vite. It brings startup management, centralized hotkeys, process-aware macros, focus-based audio muting, beta always-active app focus rules, clipboard history, safe file sync, and tray/window behavior controls into one desktop app.
 
 ## Desktop App
 - WinUtils runs as an Electron desktop window on Windows.
@@ -17,12 +17,18 @@ WinUtils is a Windows desktop utility app built with Electron, React, TypeScript
   - User Startup folder
   - Common Startup folder
 - Disable autostart entries, keep them visible from cache, and restore them later
-- Macros with folders, profiles, recorded keyboard/mouse actions, process-aware automatic profile switching, a Helldivers 2 stratagem preset library (including full-pack import with configurable modifier key behavior), and an optional in-app keyboard preview for bound hotkeys
+- Macros with folders, profiles, recorded input, reusable WinUtils actions, nested If/Else and bounded Repeat groups, early Stop actions, process-aware profile switching, Helldivers 2 presets, and an optional bound-key preview
+- Central Hotkey Manager for editing feature/macro shortcuts, binding parameterless reusable actions, detecting conflicts, and reporting Windows registration failures
+- Shared Action Engine for application, process, audio-session, window, clipboard, file, URL, notification, PowerShell, Explorer, and active-profile macro actions
+- Compact Ctrl+Space Command Palette with searchable actions, typed parameter forms, dangerous-action warnings, and direct commands such as `mute discord`, `volume spotify 40`, and `window discord left monitor 2`
+- Window Manager with live top-level window controls, exact positioning, multi-monitor presets, and persistent monitor-relative layouts that are also exposed as reusable actions
+- Automation Triggers for application lifecycle, focused windows, clipboard changes, file changes, monitor/network connections, Windows unlock, schedules, and WinUtils startup, with cooldown, concurrency, and run diagnostics
+- Configurable Windows Explorer submenu for copying paths, copying SHA-256 hashes, and opening PowerShell in a folder, registered reversibly under the current user only
 - Focus Audio with whitelist/blacklist modes for muting unfocused apps by audio session/process
 - Always Active (Beta) rules for preventing window deactivation, throttled game keepalive signals, active-window signals, or focus-locking selected running apps
 - Batch Renamer with drag-and-drop loading, ordered rename rules, live validation, conflict preview, reversible apply, and undo history
 - Regex Lab with colored token suggestions, live match checks, capture previews, and direct export into Batch Renamer regex rules
-- Clipboard Manager with local searchable history, pins, smart categories, image capture, Windows OCR, Windows history delete sync, and quick-access hotkeys
+- Clipboard Manager with local searchable history, pins, smart categories, image capture, Windows OCR, Windows history delete sync, and a compact Win+V-style quick-access popup
 - File Sync with local folder jobs, GoodSync-style integrated left/right folder selectors, auto-analyzing tree previews, direct include/exclude filter actions, one-way and two-way sync, empty-folder handling, guarded automation triggers, verified copies, conflict handling, metadata-preserving copies, and quarantine for replaced/deleted files
 - Settings for launch at login, start minimized, minimize to tray, and close to tray
 - Secure IPC bridge between renderer and Electron main process
@@ -53,7 +59,7 @@ Start as a built desktop app (without packaging):
 npm run start:desktop
 ```
 
-Run file-safety regression tests (isolated temporary files; no real startup changes):
+Build and run safety regression tests (isolated temporary files and a hidden Electron window; no real startup changes):
 
 ```bash
 npm test
@@ -95,7 +101,13 @@ npm run package:portable
 - The cache is stored in Electron's `app.getPath('userData')` location for the installed app.
 - Always Active is best-effort because Windows only has one true foreground window. Prevent Deactivation uses a native window hook and may be blocked by protected, elevated, fullscreen, or anti-cheat apps.
 - Clipboard Manager stores history locally under the app user data directory. Deleting matching entries also removes them from Windows clipboard history when available. Image OCR uses Windows built-in OCR and does not upload clipboard contents.
+- Automation trigger and saved-window-layout definitions are stored locally under the app user data directory. Clipboard trigger checks remain local.
+- Explorer integration writes only WinUtils-owned keys below `HKCU\Software\Classes`; the Context Menu module can remove them again without administrator access.
 - File Sync starts with local folder-to-folder jobs only. Always review Analyze results first; Sync rejects nested endpoints, uses temporary verified copies, preserves copied file timestamps, syncs true empty folders, and moves replaced/deleted files into the WinUtils quarantine folder instead of hard-deleting them. Automation triggers require one successful manual sync before they can apply changes.
 - Packaging generates installer and portable EXE artifacts in `release/`.
+- Packaging rebuilds the native hook and application before creating artifacts; `npm run native:build`, `npm run typecheck`, and `npm test` are available for local validation. Windows CI validates and creates unsigned artifacts without publishing them.
+- Emergency stop pauses automation, cancels cooperating actions, stops macros/file sync between operations, and attempts owned audio/window restoration. Resume enables actions/file sync; audio and Always Active require explicit re-enabling.
+- Hidden-window recovery persists window identities before hiding and retries restoration on startup. The Windows module also provides Restore all hidden windows; failed restorations retain recovery records.
+- Current review status and remaining work are tracked in [PROJECT_REVIEW.md](PROJECT_REVIEW.md). Clipboard history remains plaintext local storage, and forced audio-worker termination can lose in-memory restoration baselines.
 - Auto-update support uses the public GitHub release feed. Publish `latest.yml`, the installer EXE, and its blockmap with each installer release; portable users are shown a download link for the new portable EXE.
 - Release EXEs are published as GitHub release assets and are not tracked in Git.
