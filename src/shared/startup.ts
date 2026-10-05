@@ -2,6 +2,11 @@ export type StartupEntrySource = 'registry' | 'startup-folder';
 export type StartupEntryScope = 'current-user' | 'all-users';
 export type StartupEntryState = 'enabled' | 'disabled';
 
+export type StartupMutation =
+  | { action: 'enable' | 'disable' | 'delete'; id: string }
+  | { action: 'add'; input: { name: string; executablePath: string; arguments?: string; scope: StartupEntryScope } }
+  | { action: 'update'; input: { id: string; executablePath: string; arguments?: string } };
+
 export interface StartupEntry {
   id: string;
   name: string;

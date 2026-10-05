@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
-import type { StartupEntry } from '../shared/startup';
+import type { StartupEntry, StartupMutation } from '../shared/startup';
 import type { Macro, MacroAction, MacroFolder, MacroProfileExportResult, MacroRuntimeStats, MacroState } from '../shared/macro';
 import type { FocusAudioConfig, FocusAudioDuckRule, FocusAudioState } from '../shared/focusAudio';
 import type { AlwaysActiveMode, AlwaysActiveRuleUpdate, AlwaysActiveState } from '../shared/alwaysActive';
@@ -97,7 +97,7 @@ const api = {
       ipcRenderer.invoke('startup-apps:update', input),
     pickExecutable: (): Promise<string | null> =>
       ipcRenderer.invoke('startup-apps:pickExecutable'),
-    restartAsAdmin: (): Promise<void> => ipcRenderer.invoke('startup-apps:restartAsAdmin'),
+    retryWithPermission: (request: StartupMutation): Promise<StartupEntry[]> => ipcRenderer.invoke('startup-apps:retryWithPermission', request),
   },
   focusAudio: {
     getState: (): Promise<FocusAudioState> => ipcRenderer.invoke('focusAudio:getState'),

@@ -66,6 +66,7 @@ export class StartupCacheStore {
   }
 
   async upsertDisabledEntry(record: DisabledStartupRecord): Promise<void> {
+    if (!isDisabledRecord(record)) throw new Error('Invalid startup recovery record.');
     await this.mutations.run(async () => {
       const cache = await this.read();
       const existingIndex = cache.disabledEntries.findIndex((entry) => entry.id === record.id);
@@ -114,8 +115,11 @@ function isDisabledRecord(value: unknown): value is DisabledStartupRecord {
     || !['current-user', 'all-users'].includes(String(record.scope))) return false;
   if (record.kind === 'registry') {
     return ['HKCU', 'HKLM'].includes(String(record.registryHive))
-      && ['registryPath', 'valueName', 'regType'].every(key => typeof record[key] === 'string');
+      && ['registryPath', 'valueName', 'regType'].every(key => typeof record[key] === 'string')
+      && /^Software\\(?:WOW6432Node\\)?Microsoft\\Windows\\CurrentVersion\\Run$/i.test(String(record.registryPath));
   }
   return record.kind === 'startup-folder'
-    && typeof record.originalPath === 'string' && typeof record.cachedPath === 'string';
+    && typeof record.originalPath === 'string' && typeof record.cachedPath === 'string'
+    && path.isAbsolute(record.originalPath)
+    && path.dirname(path.resolve(record.cachedPath)).toLowerCase() === path.join(app.getPath('userData'), 'startup-manager', DISABLED_STARTUP_DIR).toLowerCase();
 }

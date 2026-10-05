@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 
-import type { StartupEntry } from '../../shared/startup';
+import type { StartupEntry, StartupMutation } from '../../shared/startup';
 import type { Macro, MacroAction, MacroFolder, MacroState } from '../../shared/macro';
 import type { MacroProfileExportResult, MacroRuntimeStats } from '../../shared/macro';
 import type { FocusAudioConfig, FocusAudioDuckRule, FocusAudioState } from '../../shared/focusAudio';
@@ -75,7 +75,7 @@ declare global {
         add: (input: { name: string; executablePath: string; arguments?: string; scope: 'current-user' | 'all-users' }) => Promise<StartupEntry[]>;
         update: (input: { id: string; executablePath: string; arguments?: string }) => Promise<StartupEntry[]>;
         pickExecutable: () => Promise<string | null>;
-        restartAsAdmin: () => Promise<void>;
+        retryWithPermission: (request: StartupMutation) => Promise<StartupEntry[]>;
       };
       focusAudio: {
         getState: () => Promise<FocusAudioState>;

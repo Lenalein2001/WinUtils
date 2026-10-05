@@ -1,7 +1,7 @@
 import { AutomationSafetyPanel } from './AutomationSafetyPanel';
 ﻿import type { ReactElement } from 'react';
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
-import type { StartupEntry } from '../../shared/startup';
+import type { StartupMutation, StartupEntry } from '../../shared/startup';
 import type { AppSettings, AppTheme } from '../../shared/settings';
 import type { RegexRenamerExport } from '../../shared/regexLab';
 const AlwaysActiveTab = lazy(() => import('./AlwaysActiveTab').then(module => ({ default: module.AlwaysActiveTab })));
@@ -162,7 +162,7 @@ function App(): ReactElement {
   const [savingEditId, setSavingEditId] = useState<string | null>(null);
   const [appSettings, setAppSettings] = useState<AppSettings | null>(null);
   const [settingsBusy, setSettingsBusy] = useState(false);
-  const [adminPrompt, setAdminPrompt] = useState<{ message: string } | null>(null);
+  const [adminPrompt, setAdminPrompt] = useState<{ message: string; request: StartupMutation } | null>(null);
   const [adminRelaunching, setAdminRelaunching] = useState(false);
   const [renamerRegexImport, setRenamerRegexImport] = useState<RegexRenamerExport | null>(null);
 
@@ -238,25 +238,30 @@ function App(): ReactElement {
     }
   };
 
-  const handleStartupError = (caughtError: unknown, fallback: string): void => {
+  const handleStartupError = (caughtError: unknown, fallback: string, request: StartupMutation): void => {
     const message = getErrorMessage(caughtError, fallback);
 
     if (/administrator permission is required/i.test(message)) {
-      setAdminPrompt({ message });
+      setAdminPrompt({ message, request });
       return;
     }
 
     setError(message);
   };
 
-  const handleRestartAsAdmin = async (): Promise<void> => {
+  const handleApproveStartupPermission = async (): Promise<void> => {
     setAdminRelaunching(true);
     setError(null);
 
     try {
-      await window.winUtils.startupApps.restartAsAdmin();
+      if (!adminPrompt) return;
+      setEntries(await window.winUtils.startupApps.retryWithPermission(adminPrompt.request));
+      if (adminPrompt.request.action === 'add') { setNewName(''); setNewExecutablePath(''); setNewArguments(''); }
+      if (adminPrompt.request.action === 'update') cancelEditingEntry();
+      setAdminPrompt(null);
+      setAdminRelaunching(false);
     } catch (caughtError) {
-      setError(getErrorMessage(caughtError, 'Unable to restart WinUtils as administrator.'));
+      setError(getErrorMessage(caughtError, 'Unable to complete the startup operation.'));
       setAdminRelaunching(false);
       setAdminPrompt(null);
     }
@@ -274,7 +279,7 @@ function App(): ReactElement {
 
       setEntries(updatedEntries);
     } catch (caughtError) {
-      handleStartupError(caughtError, 'Unable to update the selected startup app.');
+      handleStartupError(caughtError, 'Unable to update the selected startup app.', { action: entry.state === 'enabled' ? 'disable' : 'enable', id: entry.id });
     } finally {
       setBusyId(null);
     }
@@ -292,7 +297,7 @@ function App(): ReactElement {
 
       setEntries(updatedEntries);
     } catch (caughtError) {
-      handleStartupError(caughtError, 'Unable to delete the selected startup app.');
+      handleStartupError(caughtError, 'Unable to delete the selected startup app.', { action: entry.state === 'enabled' ? 'disable' : 'delete', id: entry.id });
     } finally {
       setBusyId(null);
     }
@@ -315,7 +320,7 @@ function App(): ReactElement {
       setNewArguments('');
       setNewScope('current-user');
     } catch (caughtError) {
-      handleStartupError(caughtError, 'Unable to add the startup entry.');
+      handleStartupError(caughtError, 'Unable to add the startup entry.', { action: 'add', input: { name: newName, executablePath: newExecutablePath, arguments: newArguments, scope: newScope } });
     } finally {
       setAddingEntry(false);
     }
@@ -357,7 +362,7 @@ function App(): ReactElement {
       setEntries(updatedEntries);
       cancelEditingEntry();
     } catch (caughtError) {
-      handleStartupError(caughtError, 'Unable to update this startup entry.');
+      handleStartupError(caughtError, 'Unable to update this startup entry.', { action: 'update', input: { id: entry.id, executablePath: editExecutablePath, arguments: editArguments } });
     } finally {
       setSavingEditId(null);
     }
@@ -715,15 +720,15 @@ function App(): ReactElement {
             <div className="admin-dialog-mark" aria-hidden="true">!</div>
             <div className="admin-dialog-body">
               <p className="section-kicker">Elevated permission</p>
-              <h2 id="admin-dialog-title">Restart as administrator?</h2>
+              <h2 id="admin-dialog-title">Allow this startup change?</h2>
               <p>{adminPrompt.message}</p>
-              <p>WinUtils needs elevated permission for this startup entry. After the restart, repeat the action from Startup Apps.</p>
+              <p>Windows will ask permission for a helper that changes only this startup entry. WinUtils and its automations keep running with normal permissions.</p>
               <div className="admin-dialog-actions">
-                <button className="ghost-button" type="button" disabled={adminRelaunching} onClick={() => setAdminPrompt(null)} title="Keep WinUtils running normally and cancel the administrator restart.">
+                <button className="ghost-button" type="button" disabled={adminRelaunching} onClick={() => setAdminPrompt(null)} title="Cancel the requested startup change.">
                   Cancel
                 </button>
-                <button className="toggle-button" type="button" disabled={adminRelaunching} onClick={() => void handleRestartAsAdmin()} title="Restart WinUtils with administrator permission so all-users startup entries can be changed.">
-                  {adminRelaunching ? 'Restarting...' : 'Restart as Administrator'}
+                <button className="toggle-button" type="button" disabled={adminRelaunching} onClick={() => void handleApproveStartupPermission()} title="Ask Windows to allow this single startup operation.">
+                  {adminRelaunching ? 'Applying...' : 'Allow startup change'}
                 </button>
               </div>
             </div>

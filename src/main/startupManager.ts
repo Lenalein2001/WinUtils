@@ -1,4 +1,6 @@
 import { moveFileSafely } from './safeMove';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { elevatedStartupFileMove, elevatedStartupRegistry } from './startupPrivilege';
 import { execFile as execFileCallback } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants as fsConstants, existsSync } from 'node:fs';
@@ -12,6 +14,7 @@ import type {
   DisabledStartupRecord,
   StartupEntry,
   StartupEntryScope,
+  StartupMutation,
 } from '../shared/startup';
 import { StartupCacheStore } from './cacheStore';
 import { SerialTaskQueue } from './atomicFile';
@@ -66,7 +69,37 @@ export class AdminRequiredError extends Error {
 
 export class StartupManager {
   private readonly mutations = new SerialTaskQueue();
+  private readonly privileged = new AsyncLocalStorage<boolean>();
   constructor(private readonly cacheStore: StartupCacheStore) {}
+
+  async retryWithPermission(request: StartupMutation): Promise<StartupEntry[]> {
+    if (!request || typeof request !== 'object' || !['enable', 'disable', 'delete', 'add', 'update'].includes(request.action)) throw new Error('Invalid startup operation.');
+    return this.privileged.run(true, async () => {
+      switch (request.action) {
+        case 'add': return this.addEntry(request.input);
+        case 'update': return this.updateEntry(request.input);
+        case 'enable': return this.enableEntry(request.id);
+        case 'disable': return this.disableEntry(request.id);
+        case 'delete': return this.deleteEntry(request.id);
+      }
+    });
+  }
+
+  private async mutateRegistry(args: string[]): Promise<void> {
+    try { await execFile('reg', args, { timeout: 30000, windowsHide: true, maxBuffer: 1024 * 1024 }); }
+    catch (error) {
+      if (!this.privileged.getStore() || !this.isAccessDeniedMessage(this.extractErrorMessage(error))) throw error;
+      await elevatedStartupRegistry(args);
+    }
+  }
+
+  private async moveStartupFile(source: string, target: string, scope: StartupEntryScope): Promise<void> {
+    try { await moveFileSafely(source, target); }
+    catch (error) {
+      if (!this.privileged.getStore() || scope !== 'all-users') throw error;
+      await elevatedStartupFileMove(source, target);
+    }
+  }
 
   async addEntry(input: {
     name: string;
@@ -78,6 +111,8 @@ export class StartupManager {
   }
 
   private async addEntryInternal(input: Parameters<StartupManager['addEntry']>[0]): Promise<StartupEntry[]> {
+    if (!input || typeof input.name !== 'string' || typeof input.executablePath !== 'string'
+      || !['current-user', 'all-users'].includes(input.scope) || (input.arguments !== undefined && typeof input.arguments !== 'string')) throw new Error('Invalid startup entry.');
     const name = input.name.trim();
     const executablePath = input.executablePath.trim();
     const args = (input.arguments ?? '').trim();
@@ -95,7 +130,7 @@ export class StartupManager {
     const command = this.composeCommand(executablePath, args);
 
     try {
-      await execFile('reg', ['add', registryKey, '/v', name, '/t', 'REG_SZ', '/d', command, '/f']);
+      await this.mutateRegistry(['add', registryKey, '/v', name, '/t', 'REG_SZ', '/d', command, '/f']);
     } catch (error) {
       throw this.createRegistryOperationError('add', location.hive, error);
     }
@@ -112,6 +147,7 @@ export class StartupManager {
   }
 
   private async updateEntryInternal(input: Parameters<StartupManager['updateEntry']>[0]): Promise<StartupEntry[]> {
+    if (!input || typeof input.id !== 'string' || typeof input.executablePath !== 'string' || (input.arguments !== undefined && typeof input.arguments !== 'string')) throw new Error('Invalid startup update.');
     const executablePath = input.executablePath.trim();
     const args = (input.arguments ?? '').trim();
 
@@ -127,7 +163,7 @@ export class StartupManager {
       const registryKey = `${registryEntry.registryHive}\\${registryEntry.registryPath}`;
 
       try {
-        await execFile('reg', ['add', registryKey, '/v', registryEntry.valueName, '/t', registryEntry.regType, '/d', command, '/f']);
+        await this.mutateRegistry(['add', registryKey, '/v', registryEntry.valueName, '/t', registryEntry.regType, '/d', command, '/f']);
       } catch (error) {
         throw this.createRegistryOperationError('update', registryEntry.registryHive, error);
       }
@@ -359,7 +395,7 @@ export class StartupManager {
       disabledAt: new Date().toISOString(),
     });
     try {
-      await execFile('reg', ['delete', registryKey, '/v', entry.valueName, '/f']);
+      await this.mutateRegistry(['delete', registryKey, '/v', entry.valueName, '/f']);
     } catch (error) {
       // Keep the durable restore record even if Windows rejects the mutation.
       throw this.createRegistryOperationError('disable', entry.registryHive, error);
@@ -374,7 +410,7 @@ export class StartupManager {
       throw new Error('A different startup value already exists. The restore record has been preserved.');
     }
     try {
-      await execFile('reg', ['add', registryKey, '/v', record.valueName, '/t', record.regType, '/d', record.command, '/f']);
+      await this.mutateRegistry(['add', registryKey, '/v', record.valueName, '/t', record.regType, '/d', record.command, '/f']);
     } catch (error) {
       throw this.createRegistryOperationError('enable', record.registryHive, error);
     }
@@ -386,7 +422,7 @@ export class StartupManager {
 
     const cacheFileName = `${entry.id}${path.extname(entry.originalPath)}`;
     const cachedPath = path.join(disabledItemsDir, cacheFileName);
-    if (existsSync(cachedPath)) throw new Error('A cached startup file already exists; refusing to replace it.');
+    if (existsSync(cachedPath) && !this.privileged.getStore()) throw new Error('A cached startup file already exists; refusing to replace it.');
     await this.cacheStore.upsertDisabledEntry({
       kind: 'startup-folder',
       id: entry.id,
@@ -401,7 +437,7 @@ export class StartupManager {
       disabledAt: new Date().toISOString(),
     });
     try {
-      await moveFileSafely(entry.originalPath, cachedPath);
+      await this.moveStartupFile(entry.originalPath, cachedPath, entry.scope);
     } catch (error) {
       throw this.createStartupFolderOperationError('disable', entry.scope, error);
     }
@@ -409,12 +445,12 @@ export class StartupManager {
 
   private async enableStartupFolderEntry(record: DisabledStartupFolderRecord): Promise<void> {
     await access(record.cachedPath, fsConstants.F_OK);
-    if (existsSync(record.originalPath)) {
+    if (existsSync(record.originalPath) && !this.privileged.getStore()) {
       throw new Error('The original startup path already exists. The cached file has been preserved.');
     }
     try {
       await mkdir(path.dirname(record.originalPath), { recursive: true });
-      await moveFileSafely(record.cachedPath, record.originalPath);
+      await this.moveStartupFile(record.cachedPath, record.originalPath, record.scope);
     } catch (error) {
       throw this.createStartupFolderOperationError('enable', record.scope, error);
     }

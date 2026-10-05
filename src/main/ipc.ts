@@ -1,10 +1,9 @@
 import { handleTrustedIpc } from './ipcSecurity';
-import { spawn } from 'node:child_process';
-import { app, dialog } from 'electron';
-import type { StartupEntry } from '../shared/startup';
+import { dialog } from 'electron';
+import type { StartupEntry, StartupMutation } from '../shared/startup';
 import { AdminRequiredError, StartupManager } from './startupManager';
 
-export function registerIpcHandlers(startupManager: StartupManager, prepareForAdminRelaunch: () => void): void {
+export function registerIpcHandlers(startupManager: StartupManager): void {
   handleTrustedIpc('startup-apps:list', async () => startupManager.listEntries());
   handleTrustedIpc('startup-apps:disable', async (event, id: string) =>
     handleStartupMutation(() => startupManager.disableEntry(id)));
@@ -22,7 +21,7 @@ export function registerIpcHandlers(startupManager: StartupManager, prepareForAd
     async (event, input: { id: string; executablePath: string; arguments?: string }) =>
       handleStartupMutation(() => startupManager.updateEntry(input)),
   );
-  handleTrustedIpc('startup-apps:restartAsAdmin', () => restartAsAdmin(prepareForAdminRelaunch));
+  handleTrustedIpc('startup-apps:retryWithPermission', (_event, request: StartupMutation) => startupManager.retryWithPermission(request));
   handleTrustedIpc('startup-apps:pickExecutable', async () => {
     const result = await dialog.showOpenDialog({
       properties: ['openFile'],
@@ -52,68 +51,4 @@ async function handleStartupMutation(
 
     throw error;
   }
-}
-
-async function restartAsAdmin(prepareForAdminRelaunch: () => void): Promise<void> {
-  app.releaseSingleInstanceLock();
-
-  try {
-    await startElevatedRelaunchHelper();
-  } catch (error) {
-    app.requestSingleInstanceLock();
-    throw error;
-  }
-
-  prepareForAdminRelaunch();
-  app.quit();
-}
-
-function startElevatedRelaunchHelper(): Promise<void> {
-  const script = buildElevatedRelaunchScript();
-  const encodedScript = Buffer.from(script, 'utf16le').toString('base64');
-
-  return new Promise((resolve, reject) => {
-    const child = spawn('powershell.exe', [
-      '-NoProfile',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-WindowStyle',
-      'Hidden',
-      '-EncodedCommand',
-      encodedScript,
-    ], {
-      stdio: ['ignore', 'ignore', 'pipe'],
-      windowsHide: true,
-    });
-
-    let errorOutput = '';
-
-    child.stderr?.on('data', (chunk: Buffer) => {
-      errorOutput += chunk.toString('utf8');
-    });
-
-    child.on('error', (error) => reject(error));
-    child.on('close', (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-
-      reject(new Error(errorOutput.trim() || 'Windows did not start the administrator relaunch.'));
-    });
-  });
-}
-
-function buildElevatedRelaunchScript(): string {
-  const args = app.isPackaged ? [] : [app.getAppPath()];
-  const argumentList = args.length
-    ? ` -ArgumentList @(${args.map(quotePowerShellString).join(', ')})`
-    : '';
-  const workingDirectory = ` -WorkingDirectory ${quotePowerShellString(process.cwd())}`;
-
-  return `$ErrorActionPreference = 'Stop'; Start-Process -FilePath ${quotePowerShellString(process.execPath)}${workingDirectory}${argumentList} -Verb RunAs`;
-}
-
-function quotePowerShellString(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`;
 }
