@@ -197,3 +197,14 @@ export interface FileSyncStoreFile {
   recentRuns: FileSyncApplyResult[];
   syncStates?: Record<string, FileSyncJobSnapshot>;
 }
+
+export interface FileRecoveryItem {
+  id: string;
+  runId: string;
+  jobName: string;
+  originalPath: string;
+  createdAt: string;
+  sizeBytes: number;
+  complete: boolean;
+  collision: boolean;
+}

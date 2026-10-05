@@ -9,7 +9,7 @@ import type { AppSettings } from '../../shared/settings';
 import type { RenameApplyResult, RenamePreview, RenameRule, RenameTransaction, RenameUndoResult, RenamerItem, RenamerLoadOptions, RenamerLoadPathsInput, RenamerPreviewInput } from '../../shared/renamer';
 import type { AppUpdateInfo, UpdateState } from '../../shared/updater';
 import type { ClipboardClearMode, ClipboardQuery, ClipboardSettings, ClipboardState } from '../../shared/clipboard';
-import type { FileSyncAnalyzeResult, FileSyncApplyResult, FileSyncJobInput, FileSyncState } from '../../shared/fileSync';
+import type { FileRecoveryItem, FileSyncAnalyzeResult, FileSyncApplyResult, FileSyncJobInput, FileSyncState } from '../../shared/fileSync';
 import type { AutomationActivity, AutomationActionDefinition, AutomationActionRequest, AutomationActionResult } from '../../shared/actions';
 import type { HotkeyActionBindingInput, HotkeyState, HotkeyUpdateInput, HotkeyUpdateResult } from '../../shared/hotkeys';
 import type {
@@ -144,6 +144,9 @@ declare global {
         getDroppedPath: (file: File) => string;
       };
       fileSync: {
+        listRecovery: () => Promise<FileRecoveryItem[]>;
+        restoreRecovery: (id: string) => Promise<void>;
+        purgeRecovery: (id: string) => Promise<void>;
         getState: () => Promise<FileSyncState>;
         createJob: (input?: FileSyncJobInput) => Promise<FileSyncState>;
         updateJob: (id: string, input: FileSyncJobInput) => Promise<FileSyncState>;

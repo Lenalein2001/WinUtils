@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
+import { FileRecoveryPanel } from './FileRecoveryPanel';
 import type {
   FileSyncAnalyzeResult,
   FileSyncApplyResult,
@@ -285,6 +286,7 @@ export function FileSyncTab(): ReactElement {
       </aside>
 
       <section className="file-sync-main">
+        <FileRecoveryPanel />
         {error ? <div className="error-banner">{error}</div> : null}
         {message ? <div className="success-banner">{message}</div> : null}
 

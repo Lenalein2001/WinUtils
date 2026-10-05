@@ -1,7 +1,10 @@
 import { moveFileSafely } from './safeMove';
+import { FileRecovery } from './fileRecovery';
+import { validateFileSyncInput } from './fileSyncValidation';
+import { handleFileOperation, type HandleGuard, type HandleRootGuard } from './handleFileOperations';
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, constants as fsConstants, existsSync, watch, type FSWatcher, type Stats } from 'node:fs';
-import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, rmdir, stat, unlink, utimes } from 'node:fs/promises';
+import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, rmdir, stat, unlink, utimes } from 'node:fs/promises';
 import path from 'node:path';
 import { app } from 'electron';
 import { isMissingFile, SerialTaskQueue, writeJsonAtomically } from './atomicFile';
@@ -101,6 +104,11 @@ export class FileSyncManager {
 
   constructor(private readonly options: FileSyncManagerOptions = {}) {}
 
+  private get recovery(): FileRecovery { return new FileRecovery(this.quarantineRoot); }
+  listRecovery(): Promise<import('../shared/fileSync').FileRecoveryItem[]> { return this.runQueue.run(() => this.recovery.list()); }
+  restoreRecovery(id: string): Promise<void> { return this.runQueue.run(() => this.recovery.restore(id)); }
+  purgeRecovery(id: string): Promise<void> { return this.runQueue.run(() => this.recovery.purge(id)); }
+
   async init(): Promise<void> {
     await this.load();
     await this.refreshAutomation();
@@ -123,61 +131,74 @@ export class FileSyncManager {
   }
 
   async createJob(input: FileSyncJobInput = {}): Promise<FileSyncState> {
-    const store = await this.load();
-    const now = new Date().toISOString();
-    const job: FileSyncJob = {
-      id: randomUUID(),
-      name: input.name?.trim() || 'New file sync job',
-      leftPath: input.leftPath?.trim() ?? '',
-      rightPath: input.rightPath?.trim() ?? '',
-      mode: input.mode ?? 'left-to-right-update',
-      filters: normalizeFilters(input.filters),
-      options: normalizeOptions(input.options),
-      triggers: normalizeTriggers(input.triggers),
-      createdAt: now,
-      updatedAt: now,
-    };
+    validateFileSyncInput(input);
+    return this.runQueue.run(async () => {
+      const store = await this.load();
+      const now = new Date().toISOString();
+      const job: FileSyncJob = {
+        id: randomUUID(),
+        name: input.name?.trim() || 'New file sync job',
+        leftPath: input.leftPath?.trim() ?? '',
+        rightPath: input.rightPath?.trim() ?? '',
+        mode: input.mode ?? 'left-to-right-update',
+        filters: normalizeFilters(input.filters),
+        options: normalizeOptions(input.options),
+        triggers: normalizeTriggers(input.triggers),
+        createdAt: now,
+        updatedAt: now,
+      };
 
-    store.jobs = [job, ...store.jobs];
-    await this.save(store);
-    await this.refreshAutomation();
-    this.emitStateChanged();
-    return this.getState();
+      store.jobs = [job, ...store.jobs];
+      await this.save(store);
+      await this.refreshAutomation();
+      this.emitStateChanged();
+      return this.getState();
+
+    });
   }
 
   async updateJob(id: string, input: FileSyncJobInput): Promise<FileSyncState> {
-    if (this.activeRuns.has(id)) throw new Error('Wait for this sync job to finish before editing it.');
-    const store = await this.load();
-    const job = store.jobs.find((item) => item.id === id);
-    if (!job) throw new Error('The selected file sync job could not be found.');
+    validateFileSyncInput(input);
+    if (this.activeRuns.has(id)) throw new Error('Wait for the active file sync run to finish before editing this job.');
+    return this.runQueue.run(async () => {
+      if (this.activeRuns.has(id)) throw new Error('Wait for this sync job to finish before editing it.');
+      const store = await this.load();
+      const job = store.jobs.find((item) => item.id === id);
+      if (!job) throw new Error('The selected file sync job could not be found.');
 
-    Object.assign(job, {
-      name: input.name !== undefined ? input.name.trim() || job.name : job.name,
-      leftPath: input.leftPath !== undefined ? input.leftPath.trim() : job.leftPath,
-      rightPath: input.rightPath !== undefined ? input.rightPath.trim() : job.rightPath,
-      mode: input.mode ?? job.mode,
-      filters: input.filters ? normalizeFilters({ ...job.filters, ...input.filters }) : job.filters,
-      options: input.options ? normalizeOptions({ ...job.options, ...input.options }) : job.options,
-      triggers: input.triggers ? normalizeTriggers(input.triggers) : job.triggers,
-      updatedAt: new Date().toISOString(),
+      Object.assign(job, {
+        name: input.name !== undefined ? input.name.trim() || job.name : job.name,
+        leftPath: input.leftPath !== undefined ? input.leftPath.trim() : job.leftPath,
+        rightPath: input.rightPath !== undefined ? input.rightPath.trim() : job.rightPath,
+        mode: input.mode ?? job.mode,
+        filters: input.filters ? normalizeFilters({ ...job.filters, ...input.filters }) : job.filters,
+        options: input.options ? normalizeOptions({ ...job.options, ...input.options }) : job.options,
+        triggers: input.triggers ? normalizeTriggers(input.triggers) : job.triggers,
+        updatedAt: new Date().toISOString(),
     });
 
     await this.save(store);
     await this.refreshAutomation();
     this.emitStateChanged();
     return this.getState();
+
+    });
   }
 
   async deleteJob(id: string): Promise<FileSyncState> {
-    if (this.activeRuns.has(id)) throw new Error('Wait for this sync job to finish before deleting it.');
-    const store = await this.load();
-    const nextJobs = store.jobs.filter((job) => job.id !== id);
-    if (nextJobs.length === store.jobs.length) throw new Error('The selected file sync job could not be found.');
-    store.jobs = nextJobs;
-    await this.save(store);
-    await this.refreshAutomation();
-    this.emitStateChanged();
-    return this.getState();
+    if (this.activeRuns.has(id)) throw new Error('Wait for the active file sync run to finish before deleting this job.');
+    return this.runQueue.run(async () => {
+      if (this.activeRuns.has(id)) throw new Error('Wait for this sync job to finish before deleting it.');
+      const store = await this.load();
+      const nextJobs = store.jobs.filter((job) => job.id !== id);
+      if (nextJobs.length === store.jobs.length) throw new Error('The selected file sync job could not be found.');
+      store.jobs = nextJobs;
+      await this.save(store);
+      await this.refreshAutomation();
+      this.emitStateChanged();
+      return this.getState();
+
+    });
   }
 
   async analyze(jobId: string): Promise<FileSyncAnalyzeResult> {
@@ -279,6 +300,7 @@ export class FileSyncManager {
           await this.storeRun(preview.job.id, result);
         }
       }
+      if (result.status === 'applied') await this.recovery.completeRun(runId);
       this.emitStateChanged();
       return result;
     } finally {
@@ -319,8 +341,8 @@ export class FileSyncManager {
         const entry = row[side]!;
         await assertSafeSyncPath(side === 'left' ? job.leftPath : job.rightPath, roots[side], entry.path);
         await assertEntryUnchanged(entry.path, entry);
-        if (quarantinePath) await moveFile(row.left.path, quarantinePath);
-        else await removePath(row.left.path);
+        if (quarantinePath) await moveFile(row.left.path, quarantinePath, entry, [{ ...roots[side], path: side === 'left' ? job.leftPath : job.rightPath }]);
+        else await removePath(row.left.path, entry);
         return { relativePath: row.relativePath, action: row.action, status: 'applied', targetPath: row.left.path, quarantinePath };
       }
 
@@ -331,8 +353,8 @@ export class FileSyncManager {
         const entry = row[side]!;
         await assertSafeSyncPath(side === 'left' ? job.leftPath : job.rightPath, roots[side], entry.path);
         await assertEntryUnchanged(entry.path, entry);
-        if (quarantinePath) await moveFile(row.right.path, quarantinePath);
-        else await removePath(row.right.path);
+        if (quarantinePath) await moveFile(row.right.path, quarantinePath, entry, [{ ...roots[side], path: side === 'left' ? job.leftPath : job.rightPath }]);
+        else await removePath(row.right.path, entry);
         return { relativePath: row.relativePath, action: row.action, status: 'applied', targetPath: row.right.path, quarantinePath };
       }
 
@@ -357,8 +379,8 @@ export class FileSyncManager {
         await assertSafeSyncPath(side === 'left' ? job.leftPath : job.rightPath, roots[side], entry.path);
         await assertEntryUnchanged(entry.path, entry);
         if (!(await isDirectoryEmpty(entry.path))) throw new Error('Folder is no longer empty; re-run Analyze before syncing.');
-        if (quarantinePath) await moveFile(row.left.path, quarantinePath);
-        else await rmdir(row.left.path);
+        if (quarantinePath) await moveFile(row.left.path, quarantinePath, entry, [{ ...roots[side], path: side === 'left' ? job.leftPath : job.rightPath }]);
+        else await removePath(row.left.path, entry);
         return { relativePath: row.relativePath, action: row.action, status: 'applied', targetPath: row.left.path, quarantinePath };
       }
 
@@ -371,8 +393,8 @@ export class FileSyncManager {
         await assertSafeSyncPath(side === 'left' ? job.leftPath : job.rightPath, roots[side], entry.path);
         await assertEntryUnchanged(entry.path, entry);
         if (!(await isDirectoryEmpty(entry.path))) throw new Error('Folder is no longer empty; re-run Analyze before syncing.');
-        if (quarantinePath) await moveFile(row.right.path, quarantinePath);
-        else await rmdir(row.right.path);
+        if (quarantinePath) await moveFile(row.right.path, quarantinePath, entry, [{ ...roots[side], path: side === 'left' ? job.leftPath : job.rightPath }]);
+        else await removePath(row.right.path, entry);
         return { relativePath: row.relativePath, action: row.action, status: 'applied', targetPath: row.right.path, quarantinePath };
       }
 
@@ -427,9 +449,14 @@ export class FileSyncManager {
 
     const tempPath = path.join(path.dirname(targetPath), `.${path.basename(targetPath)}.winutils-${randomUUID()}.tmp`);
     let backupPath: string | null = null;
+    let tempGuard: HandleGuard | undefined;
+    let backupGuard: HandleGuard | undefined;
+    const targetRootGuard = [{ ...roots[targetSide], path: targetSide === 'left' ? job.leftPath : job.rightPath }];
     try {
       const sourceStatsBeforeCopy = await stat(sourcePath);
       await copyFile(sourcePath, tempPath, fsConstants.COPYFILE_EXCL);
+      const stagedIdentity = await lstat(tempPath, { bigint: true });
+      tempGuard = { device: String(stagedIdentity.dev), fileId: String(stagedIdentity.ino), modifiedNs: String(stagedIdentity.mtimeNs) };
       const [sourceStatsAfterCopy, tempStats] = await Promise.all([stat(sourcePath), stat(tempPath)]);
       if (!sameFileVersion(sourceStatsBeforeCopy, sourceStatsAfterCopy)) {
         throw new Error('Source file changed while it was being copied; re-run Analyze before syncing.');
@@ -439,6 +466,7 @@ export class FileSyncManager {
         if (sourceStatsBeforeCopy.size !== tempStats.size) throw new Error('Copied file size verification failed.');
         const [sourceHash, tempHash] = await Promise.all([hashFile(sourcePath), hashFile(tempPath)]);
         if (sourceHash !== tempHash) throw new Error('Copied file checksum verification failed.');
+        tempGuard.sha256 = tempHash;
       }
 
       await checkPaths();
@@ -448,25 +476,35 @@ export class FileSyncManager {
           backupPath = await this.quarantinePath(job, runId, targetSide, relativePath);
           await checkPaths();
           await assertEntryUnchanged(targetPath, targetEntry);
-          await moveFile(targetPath, backupPath);
+          await moveFile(targetPath, backupPath, targetEntry, targetRootGuard);
         } else {
           backupPath = tempPath + '.previous';
-          await rename(targetPath, backupPath);
+          if (!await handleFileOperation('move', targetPath, backupPath, entryGuard(targetEntry), targetRootGuard)) await rename(targetPath, backupPath);
         }
+        const originalBackup = await lstat(backupPath, { bigint: true });
+        backupGuard = { device: String(originalBackup.dev), fileId: String(originalBackup.ino), modifiedNs: String(originalBackup.mtimeNs) };
       }
 
-      await rename(tempPath, targetPath);
-      await applyCopiedFileMetadata(targetPath, sourceStatsBeforeCopy);
-      if (backupPath === tempPath + '.previous') await unlink(backupPath);
+      if (process.versions.electron && process.platform === 'win32') {
+        await applyCopiedFileMetadata(tempPath, sourceStatsBeforeCopy);
+        const prepared = await lstat(tempPath, { bigint: true });
+        tempGuard.modifiedNs = String(prepared.mtimeNs);
+        await handleFileOperation('move', tempPath, targetPath, tempGuard, targetRootGuard);
+      } else {
+        await rename(tempPath, targetPath);
+        await applyCopiedFileMetadata(targetPath, sourceStatsBeforeCopy);
+      }
+      if (backupPath === tempPath + '.previous' && !await handleFileOperation('delete', backupPath, '', backupGuard, targetRootGuard)) await unlink(backupPath);
     } catch (error) {
       // The parent may have been replaced with a junction during copying.
       // Never follow that replacement even when cleaning up a temporary file.
       await assertSafeSyncPath(targetSide === 'left' ? job.leftPath : job.rightPath, roots[targetSide], tempPath)
-        .then(() => unlink(tempPath)).catch(() => undefined);
+        .then(async () => { if (tempGuard) { if (!await handleFileOperation('delete', tempPath, '', tempGuard, targetRootGuard)) await unlink(tempPath); }
+          else if (!process.versions.electron) await unlink(tempPath); }).catch(() => undefined);
       if (backupPath && existsSync(backupPath) && !existsSync(targetPath)) {
         try {
           await assertSafeSyncPath(targetSide === 'left' ? job.leftPath : job.rightPath, roots[targetSide], targetPath);
-          await moveFile(backupPath, targetPath);
+          await moveFileSafely(backupPath, targetPath, backupGuard, targetRootGuard);
         } catch (restoreError) {
           throw new Error('Copy failed and the original could not be restored. Original retained at ' + backupPath + '. ' + String(restoreError));
         }
@@ -482,12 +520,22 @@ export class FileSyncManager {
     const safeJobName = sanitizePathSegment(job.name || job.id);
     const sideRoot = path.join(this.quarantineRoot, safeJobName, runId, side);
     let targetPath = safeJoin(sideRoot, relativePath);
+    const profileRoot = app.getPath('userData');
+    const profileIdentity = await identifySyncRoot(profileRoot);
+    await assertSafeSyncPath(profileRoot, profileIdentity, this.quarantineRoot);
+    await mkdir(this.quarantineRoot, { recursive: true });
+    await assertSafeSyncPath(profileRoot, profileIdentity, this.quarantineRoot);
+    const quarantineIdentity = await identifySyncRoot(this.quarantineRoot);
+    await assertSafeSyncPath(this.quarantineRoot, quarantineIdentity, targetPath);
     await mkdir(path.dirname(targetPath), { recursive: true });
+    await assertSafeSyncPath(this.quarantineRoot, quarantineIdentity, targetPath);
 
-    if (!existsSync(targetPath)) return targetPath;
-
-    const parsed = path.parse(targetPath);
-    targetPath = path.join(parsed.dir, `${parsed.name}.${Date.now()}${parsed.ext}`);
+    if (existsSync(targetPath)) {
+      const parsed = path.parse(targetPath);
+      targetPath = path.join(parsed.dir, `${parsed.name}.${randomUUID()}${parsed.ext}`);
+    }
+    const originalRoot = side === 'left' ? job.leftPath : job.rightPath;
+    await this.recovery.register(targetPath, safeJoin(originalRoot, relativePath), originalRoot, job.name, runId);
     return targetPath;
   }
 
@@ -923,12 +971,12 @@ export class FileSyncManager {
     let parsed: Partial<FileSyncStoreFile>;
     try {
       parsed = JSON.parse(rawStore) as Partial<FileSyncStoreFile>;
-    } catch {
-      await backupCorruptStore(this.storePath);
-      this.cache = createEmptyStore();
-      await this.save(this.cache);
-      return this.cache;
+    } catch (error) {
+      throw new Error(`File sync could not be read; the original file was preserved. ${String(error)}`);
     }
+
+    if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.jobs) || !Array.isArray(parsed.recentRuns)
+      || parsed.jobs.some(job => !normalizeJob(job))) throw new Error('Invalid file sync schema; the original file was preserved.');
 
     this.cache = {
       version: 1,
@@ -940,9 +988,11 @@ export class FileSyncManager {
   }
 
   private async save(store: FileSyncStoreFile): Promise<void> {
-    this.cache = store;
     const snapshot = structuredClone(store);
-    await this.saveQueue.run(() => writeJsonAtomically(this.storePath, snapshot));
+    await this.saveQueue.run(async () => {
+      try { await writeJsonAtomically(this.storePath, snapshot); this.cache = snapshot; }
+      catch (error) { this.cache = null; throw error; }
+    });
   }
 }
 
@@ -1170,6 +1220,8 @@ function countRows(rows: FileSyncPreviewRow[]): FileSyncPreviewCounts {
 
 function normalizeJob(job: FileSyncJob): FileSyncJob | null {
   if (!job || typeof job.id !== 'string') return null;
+  validateFileSyncInput({ name: job.name, leftPath: job.leftPath, rightPath: job.rightPath,
+    mode: job.mode, filters: job.filters, options: job.options, triggers: job.triggers });
   return {
     ...job,
     name: job.name || 'File sync job',
@@ -1186,11 +1238,6 @@ function normalizeJob(job: FileSyncJob): FileSyncJob | null {
 
 function createEmptyStore(): FileSyncStoreFile {
   return { version: 1, jobs: [], recentRuns: [], syncStates: {} };
-}
-
-async function backupCorruptStore(storePath: string): Promise<void> {
-  const backupPath = `${storePath}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
-  await rename(storePath, backupPath);
 }
 
 function normalizeRun(run: FileSyncApplyResult): FileSyncApplyResult {
@@ -1349,12 +1396,18 @@ async function hashFile(filePath: string): Promise<string> {
   return hash.digest('hex');
 }
 
-async function moveFile(sourcePath: string, targetPath: string): Promise<void> {
-  await moveFileSafely(sourcePath, targetPath);
+function entryGuard(entry?: FileSyncEntryInfo): HandleGuard | undefined {
+  return entry?.version && { device: entry.version.device, fileId: entry.version.fileId, modifiedNs: entry.kind === 'file' ? entry.version.modifiedNs : undefined, emptyDirectory: entry.kind === 'directory' };
 }
 
-async function removePath(targetPath: string): Promise<void> {
-  await rm(targetPath, { recursive: true, force: true });
+async function moveFile(sourcePath: string, targetPath: string, entry?: FileSyncEntryInfo, roots?: HandleRootGuard[]): Promise<void> {
+  await moveFileSafely(sourcePath, targetPath, entryGuard(entry), roots);
+}
+
+async function removePath(targetPath: string, entry: FileSyncEntryInfo): Promise<void> {
+  if (await handleFileOperation('delete', targetPath, '', entryGuard(entry))) return;
+  if (entry.kind === 'directory') await rmdir(targetPath);
+  else await unlink(targetPath);
 }
 
 function safeJoin(rootPath: string, relativePath: string): string {

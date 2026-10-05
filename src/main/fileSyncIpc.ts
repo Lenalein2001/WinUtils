@@ -5,6 +5,9 @@ import type { FileSyncManager } from './fileSyncManager';
 
 export function registerFileSyncIpcHandlers(manager: FileSyncManager): void {
   handleTrustedIpc('fileSync:getState', async () => manager.getState());
+  handleTrustedIpc('fileSync:listRecovery', async () => manager.listRecovery());
+  handleTrustedIpc('fileSync:restoreRecovery', async (_event, id: string) => manager.restoreRecovery(id));
+  handleTrustedIpc('fileSync:purgeRecovery', async (_event, id: string) => manager.purgeRecovery(id));
   handleTrustedIpc('fileSync:createJob', async (_event, input?: FileSyncJobInput) => manager.createJob(input));
   handleTrustedIpc('fileSync:updateJob', async (_event, id: string, input: FileSyncJobInput) => manager.updateJob(id, input));
   handleTrustedIpc('fileSync:deleteJob', async (_event, id: string) => manager.deleteJob(id));

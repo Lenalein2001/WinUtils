@@ -7,7 +7,7 @@ import type { AppSettings } from '../shared/settings';
 import type { RenameApplyResult, RenamePreview, RenameRule, RenameTransaction, RenameUndoResult, RenamerItem, RenamerLoadOptions, RenamerLoadPathsInput, RenamerPreviewInput } from '../shared/renamer';
 import type { AppUpdateInfo, UpdateState } from '../shared/updater';
 import type { ClipboardClearMode, ClipboardQuery, ClipboardSettings, ClipboardState } from '../shared/clipboard';
-import type { FileSyncAnalyzeResult, FileSyncApplyResult, FileSyncJobInput, FileSyncState } from '../shared/fileSync';
+import type { FileRecoveryItem, FileSyncAnalyzeResult, FileSyncApplyResult, FileSyncJobInput, FileSyncState } from '../shared/fileSync';
 import type { AutomationActivity, AutomationActionDefinition, AutomationActionRequest, AutomationActionResult } from '../shared/actions';
 import type { HotkeyActionBindingInput, HotkeyState, HotkeyUpdateInput, HotkeyUpdateResult } from '../shared/hotkeys';
 import type {
@@ -195,6 +195,9 @@ const api = {
     getDroppedPath: (file: Parameters<typeof webUtils.getPathForFile>[0]): string => webUtils.getPathForFile(file),
   },
   fileSync: {
+    listRecovery: (): Promise<FileRecoveryItem[]> => ipcRenderer.invoke('fileSync:listRecovery'),
+    restoreRecovery: (id: string): Promise<void> => ipcRenderer.invoke('fileSync:restoreRecovery', id),
+    purgeRecovery: (id: string): Promise<void> => ipcRenderer.invoke('fileSync:purgeRecovery', id),
     getState: (): Promise<FileSyncState> => ipcRenderer.invoke('fileSync:getState'),
     createJob: (input?: FileSyncJobInput): Promise<FileSyncState> => ipcRenderer.invoke('fileSync:createJob', input),
     updateJob: (id: string, input: FileSyncJobInput): Promise<FileSyncState> => ipcRenderer.invoke('fileSync:updateJob', id, input),
