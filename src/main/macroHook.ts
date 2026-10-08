@@ -48,7 +48,7 @@ let modifierHotkeyWorkerKey = '';
 let modifierHotkeyWorkerBuffer = '';
 
 const callbacks = new Map<string, HotkeyCallbacks>();
-const registeredAccelerators = new Set<string>();
+const registeredAccelerators = new Map<string, string>();
 const electronRegisteredHotkeys = new Set<string>();
 const uiohookCombos = new Map<string, UiohookCombo>();
 const pressedHotkeys = new Set<string>();
@@ -233,17 +233,29 @@ function toPhysicalAcceleratorKey(token: string): string | null {
 }
 
 function registerAllHotkeys(): void {
-  unregisterRegisteredHotkeys();
-
   const hotkeys = new Set(callbacks.keys());
   const attemptedAccelerators = new Set<string>();
+  const desiredAccelerators = new Map<string, string>();
 
   for (const hotkey of callbacks.keys()) {
     for (const accelerator of toElectronAccelerators(hotkey, hotkeys)) {
       const registrationKey = accelerator.toLowerCase();
       if (attemptedAccelerators.has(registrationKey)) continue;
       attemptedAccelerators.add(registrationKey);
+      desiredAccelerators.set(accelerator, hotkey);
+    }
+  }
 
+  // Catalog updates and profile switches often retain most of the same keys.
+  // Keep those OS registrations live instead of unregistering everything.
+  for (const [accelerator, hotkey] of registeredAccelerators) {
+    if (desiredAccelerators.get(accelerator) === hotkey) continue;
+    try { globalShortcut.unregister(accelerator); } catch { /* ignore stale shortcut */ }
+    registeredAccelerators.delete(accelerator);
+  }
+  electronRegisteredHotkeys.clear();
+  for (const [accelerator, hotkey] of desiredAccelerators) {
+    if (!registeredAccelerators.has(accelerator)) {
       let registered = false;
       try {
         registered = globalShortcut.register(accelerator, () => {
@@ -254,10 +266,10 @@ function registerAllHotkeys(): void {
       }
 
       if (registered) {
-        registeredAccelerators.add(accelerator);
-        electronRegisteredHotkeys.add(hotkey);
+        registeredAccelerators.set(accelerator, hotkey);
       }
     }
+    if (registeredAccelerators.has(accelerator)) electronRegisteredHotkeys.add(hotkey);
   }
 
   syncUiohook();
@@ -265,7 +277,7 @@ function registerAllHotkeys(): void {
 }
 
 function unregisterRegisteredHotkeys(): void {
-  for (const accelerator of registeredAccelerators) {
+  for (const accelerator of registeredAccelerators.keys()) {
     try { globalShortcut.unregister(accelerator); } catch { /* ignore stale shortcut */ }
   }
   registeredAccelerators.clear();
@@ -364,16 +376,13 @@ function syncModifierHotkeyWorker(): void {
     .map(hotkey => ({ hotkey, groups: hotkeyVkGroupsForHotkey(hotkey), fireOnRelease: isModifierOnlyHotkey(hotkey) }))
     .filter((definition): definition is { hotkey: string; groups: HotkeyVkGroup[]; fireOnRelease: boolean } => definition.groups !== null);
 
-  modifierWorkerHotkeys.clear();
-  for (const definition of definitions) {
-    modifierWorkerHotkeys.add(definition.hotkey);
-  }
-
+  definitions.sort((left, right) => left.hotkey.localeCompare(right.hotkey));
   const nextKey = JSON.stringify(definitions);
   if (nextKey === modifierHotkeyWorkerKey) return;
 
   stopModifierHotkeyWorker();
   modifierHotkeyWorkerKey = nextKey;
+  for (const definition of definitions) modifierWorkerHotkeys.add(definition.hotkey);
   if (definitions.length === 0) return;
 
   const script = buildModifierHotkeyWorkerScript(definitions);
@@ -386,7 +395,9 @@ function syncModifierHotkeyWorker(): void {
   child.stdin.end();
   modifierHotkeyWorkerBuffer = '';
   child.stdout.setEncoding('utf8');
-  child.stdout.on('data', chunk => handleModifierHotkeyWorkerOutput(chunk));
+  child.stdout.on('data', chunk => {
+    if (modifierHotkeyWorker === child) handleModifierHotkeyWorkerOutput(chunk);
+  });
   child.once('exit', () => {
     if (modifierHotkeyWorker === child) {
       modifierHotkeyWorker = null;
@@ -972,12 +983,17 @@ export function registerHotkey(hotkey: string, callback: (() => void) | HotkeyCa
 }
 
 export function replaceHotkeys(entries: Array<{ hotkey: string; callback: (() => void) | HotkeyCallbacks }>): void {
-  releaseAllPressedHotkeys();
-  callbacks.clear();
-
-  for (const entry of entries) {
-    callbacks.set(normalizeHotkey(entry.hotkey), toCallbacks(entry.callback));
+  const next = new Map(entries.map(entry => [normalizeHotkey(entry.hotkey), toCallbacks(entry.callback)]));
+  for (const [hotkey, callback] of callbacks) {
+    const replacement = next.get(hotkey);
+    if (replacement?.down === callback.down && replacement.up === callback.up
+      && replacement.suppressWhenAppFocused === callback.suppressWhenAppFocused) continue;
+    pendingStandaloneModifierHotkeys.delete(hotkey);
+    // Invoke the old release handler before changing ownership of the key.
+    if (pressedHotkeys.has(hotkey)) releaseHotkey(hotkey);
   }
+  callbacks.clear();
+  for (const [hotkey, callback] of next) callbacks.set(hotkey, callback);
 
   if (hooked) registerAllHotkeys();
 }
