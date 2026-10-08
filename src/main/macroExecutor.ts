@@ -84,11 +84,15 @@ Add-Type -TypeDefinition @"
 using System;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 public static class WinAPI {
   [DllImport("user32.dll")] public static extern uint SendInput(uint n, INPUT[] i, int cb);
   [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
   [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern uint MapVirtualKeyW(uint code, uint mapType);
   [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vKey);
+  [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int maxCount);
   [DllImport("winmm.dll")] private static extern uint timeBeginPeriod(uint period);
   [DllImport("winmm.dll")] private static extern uint timeEndPeriod(uint period);
 
@@ -226,6 +230,18 @@ public static class WinAPI {
       if ((GetAsyncKeyState(key) & unchecked((short)0x8000)) == 0) return false;
     }
     return true;
+  }
+  public static string ForegroundInfo() {
+    IntPtr hwnd = GetForegroundWindow();
+    uint pid;
+    GetWindowThreadProcessId(hwnd, out pid);
+    string name = "";
+    if (pid > 0) {
+      try { using (Process process = Process.GetProcessById((int)pid)) { name = process.ProcessName; } } catch {}
+    }
+    StringBuilder title = new StringBuilder(32768);
+    GetWindowText(hwnd, title, title.Capacity);
+    return name + "\\t" + title.ToString();
   }
   public static void InjectText(string text) {
     foreach (char c in text) {
@@ -669,44 +685,12 @@ async function releaseHeldInputs(context: MacroExecutionContext): Promise<void> 
 }
 
 async function getForegroundWindowInfo(): Promise<ForegroundWindowInfo> {
-  const script = String.raw`
-Add-Type -TypeDefinition @'
-using System;
-using System.Diagnostics;
-using System.Runtime.InteropServices;
-using System.Text;
-public static class ForegroundHelper {
-  [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
-  [DllImport("user32.dll")] public static extern int GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
-  [DllImport("user32.dll")] public static extern int GetWindowTextLength(IntPtr hWnd);
-  [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int maxCount);
-  public static string GetInfo() {
-    IntPtr hwnd = GetForegroundWindow();
-    if (hwnd == IntPtr.Zero) return "\t";
-    uint pid = 0;
-    GetWindowThreadProcessId(hwnd, out pid);
-    string processName = "";
-    if (pid > 0) {
-      try { processName = Process.GetProcessById((int)pid).ProcessName; } catch {}
-    }
-    string title = "";
-    try {
-      int length = GetWindowTextLength(hwnd);
-      if (length > 0) {
-        var sb = new StringBuilder(length + 1);
-        GetWindowText(hwnd, sb, sb.Capacity);
-        title = sb.ToString();
-      }
-    } catch {}
-    return processName + "\t" + title;
-  }
-}
-'@
-[ForegroundHelper]::GetInfo()
-`;
-
-  const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script]);
-  const [processName = '', title = ''] = stdout.trimEnd().split('\t');
+  // Read current focus in the warmed worker rather than starting and compiling
+  // a separate PowerShell process for every conditional macro action.
+  const output = await runPwshOutput('[WinAPI]::ForegroundInfo()');
+  const separator = output.indexOf('\t');
+  const processName = separator < 0 ? output : output.slice(0, separator);
+  const title = separator < 0 ? '' : output.slice(separator + 1);
   return { processName, title };
 }
 
