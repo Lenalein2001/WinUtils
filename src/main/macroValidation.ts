@@ -13,6 +13,9 @@ function choice(value: unknown, field: string, values: string[]): void {
 function integer(value: unknown, field: string, minimum: number, maximum: number): void {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > maximum) throw new Error(`Invalid macro ${field}.`);
 }
+function duration(value: unknown): void {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 600000) throw new Error('Invalid macro delay.');
+}
 export function validateActions(value: unknown): asserts value is MacroAction[] {
   let count = 0;
   const walk = (actions: unknown, depth: number): void => {
@@ -22,8 +25,11 @@ export function validateActions(value: unknown): asserts value is MacroAction[] 
       const action = record(value); text(action.id, 'action id', 128);
       if (typeof action.enabled !== 'boolean') throw new Error('Invalid macro action enabled flag.');
       switch (action.type) {
-        case 'delay': integer(action.milliseconds, 'delay', 0, 600000); break;
-        case 'keyboard': text(action.key, 'key', 128); choice(action.pressType, 'key action', ['press', 'down', 'up']); break;
+        case 'delay': duration(action.milliseconds); break;
+        case 'keyboard':
+          text(action.key, 'key', 128); choice(action.pressType, 'key action', ['press', 'down', 'up']);
+          if (action.holdMilliseconds !== undefined) duration(action.holdMilliseconds);
+          break;
         case 'mouse':
           choice(action.button, 'mouse button', ['left', 'right', 'middle']);
           choice(action.actionType, 'mouse action', ['click', 'double-click', 'down', 'up', 'move']);

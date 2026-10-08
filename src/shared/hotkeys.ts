@@ -1,7 +1,7 @@
 import type { AutomationActionDefinition } from './actions';
 
 export type HotkeyBindingSource = 'feature' | 'macro' | 'action';
-export type HotkeyBindingBackend = 'electron' | 'uiohook' | 'modifier-worker' | 'none';
+export type HotkeyBindingBackend = 'native-worker' | 'native-polling' | 'none';
 export type HotkeyBindingStatus = 'active' | 'disabled' | 'internal-conflict' | 'os-registration-failed';
 
 export interface HotkeyBinding {

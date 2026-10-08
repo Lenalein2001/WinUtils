@@ -23,6 +23,10 @@ export class ActionEngine {
   private generation = 0;
   private pending = 0;
   private recent: AutomationActionHistory[] = [];
+  private readonly pauseListeners = new Set<(paused: boolean) => void>();
+  onPauseChanged(listener: (paused: boolean) => void): () => void {
+    this.pauseListeners.add(listener); return () => this.pauseListeners.delete(listener);
+  }
 
   getActivity(): AutomationActivity {
     return { paused: this.paused, pending: Math.max(0, this.pending - this.running.size),
@@ -33,9 +37,10 @@ export class ActionEngine {
   clearHistory(): AutomationActivity { this.recent = []; return this.getActivity(); }
   cancelAll(): void {
     this.paused = true; this.generation++;
+    for (const listener of this.pauseListeners) listener(true);
     for (const run of this.running.values()) run.controller.abort();
   }
-  resume(): void { this.paused = false; }
+  resume(): void { this.paused = false; for (const listener of this.pauseListeners) listener(false); }
   private registrations = new Map<string, AutomationActionRegistration>();
   private ownerActionIds = new Map<string, Set<string>>();
   private readonly catalogListeners = new Set<() => void>();

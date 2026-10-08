@@ -25,9 +25,10 @@ import type {
 import { normalizeMacroPlayback } from '../shared/macro';
 import { normalizeHotkey as normalizeGlobalHotkey } from '../shared/hotkeys';
 import type { ActionEngine } from './actionEngine';
-import { executeMacro, stopMacroExecutor, warmMacroExecutor, type MacroExecutionResult } from './macroExecutor';
+import { compileInputActions, executeMacro, stopMacroExecutor, warmMacroExecutor, type MacroExecutionResult } from './macroExecutor';
 import type { HotkeyManager, RuntimeHotkeyRegistration } from './hotkeyManager';
-import { getHotkeyDiagnostics } from './macroHook';
+import { getHotkeyDiagnostics, suspendNativePlayback } from './macroHook';
+import { nativeMacroWorker } from './nativeMacroWorker';
 import { MacroStore } from './macroStore';
 import { SerialTaskQueue } from './atomicFile';
 import { validateActions, validateMacro, validateProfile } from './macroValidation';
@@ -579,6 +580,11 @@ while ($true) {
     for (const macro of allMacros) {
       if (macro.hotkey.trim()) {
         const registeredMacro: Macro = { ...macro, playback: normalizeMacroPlayback(macro.playback) };
+        let nativeProgram: RuntimeHotkeyRegistration['nativeProgram'];
+        if (registeredMacro.playback.mode === 'once') {
+          try { nativeProgram = compileInputActions(registeredMacro.actions) ?? undefined; }
+          catch (error) { this.log(`Macro preparation failed: ${String(error)}`); }
+        }
         hotkeys.push({
           id: `macro.hotkey.${registeredMacro.id}`,
           actionId: `macro.run.${registeredMacro.id}`,
@@ -592,6 +598,7 @@ while ($true) {
           editable: true,
           source: 'macro',
           suppressWhenAppFocused: true,
+          nativeProgram,
           onDown: () => {
             this.handleHotkeyDown(registeredMacro);
           },
@@ -689,6 +696,7 @@ while ($true) {
   async stopAll(): Promise<void> {
     this.stopGeneration++;
     this.stopAllHotkeyPlayback();
+    await suspendNativePlayback();
     await Promise.allSettled([...this.executions]);
   }
 
@@ -785,6 +793,7 @@ while ($true) {
   }
 
   private stopAllHotkeyPlayback(): void {
+    void suspendNativePlayback().catch(error => this.log(`Native playback cleanup failed: ${String(error)}`));
     for (const [macroId, state] of this.playbackStates) {
       state.queue = 0;
       state.toggleActive = false;
@@ -922,10 +931,9 @@ while ($true) {
       focusWorkerRunning: this.focusWorker !== null,
       focusMonitorRestarts: this.focusMonitorRestartCount,
       lastFocusSampleAt: this.lastFocusSampleAt,
-      activePlaybackMacros,
+      activePlaybackMacros: activePlaybackMacros + nativeMacroWorker.fastRuns.size,
       queuedRuns,
-      uiohookRunning: diagnostics.uiohookRunning,
-      modifierWorkerRunning: diagnostics.modifierWorkerRunning,
+      nativeWorkerRunning: diagnostics.nativeWorkerRunning,
       hotkeyRegistrations: diagnostics.hotkeys,
       hotkeysWithNoBackend: diagnostics.hotkeys.filter(item => item.backend === 'none').map(item => item.hotkey),
       hotkeyConflicts: this.buildHotkeyConflicts(activeProfile),
@@ -1306,6 +1314,7 @@ while ($true) {
     await this.initializing?.catch(() => undefined);
     this.stopFocusMonitor();
     this.stopAllHotkeyPlayback();
+    await suspendNativePlayback();
     await Promise.allSettled([...this.executions]);
     await stopMacroExecutor();
     await this.mutationQueue.drain();

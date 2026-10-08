@@ -70,9 +70,9 @@ function blankAction(type: MacroAction['type']): MacroAction {
   }
 }
 
-function keyboardHoldReleaseActions(key: string): MacroAction[] {
+function keyboardHoldReleaseActions(key: string, milliseconds = 100): MacroAction[] {
   return [
-    { id: newId(), type: 'delay', enabled: true, milliseconds: 100 },
+    { id: newId(), type: 'delay', enabled: true, milliseconds },
     { id: newId(), type: 'keyboard', enabled: true, key, pressType: 'up' },
   ];
 }
@@ -807,8 +807,8 @@ function sanitizeHelldiversOptions(input: Partial<HelldiversPresetOptions> | nul
     movementKeys,
     modifierKey,
     modifierBehavior,
-    keyDelayMs: clampInteger(Number(input?.keyDelayMs), 0, 2000, DEFAULT_HELLDIVERS_OPTIONS.keyDelayMs),
-    modifierLeadInMs: clampInteger(Number(input?.modifierLeadInMs), 0, 2000, DEFAULT_HELLDIVERS_OPTIONS.modifierLeadInMs),
+    keyDelayMs: clampFloat(Number(input?.keyDelayMs), 0, 2000, DEFAULT_HELLDIVERS_OPTIONS.keyDelayMs),
+    modifierLeadInMs: clampFloat(Number(input?.modifierLeadInMs), 0, 2000, DEFAULT_HELLDIVERS_OPTIONS.modifierLeadInMs),
   };
 }
 
@@ -876,8 +876,8 @@ function createHelldiversActions(
   options: HelldiversPresetOptions,
 ): MacroAction[] {
   const actions: MacroAction[] = [];
-  const keyDelayMs = clampInteger(options.keyDelayMs, 0, 2000, DEFAULT_HELLDIVERS_OPTIONS.keyDelayMs);
-  const modifierLeadInMs = clampInteger(options.modifierLeadInMs, 0, 2000, DEFAULT_HELLDIVERS_OPTIONS.modifierLeadInMs);
+  const keyDelayMs = clampFloat(options.keyDelayMs, 0, 2000, DEFAULT_HELLDIVERS_OPTIONS.keyDelayMs);
+  const modifierLeadInMs = clampFloat(options.modifierLeadInMs, 0, 2000, DEFAULT_HELLDIVERS_OPTIONS.modifierLeadInMs);
   const directions = stratagem.code.split('').map(helldiversTokenToDirection);
 
   if (options.modifierKey !== 'none') {
@@ -1028,9 +1028,10 @@ function countDelayActions(actions: MacroAction[]): number {
 
 function countDelayExecutions(actions: MacroAction[], multiplier = 1): number {
   return actions.reduce((count, action) => {
+    if (!action.enabled) return count;
     if (action.type === 'delay') return count + multiplier;
     if (action.type === 'repeat') return count + countDelayExecutions(action.actions, multiplier * clampInteger(action.times, 0, 10_000, 0));
-    if (action.type === 'if') return count + countDelayExecutions(action.thenActions, multiplier) + countDelayExecutions(action.elseActions, multiplier);
+    if (action.type === 'if') return count + Math.max(countDelayExecutions(action.thenActions, multiplier), countDelayExecutions(action.elseActions, multiplier));
     return count;
   }, 0);
 }
@@ -1039,15 +1040,13 @@ function fitDelayActionsToRunTime(actions: MacroAction[], totalMs: number): Macr
   const delayExecutions = countDelayExecutions(actions);
   if (delayExecutions === 0) return actions;
 
-  const total = clampInteger(totalMs, 0, 24 * 60 * 60 * 1000, 0);
-  const baseDelay = Math.floor(total / delayExecutions);
-  let remainder = total % delayExecutions;
+  const total = clampFloat(totalMs, 0, Math.min(24 * 60 * 60 * 1000, 600000 * delayExecutions), 0);
+  const baseDelay = total / delayExecutions;
 
   const apply = (items: MacroAction[], multiplier = 1): MacroAction[] => items.map(action => {
+    if (!action.enabled) return action;
     if (action.type === 'delay') {
-      const milliseconds = baseDelay + (remainder >= multiplier ? 1 : 0);
-      if (remainder >= multiplier) remainder -= multiplier;
-      return { ...action, milliseconds };
+      return { ...action, milliseconds: baseDelay };
     }
 
     if (action.type === 'repeat') return { ...action, actions: apply(action.actions, multiplier * clampInteger(action.times, 0, 10_000, 0)) };
@@ -1111,10 +1110,17 @@ function convertFlatActionPairsToPress(actions: MacroAction[]): MacroAction[] {
     if (startIndex === undefined) return;
 
     const startAction = actions[startIndex];
+    const between = actions.slice(startIndex + 1, index);
+    if (!startAction.enabled || !action.enabled || between.some(item => item.type !== 'delay')) return;
+    const hold = between.reduce((total, item) => total + (item.type === 'delay' && item.enabled ? item.milliseconds : 0), 0);
+    if (startAction.type === 'keyboard' && between.every(item => item.type === 'delay') && hold > 600000) return;
     replacements.set(startAction.id, toPressAction(startAction));
     removeIds.add(action.id);
 
-    const between = actions.slice(startIndex + 1, index);
+    if (startAction.type === 'keyboard' && between.every(item => item.type === 'delay')) {
+      replacements.set(startAction.id, { ...startAction, pressType: 'press',
+        holdMilliseconds: hold });
+    }
     if (between.length > 0 && between.every(item => item.type === 'delay')) {
       between.forEach(item => removeIds.add(item.id));
     }
@@ -1143,12 +1149,12 @@ function convertActionPairsToPress(actions: MacroAction[]): MacroAction[] {
 
 function autoClickerDelayMs(options: AutoClickerPresetOptions): number {
   if (options.timingMode === 'delay') {
-    return clampInteger(options.delayMs, 0, 60_000, DEFAULT_AUTO_CLICKER_OPTIONS.delayMs);
+    return clampFloat(options.delayMs, 0, 60_000, DEFAULT_AUTO_CLICKER_OPTIONS.delayMs);
   }
 
   const clicksPerSecond = clampFloat(options.clicksPerSecond, 0.1, 10_000, DEFAULT_AUTO_CLICKER_OPTIONS.clicksPerSecond);
   const targetPeriodMs = 1000 / clicksPerSecond;
-  return Math.max(0, Math.floor(targetPeriodMs - AUTO_CLICKER_CLICK_MS));
+  return Math.max(0, targetPeriodMs - AUTO_CLICKER_CLICK_MS);
 }
 
 const macroPresets: MacroPreset[] = [
@@ -1350,7 +1356,7 @@ function ActionEditor({
   const changeKeyboardPressType = (pressType: KeyboardAction['pressType']) => {
     if (action.type !== 'keyboard') return;
     const insertAfter = pressType === 'down' && action.pressType !== 'down'
-      ? keyboardHoldReleaseActions(action.key)
+      ? keyboardHoldReleaseActions(action.key, action.holdMilliseconds ?? 100)
       : undefined;
     patch({ pressType } as Partial<MacroAction>, insertAfter);
   };
@@ -1385,6 +1391,8 @@ function ActionEditor({
             className="macro-input"
             value={(action as DelayAction).milliseconds}
             min={0}
+            max={600000}
+            step="any"
             onChange={e => patch({ milliseconds: Number(e.target.value) })}
             title="How long to pause before continuing to the next action."
           />
@@ -1412,6 +1420,15 @@ function ActionEditor({
             <option value="down">Key Down</option>
             <option value="up">Key Up</option>
           </select>
+          {(action as KeyboardAction).pressType === 'press' && (
+            <>
+              <label className="macro-label">Hold (ms)</label>
+              <input type="number" className="macro-input macro-input--short" min={0} max={600000} step="any"
+                value={(action as KeyboardAction).holdMilliseconds ?? 16}
+                onChange={event => patch({ holdMilliseconds: Number(event.target.value) })}
+                title="How long the key stays down. Existing macros use 16 ms; shorter holds may be missed by some apps." />
+            </>
+          )}
         </div>
       )}
 
@@ -2293,8 +2310,8 @@ export function MacrosTab(): ReactElement {
             <span className={`status-pill status-pill--${runtime?.focusWorkerRunning ? 'enabled' : 'disabled'}`}>
               Focus worker {runtime?.focusWorkerRunning ? 'online' : 'offline'}
             </span>
-            <span className={`status-pill status-pill--${runtime?.uiohookRunning ? 'enabled' : 'disabled'}`}>
-              Native hook {runtime?.uiohookRunning ? 'active' : 'idle'}
+            <span className={`status-pill status-pill--${runtime?.nativeWorkerRunning ? 'enabled' : 'disabled'}`}>
+              Macro worker {runtime?.nativeWorkerRunning ? 'online' : 'offline'}
             </span>
           </div>
           <div className="macro-runtime-meta">
@@ -2965,15 +2982,16 @@ function MacroEditor({
       </div>
 
       <div className="macro-tools-row">
-        <label className="macro-label">Run time (ms)</label>
+        <label className="macro-label">Total delays (ms)</label>
         <input
           type="number"
           className="macro-input macro-input--short"
           value={targetRunTimeMs}
           min={0}
-          max={86400000}
+          max={Math.min(86400000, countDelayExecutions(macro.actions) * 600000)}
+          step="any"
           onChange={e => setTargetRunTimeMs(Number(e.target.value))}
-          title="Target total delay time for this macro. Existing Delay nodes are evenly redistributed to match it."
+          title="Redistribute enabled delays. Conditional paths can take different times."
         />
         <button
           type="button"
@@ -3058,6 +3076,7 @@ function MacroEditor({
                   value={autoClickerOptions.delayMs}
                   min={0}
                   max={60000}
+                  step="any"
                   onChange={e => updateAutoClickerOptions({ delayMs: Number(e.target.value) })}
                   title="Delay after each click. Use 0 for the fastest inserted preset."
                 />
@@ -3199,6 +3218,7 @@ function MacroEditor({
                 min={0}
                 max={2000}
                 value={helldiversOptions.keyDelayMs}
+                step="any"
                 onChange={event => updateHelldiversOptions({ keyDelayMs: Number(event.target.value) })}
                 title="Delay between each directional key press."
               />
@@ -3210,6 +3230,7 @@ function MacroEditor({
                 min={0}
                 max={2000}
                 value={helldiversOptions.modifierLeadInMs}
+                step="any"
                 onChange={event => updateHelldiversOptions({ modifierLeadInMs: Number(event.target.value) })}
                 title="Pause between modifier input and first direction."
               />

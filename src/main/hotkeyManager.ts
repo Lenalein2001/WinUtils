@@ -15,7 +15,8 @@ import {
   type HotkeyUpdateResult,
 } from '../shared/hotkeys';
 import type { ActionEngine } from './actionEngine';
-import { getHotkeyDiagnostics, replaceHotkeys, startHook, stopHook } from './macroHook';
+import { getHotkeyDiagnostics, replaceHotkeys, startHook, stopHook, setNativePlaybackEnabled, waitForHotkeyRegistrations } from './macroHook';
+import type { NativeInputInstruction } from './nativeMacroWorker';
 
 interface HotkeyOverride {
   hotkey: string;
@@ -50,6 +51,7 @@ export interface RuntimeHotkeyRegistration {
   suppressWhenAppFocused: boolean;
   onDown: () => void;
   onUp?: () => void;
+  nativeProgram?: NativeInputInstruction[];
   onUpdate?: (input: Pick<HotkeyUpdateInput, 'hotkey' | 'enabled'>) => Promise<void>;
 }
 
@@ -72,6 +74,7 @@ export class HotkeyManager {
   private overrides = new Map<string, HotkeyOverride>();
   private actionBindings: StoredActionHotkey[] = [];
   private unsubscribeCatalog: (() => void) | null = null;
+  private unsubscribePause: (() => void) | null = null;
   private initialized = false;
   private updateChain: Promise<void> = Promise.resolve();
   private updateBatchDepth = 0;
@@ -91,9 +94,12 @@ export class HotkeyManager {
     this.initialized = true;
     await this.load();
     this.unsubscribeCatalog = this.actions.onCatalogChanged(() => this.syncActionBindings());
+    this.unsubscribePause = this.actions.onPauseChanged(paused => setNativePlaybackEnabled(!paused));
+    setNativePlaybackEnabled(!this.actions.getActivity().paused);
     await startHook();
     this.syncActionBindings();
     this.syncRegistrations();
+    await waitForHotkeyRegistrations();
   }
 
   replaceOwnerBindings(ownerId: string, bindings: RuntimeHotkeyRegistration[]): void {
@@ -165,6 +171,7 @@ export class HotkeyManager {
   updateBinding(input: HotkeyUpdateInput): Promise<HotkeyUpdateResult> {
     const update = this.updateChain.then(async () => {
       const result = await this.performUpdate(input);
+      await waitForHotkeyRegistrations();
       return { ...result, state: this.getState() };
     });
     this.updateChain = update.then(() => undefined, () => undefined);
@@ -332,6 +339,7 @@ export class HotkeyManager {
     this.actionBindings = [];
     this.unsubscribeCatalog?.();
     this.unsubscribeCatalog = null;
+    this.unsubscribePause?.(); this.unsubscribePause = null;
   }
 
   private getRegistrations(): RuntimeHotkeyRegistration[] {
@@ -415,10 +423,11 @@ export class HotkeyManager {
           down: binding.onDown,
           up: binding.onUp,
           suppressWhenAppFocused: binding.suppressWhenAppFocused,
+          nativeProgram: binding.nativeProgram,
         },
       })));
 
-    this.onStateChanged?.();
+    void waitForHotkeyRegistrations().then(() => this.onStateChanged?.()).catch(error => console.error('[Hotkeys] State update failed:', error));
   }
 
   private buildConflicts(registrations: RuntimeHotkeyRegistration[]): HotkeyConflict[] {

@@ -52,6 +52,8 @@ export interface KeyboardAction {
   enabled: boolean;
   key: string; // e.g. "Ctrl+C", "Enter"
   pressType: KeyPressType;
+  /** Press duration; absent in existing macros means the original 16 ms. */
+  holdMilliseconds?: number;
 }
 
 export interface MouseAction {
@@ -174,7 +176,7 @@ export interface MacroHotkeyConflict {
   suggestions: MacroHotkeySuggestion[];
 }
 
-export type MacroHotkeyBackend = 'electron' | 'uiohook' | 'modifier-worker' | 'none';
+export type MacroHotkeyBackend = 'native-worker' | 'native-polling' | 'none';
 
 export interface MacroHotkeyRegistration {
   hotkey: string;
@@ -189,8 +191,7 @@ export interface MacroRuntimeStats {
   lastFocusSampleAt: string | null;
   activePlaybackMacros: number;
   queuedRuns: number;
-  uiohookRunning: boolean;
-  modifierWorkerRunning: boolean;
+  nativeWorkerRunning: boolean;
   hotkeyRegistrations: MacroHotkeyRegistration[];
   hotkeysWithNoBackend: string[];
   hotkeyConflicts: MacroHotkeyConflict[];
