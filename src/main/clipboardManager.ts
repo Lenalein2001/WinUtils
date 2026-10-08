@@ -345,6 +345,7 @@ export class ClipboardManager {
   private cache: ClipboardHistoryFile | null = null;
   private pollHandle: NodeJS.Timeout | null = null;
   private lastSignature: string | null = null;
+  private lastSequenceSnapshot: { sequence: number; capturedAt: number; signature: string } | null = null;
   private pollInFlight = false;
   private lastQuickAccessAt: string | null = null;
   private readonly activeOcrTasks = new Set<string>();
@@ -432,7 +433,7 @@ export class ClipboardManager {
   }
 
   async captureNow(): Promise<ClipboardState> {
-    await this.captureClipboard();
+    await this.captureClipboard(true);
     return this.getState();
   }
 
@@ -457,6 +458,7 @@ export class ClipboardManager {
       const file = await this.load();
       file.settings = { ...file.settings, captureImages: enabled };
       await this.save(file);
+      this.lastSequenceSnapshot = null;
       this.notifyStateChanged();
       return this.getState();
 
@@ -720,7 +722,7 @@ export class ClipboardManager {
     this.notifyStateChanged();
   }
 
-  private async captureClipboard(): Promise<void> {
+  private async captureClipboard(force = false): Promise<void> {
     return this.mutationQueue.run(async () => {
       if (this.closing || this.pollInFlight) return;
       this.pollInFlight = true;
@@ -729,19 +731,36 @@ export class ClipboardManager {
         const file = await this.load();
         if (!file.settings.monitoring) return;
 
+        // The focus worker already samples Windows' clipboard change counter.
+        // A newer sample of the same sequence lets us avoid synchronously
+        // decoding, PNG-encoding and hashing the same image every poll.
+        const sourceSample = this.options.getClipboardSource?.();
+        const previous = this.lastSequenceSnapshot;
+        const freshSample = sourceSample && sourceSample.sequence > 0
+          && Date.now() - sourceSample.sampledAt < 1500;
+        if (!force && freshSample && previous && this.lastSignature === previous.signature
+          && sourceSample.sequence === previous.sequence && sourceSample.sampledAt > previous.capturedAt) return;
+
         const snapshot = await this.readClipboardSnapshot(file.settings);
-        if (!snapshot || snapshot.hash === this.lastSignature) return;
+        if (!snapshot) return;
+        const rememberSequence = (): void => {
+          this.lastSequenceSnapshot = freshSample
+            ? { sequence: sourceSample.sequence, capturedAt: Date.now(), signature: snapshot.hash }
+            : null;
+        };
+        if (snapshot.hash === this.lastSignature) { rememberSequence(); return; }
 
         if (file.settings.excludedApps.length) {
           if (this.awaitingSource?.hash !== snapshot.hash) this.awaitingSource = { hash: snapshot.hash, seenAt: Date.now() };
           const source = this.options.getClipboardSource?.();
           if (!source?.name || !source.sequence || source.sampledAt < this.awaitingSource.seenAt) return;
           if (file.settings.excludedApps.includes(source.name.toLowerCase().replace(/\.exe$/i, ''))) {
-            this.lastSignature = snapshot.hash; return;
+            this.lastSignature = snapshot.hash; rememberSequence(); return;
           }
         }
 
         this.lastSignature = snapshot.hash;
+        rememberSequence();
         const duplicate = file.entries.find((entry) => entry.hash === snapshot.hash);
 
         if (duplicate) {
