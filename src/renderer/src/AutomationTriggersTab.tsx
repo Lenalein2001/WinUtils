@@ -107,6 +107,12 @@ export function AutomationTriggersTab(): ReactElement {
     });
   };
 
+  const needsAppMonitor = state?.triggers.some(trigger => trigger.enabled
+    && ['application-started', 'application-closed', 'window-focused'].includes(trigger.type));
+  const monitorStarting = needsAppMonitor && !state?.workerRunning;
+  const statusLabel = !state ? 'Loading' : monitorStarting ? 'Starting app monitor'
+    : state.triggers.some(trigger => trigger.enabled) ? 'Automation ready' : 'No active triggers';
+
   return (
     <div className="automation-triggers module-shell">
       <header className="automation-triggers__header">
@@ -115,8 +121,8 @@ export function AutomationTriggersTab(): ReactElement {
           <h2>Triggers</h2>
           <p>Run any reusable action when Windows, applications, files, or the clipboard change.</p>
         </div>
-        <span className={`status-pill ${state?.workerRunning ? 'status-pill--success' : 'status-pill--warning'}`}>
-          {state?.workerRunning ? 'Event worker active' : 'Event worker starting'}
+        <span className={`status-pill ${monitorStarting ? 'status-pill--warning' : state?.triggers.some(trigger => trigger.enabled) ? 'status-pill--success' : ''}`}>
+          {statusLabel}
         </span>
       </header>
 

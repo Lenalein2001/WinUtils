@@ -638,7 +638,7 @@ async function bootstrap(): Promise<void> {
   registerClipboardIpcHandlers(clipboardManager);
   clipboardManager.init().catch(err => logStartup('ClipboardManager init error', err));
 
-  const automationTriggerManager = createOptionalModule('Automation Triggers', () => new AutomationTriggerManager(actionEngine), logStartup);
+  const automationTriggerManager = createOptionalModule('Automation Triggers', () => new AutomationTriggerManager(actionEngine, () => macroManager.getClipboardSource()), logStartup);
   registerAutomationTriggerIpc(automationTriggerManager);
   automationTriggerManager.init();
 

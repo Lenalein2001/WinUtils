@@ -80,21 +80,25 @@ export class AutomationTriggerManager {
   private worker: ChildProcessWithoutNullStreams | null = null;
   private workerBuffer = '';
   private workerReady = false;
+  private workerRestartTimer: NodeJS.Timeout | null = null;
   private previousProcesses: Set<string> | null = null;
   private previousForeground = '';
   private lastSnapshotAt: string | null = null;
   private tickTimer: NodeJS.Timeout | null = null;
   private clipboardTimer: NodeJS.Timeout | null = null;
   private previousClipboardSignature: string | null = null;
+  private clipboardSequence: { sequence: number; capturedAt: number } | null = null;
   private previousDisplays = new Set<string>();
   private previousNetwork = new Set<string>();
+  private networkMonitoring = false;
   private readonly fileSnapshots = new Map<string, FileSnapshot>();
   private initialized = false;
   private disposed = false;
   private tickRunning = false;
   private activeRuns = new Set<Promise<void>>();
 
-  constructor(private readonly actions: ActionEngine) {
+  constructor(private readonly actions: ActionEngine,
+    private readonly getClipboardSource?: () => { sequence: number; sampledAt: number } | null) {
     this.triggers = this.readStore();
   }
 
@@ -102,10 +106,7 @@ export class AutomationTriggerManager {
     if (this.initialized) return;
     this.initialized = true;
     this.previousDisplays = new Set(screen.getAllDisplays().map(display => String(display.id)));
-    this.previousNetwork = networkConnections();
-    this.startWorker();
-    this.tickTimer = setInterval(() => void this.tick(), 1000);
-    this.clipboardTimer = setInterval(() => this.pollClipboard(), 750);
+    this.syncMonitoring();
     powerMonitor.on('unlock-screen', this.handleUnlock);
     screen.on('display-added', this.handleDisplayAdded);
     screen.on('display-removed', this.handleDisplayRemoved);
@@ -158,6 +159,7 @@ export class AutomationTriggerManager {
       });
     }
     try { this.persist(); } catch (error) { this.triggers = previous; throw error; }
+    this.syncMonitoring();
     this.notify();
     return this.getState();
   }
@@ -171,6 +173,8 @@ export class AutomationTriggerManager {
     const runtime = this.runtimes.get(id);
     if (runtime?.timer) clearTimeout(runtime.timer);
     this.runtimes.delete(id);
+    this.fileSnapshots.delete(id);
+    this.syncMonitoring();
     this.notify();
     return this.getState();
   }
@@ -185,6 +189,8 @@ export class AutomationTriggerManager {
   async dispose(): Promise<void> {
     this.disposed = true;
     this.initialized = false;
+    if (this.workerRestartTimer) clearTimeout(this.workerRestartTimer);
+    this.workerRestartTimer = null;
     if (this.tickTimer) clearInterval(this.tickTimer);
     if (this.clipboardTimer) clearInterval(this.clipboardTimer);
     this.tickTimer = null;
@@ -219,8 +225,53 @@ export class AutomationTriggerManager {
     this.previousDisplays.delete(String(display.id));
   };
 
+  private needsWindowWorker(): boolean {
+    return this.triggers.some(trigger => trigger.enabled
+      && ['application-started', 'application-closed', 'window-focused'].includes(trigger.type));
+  }
+
+  private syncMonitoring(): void {
+    if (!this.initialized || this.disposed) return;
+    if (this.needsWindowWorker()) {
+      this.startWorker();
+    } else {
+      if (this.workerRestartTimer) clearTimeout(this.workerRestartTimer);
+      this.workerRestartTimer = null;
+      const worker = this.worker;
+      this.worker = null;
+      this.workerReady = false;
+      this.workerBuffer = '';
+      this.previousProcesses = null;
+      this.previousForeground = '';
+      this.lastSnapshotAt = null;
+      if (worker && !worker.killed) worker.kill();
+    }
+    const needsNetwork = this.triggers.some(trigger => trigger.enabled && trigger.type === 'network-connected');
+    if (needsNetwork && !this.networkMonitoring) this.previousNetwork = networkConnections();
+    this.networkMonitoring = needsNetwork;
+    const needsTick = this.triggers.some(trigger => trigger.enabled
+      && ['schedule', 'file-created', 'file-modified', 'file-deleted', 'network-connected'].includes(trigger.type));
+    if (needsTick && !this.tickTimer) {
+      this.tickTimer = setInterval(() => void this.tick(), 1000);
+    } else if (!needsTick && this.tickTimer) {
+      clearInterval(this.tickTimer);
+      this.tickTimer = null;
+    }
+    const needsClipboard = this.triggers.some(trigger => trigger.enabled && trigger.type === 'clipboard-changed');
+    if (needsClipboard && !this.clipboardTimer) {
+      this.previousClipboardSignature = null;
+      this.clipboardSequence = null;
+      this.clipboardTimer = setInterval(() => this.pollClipboard(), 750);
+    } else if (!needsClipboard && this.clipboardTimer) {
+      clearInterval(this.clipboardTimer);
+      this.clipboardTimer = null;
+      this.previousClipboardSignature = null;
+      this.clipboardSequence = null;
+    }
+  }
+
   private startWorker(): void {
-    if (this.disposed) return;
+    if (this.disposed || !this.initialized || !this.needsWindowWorker() || this.workerRestartTimer) return;
     if (this.worker && !this.worker.killed) return;
     const worker = spawn('powershell.exe', [
       '-NoProfile',
@@ -229,9 +280,12 @@ export class AutomationTriggerManager {
       '-Command', WINDOWS_SNAPSHOT_WORKER,
     ], { stdio: 'pipe', windowsHide: true });
     this.worker = worker;
+    this.workerBuffer = '';
     this.workerReady = false;
     worker.stdout.setEncoding('utf8');
-    worker.stdout.on('data', chunk => this.handleWorkerOutput(String(chunk)));
+    worker.stdout.on('data', chunk => {
+      if (this.worker === worker) this.handleWorkerOutput(String(chunk));
+    });
     worker.stderr.on('data', chunk => console.error('[AutomationTriggers] Worker error:', String(chunk).trim()));
     let stopped = false;
     const handleStopped = (error?: Error): void => {
@@ -242,7 +296,10 @@ export class AutomationTriggerManager {
         this.worker = null;
         this.workerReady = false;
         this.notify();
-        if (this.initialized) setTimeout(() => this.startWorker(), 2000);
+        if (this.initialized && this.needsWindowWorker()) this.workerRestartTimer = setTimeout(() => {
+          this.workerRestartTimer = null;
+          this.startWorker();
+        }, 2000);
       }
     };
     worker.once('error', handleStopped);
@@ -313,6 +370,7 @@ export class AutomationTriggerManager {
       }
     }
 
+    if (!this.triggers.some(trigger => trigger.enabled && trigger.type === 'network-connected')) return;
     const nextNetwork = networkConnections();
     if (!setsEqual(nextNetwork, this.previousNetwork)) {
       if ([...nextNetwork].some(connection => !this.previousNetwork.has(connection))) {
@@ -350,9 +408,14 @@ export class AutomationTriggerManager {
   private pollClipboard(): void {
     if (!this.triggers.some(trigger => trigger.enabled && trigger.type === 'clipboard-changed')) {
       this.previousClipboardSignature = null;
+      this.clipboardSequence = null;
       return;
     }
-    if (isClipboardExcluded()) { this.previousClipboardSignature = null; return; }
+    if (isClipboardExcluded()) { this.previousClipboardSignature = null; this.clipboardSequence = null; return; }
+    const sample = this.getClipboardSource?.();
+    const fresh = sample && sample.sequence > 0 && Date.now() - sample.sampledAt < 1500;
+    if (fresh && this.previousClipboardSignature !== null && this.clipboardSequence
+      && sample.sequence === this.clipboardSequence.sequence && sample.sampledAt > this.clipboardSequence.capturedAt) return;
     const formats = clipboard.availableFormats().sort();
     let contentHash = '';
     if (formats.some(format => format.startsWith('text/'))) {
@@ -361,8 +424,9 @@ export class AutomationTriggerManager {
       const image = clipboard.readImage();
       const size = image.getSize();
       if (size.width * size.height > 16_000_000) return;
-      contentHash = createHash('sha256').update(image.toPNG()).digest('hex');
+      contentHash = createHash('sha256').update(`${size.width}x${size.height}:`).update(image.toBitmap()).digest('hex');
     }
+    this.clipboardSequence = fresh ? { sequence: sample.sequence, capturedAt: Date.now() } : null;
     const signature = `${formats.join(',')}|${contentHash}`;
     if (this.previousClipboardSignature === null) {
       this.previousClipboardSignature = signature;
