@@ -10,6 +10,7 @@ import { TaskPool } from './taskPool';
 import { ClipboardVault } from './clipboardVault';
 import { readBoundedBytes } from './boundedFile';
 import { isClipboardExcluded } from './clipboardPrivacy';
+import { encodeClipboardImage } from './clipboardImageEncoder';
 import type {
   ClipboardCategory,
   ClipboardClearMode,
@@ -62,6 +63,7 @@ interface ClipboardSnapshot {
   text?: string;
   filePaths?: string[];
   imageBuffer?: Buffer;
+  thumbnailDataUrl?: string;
   width?: number;
   height?: number;
   sizeBytes?: number;
@@ -733,7 +735,7 @@ export class ClipboardManager {
 
         // The focus worker already samples Windows' clipboard change counter.
         // A newer sample of the same sequence lets us avoid synchronously
-        // decoding, PNG-encoding and hashing the same image every poll.
+        // reading, encoding and hashing the same image every poll.
         const sourceSample = this.options.getClipboardSource?.();
         const previous = this.lastSequenceSnapshot;
         const freshSample = sourceSample && sourceSample.sequence > 0
@@ -742,7 +744,10 @@ export class ClipboardManager {
           && sourceSample.sequence === previous.sequence && sourceSample.sampledAt > previous.capturedAt) return;
 
         const snapshot = await this.readClipboardSnapshot(file.settings);
-        if (!snapshot) return;
+        if (!snapshot || this.closing || isClipboardExcluded()) return;
+        const latestSource = this.options.getClipboardSource?.();
+        if (freshSample && latestSource && latestSource.sampledAt > sourceSample.sampledAt
+          && latestSource.sequence !== sourceSample.sequence) return;
         const rememberSequence = (): void => {
           this.lastSequenceSnapshot = freshSample
             ? { sequence: sourceSample.sequence, capturedAt: Date.now(), signature: snapshot.hash }
@@ -821,11 +826,14 @@ export class ClipboardManager {
       if (!image.isEmpty()) {
         const size = image.getSize();
         if (size.width * size.height > 16_000_000) return null;
-        const png = image.toPNG();
-        if (png.length > 0 && png.length <= 16 * 1024 * 1024) {
+        const thumbnailDataUrl = createThumbnailDataUrl(image);
+        const encoded = await encodeClipboardImage(image.toBitmap(), size.width, size.height, this.ocrAbort.signal);
+        if (encoded) {
+          const { png, hash } = encoded;
           return {
             type: 'image',
-            hash: hashContent('image', png),
+            hash,
+            thumbnailDataUrl,
             imageBuffer: png,
             width: size.width,
             height: size.height,
@@ -876,12 +884,12 @@ export class ClipboardManager {
       const storedImage = settings.encrypted ? await this.vault.seal(snapshot.imageBuffer) : snapshot.imageBuffer;
       await writeBytesAtomically(imagePath, storedImage);
       this.imageSizes.set(fileName, storedImage.length);
-      const image = nativeImage.createFromBuffer(snapshot.imageBuffer);
+      const image = snapshot.thumbnailDataUrl ? null : nativeImage.createFromBuffer(snapshot.imageBuffer);
       baseEntry.image = {
-        width: snapshot.width ?? image.getSize().width,
-        height: snapshot.height ?? image.getSize().height,
+        width: snapshot.width ?? image!.getSize().width,
+        height: snapshot.height ?? image!.getSize().height,
         fileName,
-        thumbnailDataUrl: createThumbnailDataUrl(image),
+        thumbnailDataUrl: snapshot.thumbnailDataUrl ?? createThumbnailDataUrl(image!),
       };
       baseEntry.ocrStatus = settings.imageOcr && snapshot.imageBuffer.length <= IMAGE_OCR_SIZE_LIMIT ? 'pending' : 'none';
       if (!settings.imageOcr) {
