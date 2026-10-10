@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.3.1 - 2026-10-10
+
+This release improves macro responsiveness, keeps the interface responsive during clipboard image capture, and reduces background work.
+
+### Added
+
+- Added optional key hold durations for keyboard press actions.
+
+### Changed
+
+- Macro hotkeys and keyboard/mouse playback now run in a native worker, reducing delays caused by other app work.
+- Clipboard images are compressed in the background, and unchanged clipboard contents avoid repeated processing.
+- Automation watchers and polling run only when enabled triggers need them.
+
+### Fixed
+
+- Preserved fractional millisecond delays and key hold durations through editing, delay fitting, saving, and playback. Windows scheduling can still cause timing variation.
+- Improved hotkey registration when profiles change and cleanup when macros stop or are cancelled.
+- Reduced overhead when checking foreground-window macro conditions.
+- Corrected the automation status display when no app watcher is needed.
+
+### Security
+
+- Updated application and build dependencies with available security patches.
+
 ## v0.3.0 - 2026-10-05
 
 This release strengthens recovery and privacy, adds safer settings controls, and simplifies everyday use.
