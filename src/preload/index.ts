@@ -6,7 +6,7 @@ import type { AlwaysActiveMode, AlwaysActiveRuleUpdate, AlwaysActiveState } from
 import type { AppSettings } from '../shared/settings';
 import type { RenameApplyResult, RenamePreview, RenameRule, RenameTransaction, RenameUndoResult, RenamerItem, RenamerLoadOptions, RenamerLoadPathsInput, RenamerPreviewInput } from '../shared/renamer';
 import type { AppUpdateInfo, UpdateState } from '../shared/updater';
-import type { ClipboardClearMode, ClipboardQuery, ClipboardSettings, ClipboardState } from '../shared/clipboard';
+import type { ClipboardClearMode, ClipboardCopyMode, ClipboardQuery, ClipboardSettings, ClipboardState } from '../shared/clipboard';
 import type { FileRecoveryItem, FileSyncAnalyzeResult, FileSyncApplyResult, FileSyncJobInput, FileSyncState } from '../shared/fileSync';
 import type { AutomationActivity, AutomationActionDefinition, AutomationActionRequest, AutomationActionResult } from '../shared/actions';
 import type { HotkeyActionBindingInput, HotkeyState, HotkeyUpdateInput, HotkeyUpdateResult } from '../shared/hotkeys';
@@ -224,10 +224,11 @@ const api = {
     captureNow: (): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:captureNow'),
     setMonitoring: (enabled: boolean): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:setMonitoring', enabled),
     setCaptureImages: (enabled: boolean): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:setCaptureImages', enabled),
+    setAutoCleanUrls: (enabled: boolean): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:setAutoCleanUrls', enabled),
     setImageOcr: (enabled: boolean): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:setImageOcr', enabled),
     setRetention: (settings: Pick<ClipboardSettings, 'retentionDays' | 'maxEntries'>): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:setRetention', settings),
     setPinned: (id: string, pinned: boolean): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:setPinned', id, pinned),
-    copy: (id: string): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:copy', id),
+    copy: (id: string, mode?: ClipboardCopyMode): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:copy', id, mode),
     delete: (id: string): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:delete', id),
     clear: (mode: ClipboardClearMode): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:clear', mode),
     rerunOcr: (id: string): Promise<ClipboardState> => ipcRenderer.invoke('clipboard:rerunOcr', id),

@@ -8,7 +8,7 @@ import type { AlwaysActiveMode, AlwaysActiveRuleUpdate, AlwaysActiveState } from
 import type { AppSettings } from '../../shared/settings';
 import type { RenameApplyResult, RenamePreview, RenameRule, RenameTransaction, RenameUndoResult, RenamerItem, RenamerLoadOptions, RenamerLoadPathsInput, RenamerPreviewInput } from '../../shared/renamer';
 import type { AppUpdateInfo, UpdateState } from '../../shared/updater';
-import type { ClipboardClearMode, ClipboardQuery, ClipboardSettings, ClipboardState } from '../../shared/clipboard';
+import type { ClipboardClearMode, ClipboardCopyMode, ClipboardQuery, ClipboardSettings, ClipboardState } from '../../shared/clipboard';
 import type { FileRecoveryItem, FileSyncAnalyzeResult, FileSyncApplyResult, FileSyncJobInput, FileSyncState } from '../../shared/fileSync';
 import type { AutomationActivity, AutomationActionDefinition, AutomationActionRequest, AutomationActionResult } from '../../shared/actions';
 import type { HotkeyActionBindingInput, HotkeyState, HotkeyUpdateInput, HotkeyUpdateResult } from '../../shared/hotkeys';
@@ -169,10 +169,11 @@ declare global {
         captureNow: () => Promise<ClipboardState>;
         setMonitoring: (enabled: boolean) => Promise<ClipboardState>;
         setCaptureImages: (enabled: boolean) => Promise<ClipboardState>;
+        setAutoCleanUrls: (enabled: boolean) => Promise<ClipboardState>;
         setImageOcr: (enabled: boolean) => Promise<ClipboardState>;
         setRetention: (settings: Pick<ClipboardSettings, 'retentionDays' | 'maxEntries'>) => Promise<ClipboardState>;
         setPinned: (id: string, pinned: boolean) => Promise<ClipboardState>;
-        copy: (id: string) => Promise<ClipboardState>;
+        copy: (id: string, mode?: ClipboardCopyMode) => Promise<ClipboardState>;
         delete: (id: string) => Promise<ClipboardState>;
         clear: (mode: ClipboardClearMode) => Promise<ClipboardState>;
         rerunOcr: (id: string) => Promise<ClipboardState>;

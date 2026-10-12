@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
-import type { ClipboardEntry, ClipboardState } from '../../shared/clipboard';
+import type { ClipboardCopyMode, ClipboardEntry, ClipboardState } from '../../shared/clipboard';
 
 export function ClipboardPopup(): ReactElement {
   const [state, setState] = useState<ClipboardState | null>(null);
@@ -9,13 +9,24 @@ export function ClipboardPopup(): ReactElement {
   const [error, setError] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const copying = useRef(false);
+  const mounted = useRef(false);
+  const generation = useRef(0);
+  const queryRef = useRef('');
+  const loadedQuery = useRef('');
+  const selectedId = useRef<string | undefined>(undefined);
+  queryRef.current = search;
 
   const load = useCallback(async (): Promise<void> => {
+    const request = ++generation.current;
     try {
       setError(null);
-      setState(await window.winUtils.clipboard.getState({ limit: 100 }));
+      const next = await window.winUtils.clipboard.getState({ search: queryRef.current, limit: 100 });
+      if (!mounted.current || request !== generation.current) return;
+      const index = next.entries.findIndex(entry => entry.id === selectedId.current);
+      setState(next);
+      setSelectedIndex(current => index >= 0 ? index : Math.min(current, Math.max(next.entries.length - 1, 0)));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      if (mounted.current && request === generation.current) setError(reason instanceof Error ? reason.message : String(reason));
     }
   }, []);
 
@@ -25,13 +36,15 @@ export function ClipboardPopup(): ReactElement {
     return (state?.entries ?? []).filter(entry => searchableText(entry).includes(query));
   }, [search, state?.entries]);
 
-  const selectEntry = useCallback(async (entry: ClipboardEntry): Promise<void> => {
+  selectedId.current = entries[selectedIndex]?.id;
+
+  const selectEntry = useCallback(async (entry: ClipboardEntry, mode?: ClipboardCopyMode): Promise<void> => {
     if (copying.current) return;
     copying.current = true;
     setBusyId(entry.id);
     setError(null);
     try {
-      await window.winUtils.clipboard.copy(entry.id);
+      await window.winUtils.clipboard.copy(entry.id, mode);
       await window.winUtils.clipboard.hideQuickAccess();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -40,9 +53,13 @@ export function ClipboardPopup(): ReactElement {
   }, []);
 
   useEffect(() => {
+    mounted.current = true;
     void load();
     const unsubscribeChanged = window.winUtils.clipboard.onChanged(() => void load());
     const unsubscribeOpened = window.winUtils.clipboard.onOpenRequested(() => {
+      queryRef.current = '';
+      loadedQuery.current = '';
+      selectedId.current = undefined;
       setSearch('');
       setSelectedIndex(0);
       setBusyId(null);
@@ -50,10 +67,27 @@ export function ClipboardPopup(): ReactElement {
       window.setTimeout(() => searchRef.current?.focus(), 0);
     });
     return () => {
+      mounted.current = false; generation.current++;
       unsubscribeChanged();
       unsubscribeOpened();
     };
   }, [load]);
+
+  useEffect(() => {
+    if (loadedQuery.current === search) return;
+    loadedQuery.current = search;
+    generation.current++;
+    const timer = window.setTimeout(() => void load(), 150);
+    return () => window.clearTimeout(timer);
+  }, [search, load]);
+
+  const togglePinned = async (entry: ClipboardEntry): Promise<void> => {
+    if (copying.current) return;
+    copying.current = true; setBusyId(entry.id); setError(null);
+    try { await window.winUtils.clipboard.setPinned(entry.id, !entry.pinned); await load(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+    finally { copying.current = false; setBusyId(null); }
+  };
 
   useEffect(() => {
     setSelectedIndex(index => Math.min(index, Math.max(entries.length - 1, 0)));
@@ -65,7 +99,10 @@ export function ClipboardPopup(): ReactElement {
   }, [selectedIndex]);
 
   const handleKeyDown = (event: React.KeyboardEvent): void => {
-    if (event.key === 'ArrowDown') {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'p') {
+      event.preventDefault();
+      if (!event.repeat && entries[selectedIndex]) void togglePinned(entries[selectedIndex]);
+    } else if (event.key === 'ArrowDown') {
       event.preventDefault();
       setSelectedIndex(index => Math.max(0, Math.min(index + 1, entries.length - 1)));
     } else if (event.key === 'ArrowUp') {
@@ -73,7 +110,7 @@ export function ClipboardPopup(): ReactElement {
       setSelectedIndex(index => Math.max(index - 1, 0));
     } else if (event.key === 'Enter' && entries[selectedIndex]) {
       event.preventDefault();
-      void selectEntry(entries[selectedIndex]);
+      void selectEntry(entries[selectedIndex], event.shiftKey ? 'original' : undefined);
     } else if (event.key === 'Escape') {
       event.preventDefault();
       void window.winUtils.clipboard.hideQuickAccess();
@@ -98,7 +135,12 @@ export function ClipboardPopup(): ReactElement {
       </header>
 
       <label className="clipboard-popup__search">
-        <span aria-hidden="true">?</span>
+        <span aria-hidden="true">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="10" cy="10" r="6" />
+            <path d="m15 15 5 5" />
+          </svg>
+        </span>
         <input
           ref={searchRef}
           value={search}
@@ -155,6 +197,8 @@ export function ClipboardPopup(): ReactElement {
       <footer className="clipboard-popup__footer">
         <span><kbd>Up</kbd><kbd>Dn</kbd> Navigate</span>
         <span><kbd>Enter</kbd> Copy</span>
+        <span><kbd>Ctrl+P</kbd> Pin</span>
+        <span title="Copy the saved item without URL cleanup"><kbd>Shift+Enter</kbd> Original</span>
         <span><kbd>Esc</kbd> Close</span>
       </footer>
     </main>

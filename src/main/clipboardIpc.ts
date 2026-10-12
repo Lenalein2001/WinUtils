@@ -1,6 +1,6 @@
 import { handleTrustedIpc } from './ipcSecurity';
 import { BrowserWindow } from 'electron';
-import type { ClipboardClearMode, ClipboardQuery, ClipboardSettings } from '../shared/clipboard';
+import type { ClipboardClearMode, ClipboardCopyMode, ClipboardQuery, ClipboardSettings } from '../shared/clipboard';
 import type { ClipboardManager } from './clipboardManager';
 
 export function registerClipboardIpcHandlers(manager: ClipboardManager): void {
@@ -11,10 +11,11 @@ export function registerClipboardIpcHandlers(manager: ClipboardManager): void {
   handleTrustedIpc('clipboard:setExcludedApps', async (_event, apps: string[]) => manager.setExcludedApps(apps));
   handleTrustedIpc('clipboard:setMonitoring', async (_event, enabled: boolean) => manager.setMonitoring(enabled));
   handleTrustedIpc('clipboard:setCaptureImages', async (_event, enabled: boolean) => manager.setCaptureImages(enabled));
+  handleTrustedIpc('clipboard:setAutoCleanUrls', async (_event, enabled: boolean) => manager.setAutoCleanUrls(enabled));
   handleTrustedIpc('clipboard:setImageOcr', async (_event, enabled: boolean) => manager.setImageOcr(enabled));
   handleTrustedIpc('clipboard:setRetention', async (_event, settings: Pick<ClipboardSettings, 'retentionDays' | 'maxEntries'>) => manager.setRetention(settings));
   handleTrustedIpc('clipboard:setPinned', async (_event, id: string, pinned: boolean) => manager.setPinned(id, pinned));
-  handleTrustedIpc('clipboard:copy', async (_event, id: string) => manager.copyEntry(id));
+  handleTrustedIpc('clipboard:copy', async (_event, id: string, mode?: ClipboardCopyMode) => manager.copyEntry(id, mode));
   handleTrustedIpc('clipboard:delete', async (_event, id: string) => manager.deleteEntry(id));
   handleTrustedIpc('clipboard:clear', async (_event, mode: ClipboardClearMode) => manager.clear(mode));
   handleTrustedIpc('clipboard:rerunOcr', async (_event, id: string) => manager.rerunOcr(id));

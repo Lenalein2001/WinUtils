@@ -6,6 +6,8 @@ export type ClipboardOcrStatus = 'none' | 'pending' | 'complete' | 'error' | 'un
 
 export type ClipboardFilter = ClipboardCategory | 'all' | 'pinned';
 
+export type ClipboardCopyMode = 'default' | 'original' | 'clean-url' | 'trim' | 'single-line' | 'ocr-text';
+
 export type ClipboardClearMode = 'all' | 'unpinned';
 
 export interface ClipboardImageInfo {
@@ -40,6 +42,7 @@ export interface ClipboardSettings {
   monitoring: boolean;
   captureImages: boolean;
   imageOcr: boolean;
+  autoCleanUrls: boolean;
   quickAccessHotkey: string;
   retentionDays: number;
   maxEntries: number;

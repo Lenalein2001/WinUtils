@@ -28,7 +28,8 @@ WinUtils is a Windows desktop utility app built with Electron, React, TypeScript
 - Always Active (Beta) rules for preventing window deactivation, throttled game keepalive signals, active-window signals, or focus-locking selected running apps
 - Batch Renamer with drag-and-drop loading, ordered rename rules, live validation, conflict preview, reversible apply, and undo history
 - Regex Lab with colored token suggestions, live match checks, capture previews, and direct export into Batch Renamer regex rules
-- Clipboard Manager with local searchable history, pins, smart categories, image capture, Windows OCR, Windows history delete sync, and a compact Win+V-style quick-access popup
+- Clipboard Manager with full-history search, pins, smart categories, image capture, Windows OCR, Windows history delete sync, and a compact Win+V-style quick-access popup
+- Optional clipboard URL tracking cleanup that keeps original links in history, plus copy options for clean links, trimmed or single-line text, and text extracted from images
 - File Sync with local folder jobs, GoodSync-style integrated left/right folder selectors, auto-analyzing tree previews, direct include/exclude filter actions, one-way and two-way sync, empty-folder handling, guarded automation triggers, verified copies, conflict handling, metadata-preserving copies, and quarantine for replaced/deleted files
 - Settings for launch at login, start minimized, minimize to tray, and close to tray
 - Secure IPC bridge between renderer and Electron main process

@@ -1,5 +1,6 @@
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type ReactElement } from 'react';
-import type { ClipboardEntry, ClipboardFilter, ClipboardSettings, ClipboardState } from '../../shared/clipboard';
+import type { ClipboardCopyMode, ClipboardEntry, ClipboardFilter, ClipboardSettings, ClipboardState } from '../../shared/clipboard';
+import { cleanClipboardUrl } from '../../shared/clipboardText';
 import { ClipboardExclusions } from './ClipboardExclusions';
 
 const filterOptions: Array<{ value: ClipboardFilter; label: string; title: string }> = [
@@ -33,6 +34,9 @@ export function ClipboardTab(): ReactElement {
   const retentionDirty = useRef(false);
   const [clearMode, setClearMode] = useState<'all' | 'unpinned' | null>(null);
   const mounted = useRef(false);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const queryRef = useRef({ search: '', filter: 'all' as ClipboardFilter });
+  const queryKey = useRef('all|');
   const requestGeneration = useRef(0);
 
   const loadState = useCallback(async (showSpinner = true): Promise<void> => {
@@ -40,7 +44,7 @@ export function ClipboardTab(): ReactElement {
     if (showSpinner) { setLoading(true); setError(null); }
 
     try {
-      const nextState = await window.winUtils.clipboard.getState({ limit: 500 });
+      const nextState = await window.winUtils.clipboard.getState({ ...queryRef.current, limit: 500 });
       if (mounted.current && generation === requestGeneration.current) setState(nextState);
     } catch (caughtError) {
       if (mounted.current && generation === requestGeneration.current) setError(getErrorMessage(caughtError, 'Unable to load clipboard history.'));
@@ -51,13 +55,14 @@ export function ClipboardTab(): ReactElement {
 
   const deferredSearch = useDeferredValue(search);
   const deferredFilter = useDeferredValue(filter);
+  queryRef.current = { search: deferredSearch, filter: deferredFilter };
   const allEntries = state?.entries ?? [];
   const entries = useMemo(() => filterClipboardEntries(allEntries, deferredSearch, deferredFilter), [allEntries, deferredSearch, deferredFilter]);
   const visibleSummary = useMemo(() => {
     if (!state) return 'No clipboard data loaded yet.';
     if (state.total === 0) return 'Clipboard history is empty.';
     if (entries.length === allEntries.length && allEntries.length === state.total) return `${entries.length} saved items.`;
-    return `${entries.length} of ${allEntries.length} loaded items.`;
+    return `${entries.length} of ${state.total} saved items shown.`;
   }, [allEntries.length, entries.length, state]);
 
   useEffect(() => {
@@ -72,6 +77,25 @@ export function ClipboardTab(): ReactElement {
       window.clearTimeout(handle);
     };
   }, [loadState]);
+
+  useEffect(() => {
+    const key = `${deferredFilter}|${deferredSearch}`;
+    if (queryKey.current === key) return;
+    queryKey.current = key;
+    requestGeneration.current++;
+    const handle = window.setTimeout(() => void loadState(false), 150);
+    return () => window.clearTimeout(handle);
+  }, [deferredFilter, deferredSearch, loadState]);
+
+  useEffect(() => {
+    const focusSearch = (event: KeyboardEvent): void => {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+        event.preventDefault(); searchRef.current?.focus(); searchRef.current?.select();
+      }
+    };
+    window.addEventListener('keydown', focusSearch);
+    return () => window.removeEventListener('keydown', focusSearch);
+  }, []);
 
   useEffect(() => {
     const unsubscribe = window.winUtils.clipboard.onChanged(() => {
@@ -105,8 +129,8 @@ export function ClipboardTab(): ReactElement {
     }
   }, [loadState]);
 
-  const handleCopy = useCallback(async (entry: ClipboardEntry): Promise<void> => {
-    await runAction('copy item', () => window.winUtils.clipboard.copy(entry.id).then(() => undefined), 'Copied back to the clipboard.');
+  const handleCopy = useCallback(async (entry: ClipboardEntry, mode?: ClipboardCopyMode): Promise<void> => {
+    await runAction('copy item', () => window.winUtils.clipboard.copy(entry.id, mode).then(() => undefined), 'Copied back to the clipboard.');
   }, [runAction]);
 
   const handlePinned = useCallback(async (entry: ClipboardEntry): Promise<void> => {
@@ -206,12 +230,15 @@ export function ClipboardTab(): ReactElement {
           <span>Search</span>
           <input
             className="macro-input"
+            ref={searchRef}
             value={search}
+            onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); setSearch(''); } }}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="Find text, paths, links, OCR results..."
+            placeholder="Search all history (Ctrl+F)"
             title="Search saved clipboard text, OCR text, file paths, previews, and category labels."
           />
         </label>
+        {search && <button className="micro-button" onClick={() => { setSearch(''); searchRef.current?.focus(); }} aria-label="Clear clipboard search">Clear search</button>}
         <div className="clipboard-filter-row" aria-label="Clipboard filters">
           {filterOptions.map((option) => (
             <button
@@ -259,6 +286,11 @@ export function ClipboardTab(): ReactElement {
             disabled={busy !== null}
           />
           <span>Read text in images</span>
+        </label>
+        <label title="Remove known tracking parameters from newly copied links. Original links remain in history. Recognised signed links are skipped.">
+          <input type="checkbox" checked={state?.settings.autoCleanUrls ?? false} disabled={busy !== null || !state}
+            onChange={event => void runAction('update link cleanup', () => window.winUtils.clipboard.setAutoCleanUrls(event.target.checked).then(() => undefined))} />
+          <span>Auto-clean links</span>
         </label>
         <label className="clipboard-retention-field" title="Maximum unpinned clipboard entries to keep. Use 0 for unlimited.">
           <span>History limit</span>
@@ -361,12 +393,13 @@ function ClipboardStat({ label, value, title }: { label: string; value: number; 
 const ClipboardEntryRow = memo(function ClipboardEntryRow({ entry, busy, onCopy, onPinned, onDelete, onRerunOcr }: {
   entry: ClipboardEntry;
   busy: boolean;
-  onCopy: (entry: ClipboardEntry) => Promise<void>;
+  onCopy: (entry: ClipboardEntry, mode?: ClipboardCopyMode) => Promise<void>;
   onPinned: (entry: ClipboardEntry) => Promise<void>;
   onDelete: (entry: ClipboardEntry) => Promise<void>;
   onRerunOcr: (entry: ClipboardEntry) => Promise<void>;
 }): ReactElement {
   const title = shortenTitle(entry.preview || 'Clipboard item');
+  const canCleanLink = entry.type === 'text' && cleanClipboardUrl(entry.text ?? '') !== (entry.text ?? '');
 
   return (
     <article className={`clipboard-entry clipboard-entry--${entry.type} ${entry.pinned ? 'clipboard-entry--pinned' : ''}`}>
@@ -395,6 +428,20 @@ const ClipboardEntryRow = memo(function ClipboardEntryRow({ entry, busy, onCopy,
         <button className="micro-button" type="button" disabled={busy} onClick={() => void onCopy(entry)} title="Put this saved item back onto the Windows clipboard.">
           Copy
         </button>
+        {(entry.type === 'text' || entry.ocrText) && <details className="clipboard-copy-options" onKeyDown={event => {
+          if (event.key === 'Escape') { event.currentTarget.open = false; event.currentTarget.querySelector('summary')?.focus(); }
+        }}>
+          <summary className="micro-button" aria-label="Copy options">Copy as...</summary>
+          <div className="clipboard-copy-options__list" onClick={event => { const details = event.currentTarget.closest('details'); if (details) details.open = false; }}>
+            {entry.type === 'text' && <>
+              <button className="micro-button" disabled={busy} onClick={() => void onCopy(entry, 'original')}>Original text</button>
+              {canCleanLink && <button className="micro-button" disabled={busy} onClick={() => void onCopy(entry, 'clean-url')}>Clean link</button>}
+              <button className="micro-button" disabled={busy} onClick={() => void onCopy(entry, 'trim')}>Trimmed text</button>
+              <button className="micro-button" disabled={busy} onClick={() => void onCopy(entry, 'single-line')}>Single line</button>
+            </>}
+            {entry.ocrText && <button className="micro-button" disabled={busy} onClick={() => void onCopy(entry, 'ocr-text')}>Text from image</button>}
+          </div>
+        </details>}
         <button className="micro-button" type="button" disabled={busy} onClick={() => void onPinned(entry)} title={entry.pinned ? 'Allow this item to be removed by normal cleanup.' : 'Keep this item at the top and protect it from unpinned cleanup.'}>
           {entry.pinned ? 'Unpin' : 'Pin'}
         </button>

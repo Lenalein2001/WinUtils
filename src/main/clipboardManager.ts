@@ -14,6 +14,7 @@ import { encodeClipboardImage } from './clipboardImageEncoder';
 import type {
   ClipboardCategory,
   ClipboardClearMode,
+  ClipboardCopyMode,
   ClipboardEntry,
   ClipboardEntryType,
   ClipboardFilter,
@@ -21,6 +22,7 @@ import type {
   ClipboardSettings,
   ClipboardState,
 } from '../shared/clipboard';
+import { cleanClipboardUrl, clipboardSingleLine } from '../shared/clipboardText';
 import { formatHotkey } from '../shared/hotkeys';
 import type { ActionEngine } from './actionEngine';
 import type { HotkeyManager } from './hotkeyManager';
@@ -36,6 +38,7 @@ const DEFAULT_SETTINGS: ClipboardSettings = {
   monitoring: true,
   captureImages: true,
   imageOcr: true,
+  autoCleanUrls: false,
   quickAccessHotkey: 'Ctrl+Alt+V',
   retentionDays: 30,
   maxEntries: 350,
@@ -467,6 +470,18 @@ export class ClipboardManager {
     });
   }
 
+  async setAutoCleanUrls(enabled: boolean): Promise<ClipboardState> {
+    if (typeof enabled !== 'boolean') throw new Error('Invalid URL cleanup preference.');
+    return this.mutationQueue.run(async () => {
+      const file = await this.load();
+      file.settings = { ...file.settings, autoCleanUrls: enabled };
+      await this.save(file);
+      this.lastSequenceSnapshot = null;
+      this.notifyStateChanged();
+      return this.getState();
+    });
+  }
+
   async setImageOcr(enabled: boolean): Promise<ClipboardState> {
     return this.mutationQueue.run(async () => {
       const file = await this.load();
@@ -565,7 +580,8 @@ export class ClipboardManager {
     });
   }
 
-  async copyEntry(id: string): Promise<ClipboardState> {
+  async copyEntry(id: string, mode: ClipboardCopyMode = 'default'): Promise<ClipboardState> {
+    if (!['default', 'original', 'clean-url', 'trim', 'single-line', 'ocr-text'].includes(mode)) throw new Error('Invalid clipboard copy option.');
     return this.mutationQueue.run(async () => {
       const file = await this.load();
       const entry = file.entries.find((item) => item.id === id);
@@ -574,7 +590,14 @@ export class ClipboardManager {
         throw new Error('Clipboard entry could not be found.');
       }
 
-      if (entry.type === 'image') {
+      let copiedText: string | undefined;
+      if (mode === 'ocr-text') {
+        if (entry.type !== 'image' || !entry.ocrText) throw new Error('This image has no OCR text to copy.');
+        copiedText = entry.ocrText;
+        electronClipboard.writeText(copiedText);
+      } else if (entry.type !== 'text' && mode !== 'default' && mode !== 'original') {
+        throw new Error('This copy option is only available for text.');
+      } else if (entry.type === 'image') {
         if (!entry.image) throw new Error('The selected image clipboard entry is missing its stored image.');
         const image = nativeImage.createFromBuffer(await this.vault.open(await readFile(this.imagePath(entry.image.fileName))));
         if (image.isEmpty()) throw new Error('The stored clipboard image could not be read.');
@@ -582,10 +605,14 @@ export class ClipboardManager {
       } else if (entry.type === 'files') {
         electronClipboard.writeText((entry.filePaths ?? []).join('\n'));
       } else {
-        electronClipboard.writeText(entry.text ?? '');
+        copiedText = entry.text ?? '';
+        if (mode === 'clean-url' || (mode === 'default' && file.settings.autoCleanUrls)) copiedText = cleanClipboardUrl(copiedText);
+        else if (mode === 'trim') copiedText = copiedText.trim();
+        else if (mode === 'single-line') copiedText = clipboardSingleLine(copiedText);
+        electronClipboard.writeText(copiedText);
       }
 
-      if (entry.type === 'image') {
+      if (entry.type === 'image' && mode !== 'ocr-text') {
         await this.attachWindowsHistoryItemId(entry);
       }
 
@@ -593,7 +620,8 @@ export class ClipboardManager {
       entry.lastUsedAt = now;
       entry.updatedAt = now;
       entry.useCount += 1;
-      this.lastSignature = entry.hash;
+      this.lastSignature = copiedText !== undefined ? hashContent('text', copiedText) : entry.hash;
+      this.lastSequenceSnapshot = null;
       await this.save(file);
       this.notifyStateChanged();
       return this.getState();
@@ -731,7 +759,7 @@ export class ClipboardManager {
 
       try {
         const file = await this.load();
-        if (!file.settings.monitoring) return;
+        if (!file.settings.monitoring && !force) return;
 
         // The focus worker already samples Windows' clipboard change counter.
         // A newer sample of the same sequence lets us avoid synchronously
@@ -776,6 +804,7 @@ export class ClipboardManager {
           }
           file.entries = [duplicate, ...file.entries.filter((entry) => entry.id !== duplicate.id)];
           await this.save(file);
+          this.cleanCapturedUrl(snapshot, file.settings, freshSample ? sourceSample.sequence : undefined);
           this.notifyStateChanged();
           return;
         }
@@ -794,6 +823,7 @@ export class ClipboardManager {
         file.entries = [entry, ...file.entries];
         await this.pruneEntries(file);
         await this.save(file);
+        this.cleanCapturedUrl(snapshot, file.settings, freshSample ? sourceSample.sequence : undefined);
 
         if (entry.type === 'image' && entry.image && entry.ocrStatus === 'pending') {
           void this.runOcr(entry.id, this.imagePath(entry.image.fileName));
@@ -805,6 +835,20 @@ export class ClipboardManager {
       }
 
     });
+  }
+
+  private cleanCapturedUrl(snapshot: ClipboardSnapshot, settings: ClipboardSettings, sequence?: number): void {
+    if (!settings.autoCleanUrls || snapshot.type !== 'text' || !snapshot.text || this.closing) return;
+    const cleaned = cleanClipboardUrl(snapshot.text);
+    if (cleaned === snapshot.text) return;
+    const source = this.options.getClipboardSource?.();
+    if (sequence !== undefined && source?.sequence !== sequence) return;
+    if (settings.excludedApps.length && (!source?.name || !source.sequence || Date.now() - source.sampledAt >= 1500
+      || settings.excludedApps.includes(source.name.toLowerCase().replace(/\.exe$/i, '')))) return;
+    if (isClipboardExcluded() || electronClipboard.readText() !== snapshot.text) return;
+    electronClipboard.writeText(cleaned);
+    this.lastSignature = hashContent('text', cleaned);
+    this.lastSequenceSnapshot = null;
   }
 
   private async readClipboardSnapshot(settings: ClipboardSettings): Promise<ClipboardSnapshot | null> {
@@ -1172,7 +1216,7 @@ export class ClipboardManager {
 }
 
 function validateStoredSettings(settings: Partial<ClipboardSettings>): void {
-  for (const key of ['monitoring', 'captureImages', 'imageOcr', 'encrypted'] as const) {
+  for (const key of ['monitoring', 'captureImages', 'imageOcr', 'autoCleanUrls', 'encrypted'] as const) {
     if (settings[key] !== undefined && typeof settings[key] !== 'boolean') throw new Error('Invalid clipboard preference flag.');
   }
   for (const [key, minimum, maximum] of [['retentionDays', 0, 3650], ['maxEntries', 0, 10000], ['maxStorageMiB', 16, 4096]] as const) {
@@ -1189,6 +1233,7 @@ function normalizeSettings(settings: Partial<ClipboardSettings> | undefined): Cl
     monitoring: settings?.monitoring ?? DEFAULT_SETTINGS.monitoring,
     captureImages: settings?.captureImages ?? DEFAULT_SETTINGS.captureImages,
     imageOcr: settings?.imageOcr ?? DEFAULT_SETTINGS.imageOcr,
+    autoCleanUrls: settings?.autoCleanUrls ?? DEFAULT_SETTINGS.autoCleanUrls,
     quickAccessHotkey: normalizeQuickAccessHotkey(settings?.quickAccessHotkey),
     retentionDays: settings && settings.retentionDays === undefined ? 0 : normalizeRetentionDays(settings?.retentionDays),
     maxEntries: normalizeMaxEntries(settings?.maxEntries),
@@ -1337,6 +1382,7 @@ function searchableText(entry: ClipboardEntry): string {
     entry.ocrText,
     ...(entry.filePaths ?? []),
     ...entry.categories,
+    entry.type,
   ].filter(Boolean).join('\n').toLowerCase();
 }
 
