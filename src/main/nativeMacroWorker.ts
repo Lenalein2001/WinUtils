@@ -25,6 +25,7 @@ export class NativeMacroWorker {
   private stopping: Promise<void> | null = null;
   private ready = false;
   private nextId = 1;
+  private workerEpoch = 0;
   private buffer = '';
   private stderr = '';
   private readyResolve: (() => void) | null = null;
@@ -34,6 +35,7 @@ export class NativeMacroWorker {
   readonly fastRuns = new Set<string>();
 
   isRunning(): boolean { return this.ready && this.child !== null; }
+  get epoch(): number { return this.workerEpoch; }
   onHotkey(listener: (event: NativeHotkeyEvent) => void): () => void {
     this.listeners.add(listener); return () => this.listeners.delete(listener);
   }
@@ -98,8 +100,8 @@ export class NativeMacroWorker {
   }
 
   async release(runId: string): Promise<void> {
-    // A failed/terminated worker already ran shutdown cleanup. Do not spawn a
-    // replacement just to release keys that it does not own.
+    // Graceful worker shutdown attempts cleanup. After an unexpected crash its
+    // ownership is unknown; a replacement cannot safely release unknown keys.
     if (!this.ready || !this.child) return;
     await this.request({ op: 'release', runId });
   }
@@ -121,6 +123,7 @@ export class NativeMacroWorker {
   }
 
   private start(): Promise<void> {
+    this.workerEpoch++;
     this.buffer = ''; this.stderr = '';
     const executable = path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(),
       'resources', 'native', 'WinUtils.MacroWorker.exe');

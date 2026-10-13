@@ -9,6 +9,7 @@ export class MacroRecorder {
   private state = idle();
   private pendingStart = false;
   private saved: { result: unknown } | null = null;
+  private workerEpoch: number | null = null;
   private unsubscribe = nativeMacroWorker.onHotkey(event => {
     if (event.kind === 'WORKER_EXIT' && this.state.phase !== 'idle')
       this.state = { ...this.state, phase: 'ready', error: this.state.draft ? null : 'Recording worker stopped. Unsaved captured input could not be recovered.' };
@@ -26,12 +27,14 @@ export class MacroRecorder {
         await beforeStart();
         this.state = JSON.parse(await nativeMacroWorker.request({ op: 'record-start', keyboard: options.keyboard, mouse: options.mouse,
           movement: options.movement, countdownSeconds: options.countdownSeconds, excludedProcesses: options.excludedProcesses, ownerPid: process.pid })) as MacroRecordingState;
+        this.workerEpoch = nativeMacroWorker.epoch;
         return this.state;
       } finally { this.pendingStart = false; }
     });
   }
   status(): Promise<MacroRecordingState> {
     return this.queue.run(async () => {
+      this.checkWorker();
       if (this.state.phase === 'idle' || this.state.draft || this.state.error) return this.state;
       this.state = JSON.parse(await nativeMacroWorker.request({ op: 'record-status' })) as MacroRecordingState;
       if (this.state.phase === 'ready') await this.finish();
@@ -40,9 +43,15 @@ export class MacroRecorder {
   }
   stop(): Promise<MacroRecordingState> {
     return this.queue.run(async () => {
+      this.checkWorker();
       if (this.state.phase !== 'idle' && !this.state.draft && !this.state.error) await this.finish();
       return this.state;
     });
+  }
+  private checkWorker(): void {
+    if (this.state.phase !== 'idle' && !this.state.draft && !this.state.error
+      && (!nativeMacroWorker.isRunning() || this.workerEpoch !== nativeMacroWorker.epoch))
+      this.state = { ...this.state, phase: 'ready', error: 'Recording worker stopped or restarted. Unsaved captured input could not be recovered.' };
   }
   private async finish(): Promise<void> {
     this.state = JSON.parse(await nativeMacroWorker.request({ op: 'record-stop' })) as MacroRecordingState;
@@ -61,6 +70,7 @@ export class MacroRecorder {
   }
   save<T>(persist: (state: MacroRecordingState) => Promise<T>): Promise<T> {
     return this.queue.run(async () => {
+      this.checkWorker();
       if (this.state.phase !== 'idle' && !this.state.draft && !this.state.error) await this.finish();
       const result = this.saved ? this.saved.result as T : await persist(this.state);
       this.saved = { result };

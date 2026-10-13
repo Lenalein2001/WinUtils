@@ -63,7 +63,18 @@ function sync(): Promise<void> {
         if (!occupied.has(JSON.stringify(hotkeyVkGroupsForHotkey(alias)))) add(alias, `alias:${hotkey}`);
       }
     }
-    const result = JSON.parse(await nativeMacroWorker.request({ op: 'hotkeys', fastEnabled: enabled, bindings })) as {
+    let reply: string;
+    try { reply = await nativeMacroWorker.request({ op: 'hotkeys', fastEnabled: enabled, bindings }); }
+    catch (error) {
+      // Retaining OS registrations must not retain an obsolete fast program
+      // after a rejected replacement (including the pipe's memory budget).
+      if (nativeMacroWorker.isRunning()) {
+        try { await nativeMacroWorker.request({ op: 'cancel-fast' }); }
+        catch { await nativeMacroWorker.stop(); }
+      }
+      throw error;
+    }
+    const result = JSON.parse(reply) as {
       bindings: Array<{ hotkey: string; registered: boolean }>;
     };
     if (version !== revision) return;
