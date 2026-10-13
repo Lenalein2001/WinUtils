@@ -191,7 +191,7 @@ function actionLabel(a: MacroAction): string {
     case 'command': return `Run: ${a.command.slice(0, 40)}`;
     case 'text': return `Type: ${a.text.slice(0, 30)}`;
     case 'automation': return `Action: ${a.actionId || 'not configured'}`;
-    case 'repeat': return `Repeat ${a.times}x`;
+    case 'repeat': return `Repeat ${a.times}x${a.intervalMilliseconds !== undefined ? ` every ${a.intervalMilliseconds} ms` : ''}`;
     case 'if': return `If ${conditionSourceLabels[a.condition.source]}`;
     case 'stop': return 'Stop macro';
     default: return '';
@@ -673,7 +673,6 @@ interface MacroPresetOptions {
   helldivers: HelldiversPresetOptions;
 }
 
-const AUTO_CLICKER_CLICK_MS = 0;
 const DEFAULT_AUTO_CLICKER_OPTIONS: AutoClickerPresetOptions = {
   repeatCount: 50,
   timingMode: 'delay',
@@ -1154,7 +1153,7 @@ function autoClickerDelayMs(options: AutoClickerPresetOptions): number {
 
   const clicksPerSecond = clampFloat(options.clicksPerSecond, 0.1, 10_000, DEFAULT_AUTO_CLICKER_OPTIONS.clicksPerSecond);
   const targetPeriodMs = 1000 / clicksPerSecond;
-  return Math.max(0, targetPeriodMs - AUTO_CLICKER_CLICK_MS);
+  return targetPeriodMs;
 }
 
 const macroPresets: MacroPreset[] = [
@@ -1167,9 +1166,10 @@ const macroPresets: MacroPreset[] = [
       type: 'repeat',
       enabled: true,
       times: clampInteger(autoClicker.repeatCount, 1, 10_000, DEFAULT_AUTO_CLICKER_OPTIONS.repeatCount),
+      ...(autoClicker.timingMode === 'cps' ? { intervalMilliseconds: autoClickerDelayMs(autoClicker) } : {}),
       actions: [
         { id: newId(), type: 'mouse', enabled: true, button: 'left', actionType: 'click' },
-        { id: newId(), type: 'delay', enabled: true, milliseconds: autoClickerDelayMs(autoClicker) },
+        ...(autoClicker.timingMode === 'delay' ? [{ id: newId(), type: 'delay' as const, enabled: true, milliseconds: autoClickerDelayMs(autoClicker) }] : []),
       ],
     }],
   },
@@ -1556,6 +1556,14 @@ function ActionEditor({
               onChange={e => patch({ times: Number(e.target.value) } as Partial<MacroAction>)}
               title="How many times to run the nested actions."
             />
+          </div>
+          <div className="action-fields">
+            <label className="macro-label">Interval (ms)</label>
+            <input type="number" className="macro-input macro-input--half"
+              value={action.intervalMilliseconds ?? ''} min={0.001} max={600000} step="any"
+              placeholder="After previous actions"
+              onChange={e => patch({ intervalMilliseconds: e.target.value === '' ? undefined : Number(e.target.value) } as Partial<MacroAction>)}
+              title="Optional fixed start-to-start interval for input actions. Missed slots are skipped without catch-up bursts; every action and release still runs. Leave blank for existing timing." />
           </div>
           <NestedActionsEditor
             label="Repeated actions"

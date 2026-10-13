@@ -19,7 +19,7 @@ internal static partial class Program
 
     private sealed record Request(string Id, string Operation, string RunId, Instruction[] Actions, JsonElement Data, Binding? Binding = null);
     private sealed record Instruction(string Kind, double Delay = 0, ushort[]? Keys = null, int Mode = 0,
-        uint Flags = 0, uint Up = 0, int X = 0, int Y = 0, string? Text = null, int Times = 0, Instruction[]? Actions = null);
+        uint Flags = 0, uint Up = 0, int X = 0, int Y = 0, string? Text = null, int Times = 0, Instruction[]? Actions = null, double Interval = 0);
     private sealed class Run : IDisposable
     {
         public readonly CancellationTokenSource Cancellation = new();
@@ -76,11 +76,11 @@ internal static partial class Program
                     if (operation == "foreground") { Reply("OK", id, Input.Foreground()); continue; }
                     var count = 0;
                     var instructions = operation == "run" ? ParseInstructions(data.GetProperty("actions"), 0, ref count) : Array.Empty<Instruction>();
-                    if (operation is not ("run" or "release" or "measure")) throw new ArgumentException("Unknown macro operation.");
+                    if (operation is not ("run" or "release" or "measure" or "measure-periodic")) throw new ArgumentException("Unknown macro operation.");
                     if (runId.Length == 0) throw new ArgumentException("Missing macro owner.");
                     if (Runs.Count >= 128 && !Runs.ContainsKey(runId)) throw new ArgumentException("Too many pending macros.");
                     Runs.GetOrAdd(runId, _ => new Run());
-                    if (!Queue.TryAdd(new Request(id, operation, runId, instructions, operation is "run" or "measure" ? data.Clone() : default)))
+                    if (!Queue.TryAdd(new Request(id, operation, runId, instructions, operation is "run" or "measure" or "measure-periodic" ? data.Clone() : default)))
                         throw new ArgumentException("Macro input queue is full.");
                 }
                 catch (Exception error) { Reply("ERR", id, error.Message); }
@@ -152,6 +152,7 @@ internal static partial class Program
                 run.Cancellation.Token.ThrowIfCancellationRequested();
                 if (request.Binding != null) Write("FAST_START " + Encode(request.Binding.Hotkey) + " " + request.RunId + " " + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
                 if (request.Operation == "measure") Reply("OK", request.Id, Measure(request.Data, run, timer));
+                else if (request.Operation == "measure-periodic") Reply("OK", request.Id, MeasurePeriodic(request.Data, run, timer));
                 else
                 {
                     if (request.Binding == null && request.Data.TryGetProperty("maxActions", out _)) run.Limit = Integer(request.Data, "maxActions", 0, 100_000);
@@ -197,9 +198,15 @@ internal static partial class Program
                 case "text": Input.Text(instruction.Text!, run, timer); break;
                 case "stop": throw new Stopped();
                 case "repeat":
-                    // Keep each explicit delay intact, including fractional waits;
-                    // input dispatch time must not silently shorten that delay.
-                    for (int i = 0; i < instruction.Times; i++) Execute(instruction.Actions!, run, timer);
+                    var timeline = instruction.Interval > 0 ? new PeriodicTimeline(instruction.Interval) : null;
+                    for (int i = 0; i < instruction.Times; i++)
+                    {
+                        Execute(instruction.Actions!, run, timer);
+                        // Explicit holds/delays remain intact. When work overruns a
+                        // slot, wait for the next future boundary rather than burst
+                        // overdue input. Releases are never skipped.
+                        if (timeline != null) timer.Until(timeline.Next(Stopwatch.GetTimestamp()), run.Cancellation.Token);
+                    }
                     break;
             }
         }
@@ -220,7 +227,8 @@ internal static partial class Program
                 "mouse" => MouseInstruction(item),
                 "move" => new("move", X: Integer(item, "x", -1_000_000, 1_000_000), Y: Integer(item, "y", -1_000_000, 1_000_000)),
                 "text" => new("text", Text: Text(item)),
-                "repeat" => new("repeat", Times: Integer(item, "times", 0, 10_000), Actions: ParseInstructions(item.GetProperty("actions"), depth + 1, ref count)),
+                "repeat" => new("repeat", Times: Integer(item, "times", 0, 10_000), Actions: ParseInstructions(item.GetProperty("actions"), depth + 1, ref count),
+                    Interval: item.TryGetProperty("intervalMs", out _) ? Number(item, "intervalMs", 0.001, 600_000) : 0),
                 "stop" => new("stop"),
                 _ => throw new ArgumentException("Unknown input instruction.")
             });
@@ -271,6 +279,51 @@ internal static partial class Program
         process.Refresh();
         return "{\"samplesMs\":[" + string.Join(",", measurements.Select(v => v.ToString("R", CultureInfo.InvariantCulture)))
             + "],\"cpuMs\":" + (process.TotalProcessorTime - cpu).TotalMilliseconds.ToString("R", CultureInfo.InvariantCulture) + "}";
+    }
+    // A monotonic absolute timebase shared by periodic execution and its dry
+    // benchmark. The hot path allocates no per-iteration objects.
+    private sealed class PeriodicTimeline
+    {
+        public readonly long Start = Stopwatch.GetTimestamp();
+        private readonly double period;
+        private long slot;
+        public long Skipped { get; private set; }
+        public PeriodicTimeline(double milliseconds) => period = milliseconds * Stopwatch.Frequency / 1000.0;
+        public double Next(long now)
+        {
+            var next = slot + 1;
+            if (now > Start + next * period)
+            {
+                var future = (long)Math.Floor((now - Start) / period) + 1;
+                Skipped += future - next;
+                next = future;
+            }
+            slot = next;
+            return Start + slot * period;
+        }
+    }
+    private static string MeasurePeriodic(JsonElement data, Run run, PrecisionTimer timer)
+    {
+        var interval = Number(data, "ms", 0.001, 1000);
+        var count = Integer(data, "iterations", 1, 1000);
+        var work = data.TryGetProperty("workMs", out _) ? Number(data, "workMs", 0, 1000) : 0;
+        var targets = new double[count]; var actual = new double[count];
+        using var process = Process.GetCurrentProcess(); var cpu = process.TotalProcessorTime;
+        var timeline = new PeriodicTimeline(interval);
+        for (int i = 0; i < count; i++)
+        {
+            // Simulate work without SendInput or any capture hooks.
+            if (work > 0) timer.Delay(work, run.Cancellation.Token);
+            var target = timeline.Next(Stopwatch.GetTimestamp());
+            timer.Until(target, run.Cancellation.Token);
+            targets[i] = (target - timeline.Start) * 1000.0 / Stopwatch.Frequency;
+            actual[i] = (Stopwatch.GetTimestamp() - timeline.Start) * 1000.0 / Stopwatch.Frequency;
+        }
+        process.Refresh();
+        string Values(double[] values) => string.Join(",", values.Select(v => v.ToString("R", CultureInfo.InvariantCulture)));
+        return "{\"targetMs\":[" + Values(targets) + "],\"actualMs\":[" + Values(actual)
+            + "],\"skippedSlots\":" + timeline.Skipped.ToString(CultureInfo.InvariantCulture)
+            + ",\"cpuMs\":" + (process.TotalProcessorTime - cpu).TotalMilliseconds.ToString("R", CultureInfo.InvariantCulture) + "}";
     }
     private static void Reply(string status, string id, string message) => Write(status + " " + id + " " + Convert.ToBase64String(Encoding.UTF8.GetBytes(message)));
     private static string Encode(string value) => Convert.ToBase64String(Encoding.UTF8.GetBytes(value));

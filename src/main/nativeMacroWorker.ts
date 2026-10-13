@@ -9,7 +9,7 @@ export type NativeInputInstruction =
   | { kind: 'mouse'; down: number; up: number; mode: number }
   | { kind: 'move'; x: number; y: number }
   | { kind: 'text'; text: string }
-  | { kind: 'repeat'; times: number; actions: NativeInputInstruction[] }
+  | { kind: 'repeat'; times: number; actions: NativeInputInstruction[]; intervalMs?: number }
   | { kind: 'stop' };
 
 export class NativeMacroCanceled extends Error {}
@@ -86,7 +86,7 @@ export class NativeMacroWorker {
 
   async run(actions: NativeInputInstruction[], runId: string, signal: AbortSignal, maxActions = 100_000): Promise<number> {
     const duration = (items: NativeInputInstruction[]): number => items.reduce((total, item) => total + (
-      item.kind === 'delay' ? item.ms : item.kind === 'repeat' ? item.times * duration(item.actions)
+      item.kind === 'delay' ? item.ms : item.kind === 'repeat' ? item.times * (duration(item.actions) + (item.intervalMs ?? 0))
         : item.kind === 'text' ? item.text.length : item.kind === 'keyboard' && item.mode === 0 ? item.holdMs ?? 16
           : item.kind === 'mouse' && item.mode === 3 ? 50 : 0
     ), 0);

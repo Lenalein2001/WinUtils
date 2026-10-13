@@ -102,6 +102,8 @@ export interface RepeatAction {
   type: 'repeat';
   enabled: boolean;
   times: number;
+  /** Optional start-to-start period. Absent preserves legacy relative delays. */
+  intervalMilliseconds?: number;
   actions: MacroAction[];
 }
 

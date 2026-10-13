@@ -49,7 +49,16 @@ export function validateActions(value: unknown): asserts value is MacroAction[] 
             }
           }
           break;
-        case 'repeat': integer(action.times, 'repeat count', 1, 10000); walk(action.actions, depth + 1); break;
+        case 'repeat':
+          integer(action.times, 'repeat count', 1, 10000); walk(action.actions, depth + 1);
+          if (action.intervalMilliseconds !== undefined) {
+            duration(action.intervalMilliseconds);
+            if ((action.intervalMilliseconds as number) < 0.001) throw new Error('Fixed repeat interval must be at least 0.001 ms.');
+            const inputOnly = (items: MacroAction[]): boolean => items.every(item => !item.enabled ||
+              (item.type === 'repeat' ? inputOnly(item.actions) : ['delay', 'keyboard', 'mouse', 'text', 'stop'].includes(item.type)));
+            if (!inputOnly(action.actions as MacroAction[])) throw new Error('Fixed intervals require input-only repeated actions.');
+          }
+          break;
         case 'if': {
           const condition = record(action.condition);
           choice(condition.source, 'condition source', ['active-process', 'active-window-title', 'clipboard-text', 'file-exists', 'key-state']);

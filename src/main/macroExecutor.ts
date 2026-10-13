@@ -195,7 +195,8 @@ export function compileInputActions(actions: MacroAction[], depth = 0): NativeIn
     if (action.type === 'repeat') {
       const nested = compileInputActions(action.actions, depth + 1);
       if (!nested) return null;
-      result.push({ kind: 'repeat', times: repeatTimes(action.times), actions: nested });
+      result.push({ kind: 'repeat', times: repeatTimes(action.times), actions: nested,
+        ...(action.intervalMilliseconds !== undefined ? { intervalMs: delayMilliseconds(action.intervalMilliseconds) } : {}) });
     } else {
       const instruction = inputInstruction(action);
       if (!instruction) return null;
@@ -293,7 +294,9 @@ async function executeActions(
     if (action.type === 'repeat') {
       const repeatAction = action as RepeatAction;
       const compiled = compileInputActions(repeatAction.actions, depth + 1);
-      if (compiled) { context.actionExecutions--; inputBatch.push({ kind: 'repeat', times: repeatTimes(repeatAction.times), actions: compiled }); continue; }
+      if (compiled) { context.actionExecutions--; inputBatch.push({ kind: 'repeat', times: repeatTimes(repeatAction.times), actions: compiled,
+        ...(repeatAction.intervalMilliseconds !== undefined ? { intervalMs: delayMilliseconds(repeatAction.intervalMilliseconds) } : {}) }); continue; }
+      if (repeatAction.intervalMilliseconds !== undefined) throw new Error('Fixed intervals require input-only repeated actions.');
 
       await runInputBatch(inputBatch, context);
       const times = repeatTimes(repeatAction.times);
