@@ -27,7 +27,7 @@ internal static partial class Program
         private int[] observedKeys = Array.Empty<int>();
         private uint threadId;
         private int nextId, disposed;
-        private bool fastEnabled;
+        private bool fastEnabled, requiresPolling;
         public HotkeyLoop()
         {
             thread = new Thread(Loop) { Name = "WinUtils macro hotkeys", IsBackground = false };
@@ -79,7 +79,7 @@ internal static partial class Program
                         var binding = bindings.Values.FirstOrDefault(b => b.Registered && b.Id == (int)message.WParam);
                         if (binding != null && !binding.Active) Activate(binding);
                     }
-                    bool polling = bindings.Values.Any(b => !b.Registered || b.TrackRelease);
+                    bool polling = requiresPolling;
                     if (polling) Poll();
                     MsgWaitForMultipleObjectsEx(0, IntPtr.Zero, polling ? 20u : uint.MaxValue, 0x04ff, 4);
                 }
@@ -121,6 +121,9 @@ internal static partial class Program
                 : bindings.Values.Where(b => !b.Registered || b.TrackRelease).SelectMany(b => b.Groups.SelectMany(g => g))
                     .Concat(new[] { 0x10, 0x11, 0x12, 0x5b, 0x5c }).Distinct().ToArray();
             Array.Clear(keys);
+            requiresPolling = false;
+            foreach (var binding in bindings.Values)
+                if (!binding.Registered || binding.TrackRelease) { requiresPolling = true; break; }
         }
         private void Remove(Binding binding)
         {
@@ -153,7 +156,7 @@ internal static partial class Program
             foreach (var binding in bindings.Values)
             {
                 if (binding.Registered && !binding.TrackRelease) continue;
-                bool down = binding.Groups.All(group => group.Any(key => keys[key]));
+                bool down = GroupsPressed(binding.Groups);
                 if (!binding.Registered && binding.Key != 0)
                 {
                     uint modifiers = (keys[0x12] ? 1u : 0u) | (keys[0x11] ? 2u : 0u) | (keys[0x10] ? 4u : 0u) | (keys[0x5b] || keys[0x5c] ? 8u : 0u);
@@ -168,7 +171,7 @@ internal static partial class Program
                 {
                     if (down)
                     {
-                        if (binding.ReleaseOnly && NonModifiers().Any(key => !binding.Baseline.Contains(key))) binding.Contaminated = true;
+                        if (binding.ReleaseOnly && HasExtraNonModifier(binding)) binding.Contaminated = true;
                         continue;
                     }
                     binding.Active = false;
@@ -184,6 +187,22 @@ internal static partial class Program
             }
         }
         private IEnumerable<int> NonModifiers() => Enumerable.Range(7, 248).Where(key => keys[key] && key is not (0x10 or 0x11 or 0x12 or 0x5b or 0x5c or >= 0xa0 and <= 0xa5));
+        private bool GroupsPressed(int[][] groups)
+        {
+            foreach (var group in groups)
+            {
+                bool pressed = false;
+                foreach (int key in group) if (keys[key]) { pressed = true; break; }
+                if (!pressed) return false;
+            }
+            return true;
+        }
+        private bool HasExtraNonModifier(Binding binding)
+        {
+            for (int key = 7; key < keys.Length; key++)
+                if (keys[key] && key is not (0x10 or 0x11 or 0x12 or 0x5b or 0x5c or >= 0xa0 and <= 0xa5) && !binding.Baseline.Contains(key)) return true;
+            return false;
+        }
         private string Diagnostics() => "{\"threadId\":" + threadId + ",\"bindings\":[" + string.Join(",", bindings.Values.Select(b =>
             "{\"hotkey\":\"" + b.Hotkey.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\",\"id\":" + b.Id + ",\"registered\":" + (b.Registered ? "true" : "false") + "}")) + "]}";
         private static Binding Parse(JsonElement item)

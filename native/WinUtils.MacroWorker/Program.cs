@@ -28,6 +28,7 @@ internal static partial class Program
         public readonly HashSet<uint> MouseUps = new();
         public readonly List<TimelineKey> RecordedKeys = new();
         public readonly HashSet<int> RecordedButtons = new();
+        public HashSet<char>? UnicodeUps;
         public int Actions;
         public int Limit = 100_000;
         public void Cancel() { try { Cancellation.Cancel(); } catch (ObjectDisposedException) { } }
@@ -384,6 +385,8 @@ internal static partial class Program
     {
         private static readonly Event[] Single = new Event[1];
         private static readonly Event[] Pair = new Event[2];
+        private static readonly Event[] KeyboardEvents = new Event[16];
+        private static readonly int EventSize = Marshal.SizeOf<Event>();
         private static void SendOne(Event value) { Single[0] = value; Send(Single); }
         [StructLayout(LayoutKind.Sequential)] private struct Event { public uint Type; public Union Data; }
         [StructLayout(LayoutKind.Explicit)] private struct Union { [FieldOffset(0)] public Key Key; [FieldOffset(0)] public MouseEvent Mouse; }
@@ -395,22 +398,25 @@ internal static partial class Program
             bool extended = (scan & 0xff00) != 0 || key is >= 0x21 and <= 0x28 or 0x2d or 0x2e or 0x5b or 0x5c or 0x6f;
             return new Event { Type = 1, Data = new Union { Key = new Key { Vk = scan == 0 ? key : (ushort)0, Scan = (ushort)(scan & 0xff), Flags = (scan == 0 ? 0u : 8u) | (up ? 2u : 0u) | (extended ? 1u : 0u) } } };
         }
-        private static void Send(Event[] events)
+        private static void Send(Event[] events) => Send(events, events.Length);
+        private static void Send(Event[] events, int count)
         {
-            if (events.Length == 0) return;
-            var sent = SendInput((uint)events.Length, events, Marshal.SizeOf<Event>());
-            if (sent != events.Length) throw new InvalidOperationException("Windows refused macro input. Check target elevation and input restrictions.");
+            if (count == 0) return;
+            var sent = SendInput((uint)count, events, EventSize);
+            if (sent != count) throw new InvalidOperationException("Windows refused macro input. Check target elevation and input restrictions.");
         }
         private static void KeyDown(ushort[] keys, Run run)
         {
             // Remember ownership before SendInput: a partial accepted batch still
             // requires cleanup. Release attempts include every requested key.
             foreach (var key in keys) if (!run.Keys.Contains(key)) run.Keys.Add(key);
-            Send(keys.Select(k => KeyEvent(k, false)).ToArray());
+            for (int i = 0; i < keys.Length; i++) KeyboardEvents[i] = KeyEvent(keys[i], false);
+            Send(KeyboardEvents, keys.Length);
         }
         private static void KeyUp(ushort[] keys, Run run)
         {
-            Send(keys.Reverse().Select(k => KeyEvent(k, true)).ToArray());
+            for (int i = 0; i < keys.Length; i++) KeyboardEvents[i] = KeyEvent(keys[keys.Length - i - 1], true);
+            Send(KeyboardEvents, keys.Length);
             foreach (var key in keys) run.Keys.Remove(key);
         }
         public static void Keyboard(ushort[] keys, int mode, double holdMs, Run run, PrecisionTimer timer)
@@ -444,13 +450,20 @@ internal static partial class Program
             foreach (var ch in text)
             {
                 run.Cancellation.Token.ThrowIfCancellationRequested();
-                Send(new[] { new Event { Type = 1, Data = new Union { Key = new Key { Scan = ch, Flags = 4 } } }, new Event { Type = 1, Data = new Union { Key = new Key { Scan = ch, Flags = 6 } } } });
+                Pair[0] = new Event { Type = 1, Data = new Union { Key = new Key { Scan = ch, Flags = 4 } } };
+                Pair[1] = new Event { Type = 1, Data = new Union { Key = new Key { Scan = ch, Flags = 6 } } };
+                (run.UnicodeUps ??= new HashSet<char>()).Add(ch);
+                Send(Pair);
+                run.UnicodeUps.Remove(ch);
                 timer.Delay(1, run.Cancellation.Token);
             }
         }
         public static void Release(Run run)
         {
             var errors = new List<Exception>();
+            if (run.UnicodeUps != null) foreach (char ch in run.UnicodeUps.ToArray())
+                try { SendOne(new Event { Type = 1, Data = new Union { Key = new Key { Scan = ch, Flags = 6 } } }); run.UnicodeUps.Remove(ch); }
+                catch (Exception error) { errors.Add(error); }
             foreach (var key in run.RecordedKeys.ToArray().Reverse())
                 try { RecordedKey(key, true, run); } catch (Exception error) { errors.Add(error); }
             foreach (var button in run.RecordedButtons.ToArray())
