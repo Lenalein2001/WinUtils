@@ -100,6 +100,8 @@ declare global {
         onChanged: (cb: () => void) => () => void;
       };
       macros: {
+        registerEditor: () => Promise<void>;
+        onFlushRequested: (callback: (flush: boolean) => Promise<void>) => () => void;
         startRecording: (options: MacroRecordingOptions) => Promise<MacroRecordingState>;
         getRecording: () => Promise<MacroRecordingState>;
         stopRecording: () => Promise<MacroRecordingState>;
@@ -108,12 +110,12 @@ declare global {
         getState: () => Promise<MacroState>;
         newId: () => Promise<string>;
         upsertMacro: (macro: Macro, profileName?: string) => Promise<MacroState>;
-        deleteMacro: (macroId: string) => Promise<MacroState>;
-        runMacro: (macroId: string) => Promise<void>;
+        deleteMacro: (macroId: string, profileName?: string) => Promise<MacroState>;
+        runMacro: (macroId: string, profileName?: string) => Promise<void>;
         reorderActions: (macroId: string, actions: MacroAction[]) => Promise<MacroState>;
         moveMacroToFolder: (macroId: string, folderId: string | null) => Promise<MacroState>;
         upsertFolder: (folder: MacroFolder) => Promise<MacroState>;
-        deleteFolder: (folderId: string) => Promise<MacroState>;
+        deleteFolder: (folderId: string, profileName?: string) => Promise<MacroState>;
         switchProfile: (name: string) => Promise<MacroState>;
         addProfile: (name: string) => Promise<MacroState>;
         deleteProfile: (name: string) => Promise<MacroState>;

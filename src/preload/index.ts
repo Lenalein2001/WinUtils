@@ -126,6 +126,18 @@ const api = {
     },
   },
   macros: {
+    registerEditor: (): Promise<void> => ipcRenderer.invoke('macros:editorReady'),
+    onFlushRequested: (callback: (flush: boolean) => Promise<void>): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, token: string | null): void => {
+        if (token === null) { void callback(false).catch(() => undefined); return; }
+        void Promise.resolve().then(() => callback(true)).then(
+          () => ipcRenderer.invoke('macros:flushComplete', token, null),
+          error => ipcRenderer.invoke('macros:flushComplete', token, String(error instanceof Error ? error.message : error).slice(0, 2048)),
+        ).catch(error => console.error('[Macros] Editor save acknowledgement failed:', error));
+      };
+      ipcRenderer.on('macros:flushDrafts', listener);
+      return () => ipcRenderer.removeListener('macros:flushDrafts', listener);
+    },
     startRecording: (options: MacroRecordingOptions): Promise<MacroRecordingState> => ipcRenderer.invoke('macros:startRecording', options),
     getRecording: (): Promise<MacroRecordingState> => ipcRenderer.invoke('macros:getRecording'),
     stopRecording: (): Promise<MacroRecordingState> => ipcRenderer.invoke('macros:stopRecording'),
@@ -135,18 +147,18 @@ const api = {
     newId: (): Promise<string> => ipcRenderer.invoke('macros:newId'),
     upsertMacro: (macro: Macro, profileName?: string): Promise<MacroState> =>
       ipcRenderer.invoke('macros:upsertMacro', macro, profileName),
-    deleteMacro: (macroId: string): Promise<MacroState> =>
-      ipcRenderer.invoke('macros:deleteMacro', macroId),
-    runMacro: (macroId: string): Promise<void> =>
-      ipcRenderer.invoke('macros:runMacro', macroId),
+    deleteMacro: (macroId: string, profileName?: string): Promise<MacroState> =>
+      ipcRenderer.invoke('macros:deleteMacro', macroId, profileName),
+    runMacro: (macroId: string, profileName?: string): Promise<void> =>
+      ipcRenderer.invoke('macros:runMacro', macroId, profileName),
     reorderActions: (macroId: string, actions: MacroAction[]): Promise<MacroState> =>
       ipcRenderer.invoke('macros:reorderActions', macroId, actions),
     moveMacroToFolder: (macroId: string, folderId: string | null): Promise<MacroState> =>
       ipcRenderer.invoke('macros:moveMacroToFolder', macroId, folderId),
     upsertFolder: (folder: MacroFolder): Promise<MacroState> =>
       ipcRenderer.invoke('macros:upsertFolder', folder),
-    deleteFolder: (folderId: string): Promise<MacroState> =>
-      ipcRenderer.invoke('macros:deleteFolder', folderId),
+    deleteFolder: (folderId: string, profileName?: string): Promise<MacroState> =>
+      ipcRenderer.invoke('macros:deleteFolder', folderId, profileName),
     switchProfile: (name: string): Promise<MacroState> =>
       ipcRenderer.invoke('macros:switchProfile', name),
     addProfile: (name: string): Promise<MacroState> =>

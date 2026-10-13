@@ -33,6 +33,7 @@ import { MacroStore } from './macroStore';
 import { SerialTaskQueue } from './atomicFile';
 import { validateActions, validateMacro, validateProfile } from './macroValidation';
 import { MacroRecorder } from './macroRecorder';
+import { MacroEditorClients } from './macroEditorClients';
 import type { MacroRecordingOptions, MacroRecordingState } from '../shared/macroRecording';
 
 interface MacroPlaybackState {
@@ -49,6 +50,7 @@ function boundedRunCount(value: number): number {
 }
 
 export class MacroManager {
+  readonly editors = new MacroEditorClients();
   private readonly recorder = new MacroRecorder();
   private recordingProfile: string | null = null;
   private removeRecordingPauseListener: (() => void) | undefined;
@@ -1009,21 +1011,28 @@ while ($true) {
       }
 
       await this.store.save();
-      this.rebuildHotkeys();
+      if (this.store.getActiveProfile().name === profile.name) this.rebuildHotkeys();
       return this.getState();
 
     });
   }
 
-  async deleteMacro(macroId: string): Promise<MacroState> {
+  private resolveProfile(profileName?: string): MacroProfile {
+    const profile = profileName === undefined ? this.store.getActiveProfile()
+      : (this.store['_config'] as MacroConfig).profiles.find(item => item.name === profileName);
+    if (!profile) throw new Error('The selected macro profile no longer exists.');
+    return profile;
+  }
+
+  async deleteMacro(macroId: string, profileName?: string): Promise<MacroState> {
     return this.mutationQueue.run(async () => {
-      const profile = this.store.getActiveProfile();
+      const profile = this.resolveProfile(profileName);
       profile.macros = profile.macros.filter(m => m.id !== macroId);
       for (const folder of profile.folders) {
         folder.macros = folder.macros.filter(m => m.id !== macroId);
       }
       await this.store.save();
-      this.rebuildHotkeys();
+      if (this.store.getActiveProfile().name === profile.name) this.rebuildHotkeys();
       return this.getState();
 
     });
@@ -1074,9 +1083,9 @@ while ($true) {
     });
   }
 
-  async deleteFolder(folderId: string): Promise<MacroState> {
+  async deleteFolder(folderId: string, profileName?: string): Promise<MacroState> {
     return this.mutationQueue.run(async () => {
-      const profile = this.store.getActiveProfile();
+      const profile = this.resolveProfile(profileName);
       const folder = profile.folders.find(f => f.id === folderId);
       if (folder) {
         // Move macros to root before deleting
@@ -1131,11 +1140,12 @@ while ($true) {
     });
   }
 
-  async runMacro(macroId: string): Promise<void> {
-    const profile = this.store.getActiveProfile();
+  async runMacro(macroId: string, profileName?: string): Promise<void> {
+    const profile = this.resolveProfile(profileName);
     const all = [...profile.macros, ...profile.folders.flatMap(f => f.macros)];
     const macro = all.find(m => m.id === macroId);
-    if (macro) await this.executeMacroActions(macro);
+    if (!macro) throw new Error('The selected macro no longer exists.');
+    await this.executeMacroActions(macro);
   }
 
   async startRecording(options: MacroRecordingOptions): Promise<MacroRecordingState> {
@@ -1368,6 +1378,8 @@ while ($true) {
 }
 
 export function registerMacroIpcHandlers(manager: MacroManager): void {
+  handleTrustedIpc('macros:editorReady', event => manager.editors.register(event.sender));
+  handleTrustedIpc('macros:flushComplete', (event, token: unknown, error: unknown) => manager.editors.complete(event.sender, token, error));
   handleTrustedIpc('macros:startRecording', (_e, options: MacroRecordingOptions) => manager.startRecording(options));
   handleTrustedIpc('macros:getRecording', () => manager.getRecording());
   handleTrustedIpc('macros:stopRecording', () => manager.stopRecording());
@@ -1383,12 +1395,12 @@ export function registerMacroIpcHandlers(manager: MacroManager): void {
     return manager.upsertMacro(macro, profileName);
   });
 
-  handleTrustedIpc('macros:deleteMacro', async (_e, macroId: string) => {
-    return manager.deleteMacro(macroId);
+  handleTrustedIpc('macros:deleteMacro', async (_e, macroId: string, profileName?: string) => {
+    return manager.deleteMacro(macroId, profileName);
   });
 
-  handleTrustedIpc('macros:runMacro', async (_e, macroId: string) => {
-    return manager.runMacro(macroId);
+  handleTrustedIpc('macros:runMacro', async (_e, macroId: string, profileName?: string) => {
+    return manager.runMacro(macroId, profileName);
   });
 
   handleTrustedIpc('macros:reorderActions', async (_e, macroId: string, actions: MacroAction[]) => {
@@ -1403,8 +1415,8 @@ export function registerMacroIpcHandlers(manager: MacroManager): void {
     return manager.upsertFolder(folder);
   });
 
-  handleTrustedIpc('macros:deleteFolder', async (_e, folderId: string) => {
-    return manager.deleteFolder(folderId);
+  handleTrustedIpc('macros:deleteFolder', async (_e, folderId: string, profileName?: string) => {
+    return manager.deleteFolder(folderId, profileName);
   });
 
   handleTrustedIpc('macros:switchProfile', async (_e, name: string) => {

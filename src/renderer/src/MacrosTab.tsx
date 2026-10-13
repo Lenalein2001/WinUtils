@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { normalizeMacroPlayback } from '../../shared/macro';
 import { MacroRecorderPanel } from './MacroRecorderPanel';
 import { MacroTimelineEditor } from './MacroTimelineEditor';
+import { MacroEditQueue, overlayMacroEdits } from './macroEditQueue';
 import type { AutomationActionDefinition, AutomationActionParameterDefinition } from '../../shared/actions';
 import type {
   AutomationAction as RegisteredAutomationAction,
@@ -1953,6 +1954,17 @@ function NestedActionsEditor({
 }
 
 // ─── Main MacrosTab ───────────────────────────────────────────────────────
+const macroEditQueues = new WeakMap<Window['winUtils']['macros'], MacroEditQueue>();
+function macroEditsFor(api: Window['winUtils']['macros']): MacroEditQueue {
+  let queue = macroEditQueues.get(api);
+  if (!queue) {
+    queue = new MacroEditQueue((macro, profile) => api.upsertMacro(macro, profile)); macroEditQueues.set(api, queue);
+    const savedQueue = queue;
+    api.onFlushRequested?.(async flush => { savedQueue.setFrozen(flush); if (flush) await savedQueue.flushAll(); });
+    void api.registerEditor?.().catch(error => savedQueue.noteFailure(error));
+  }
+  return queue;
+}
 
 export function MacrosTab(): ReactElement {
   const [state, setState] = useState<MacroState | null>(null);
@@ -1970,13 +1982,22 @@ export function MacrosTab(): ReactElement {
   const [notice, setNotice] = useState<string | null>(null);
   const [keyboardPreviewEnabled, setKeyboardPreviewEnabled] = useState<boolean>(() => loadKeyboardPreviewEnabled());
   const [keyboardLayoutId, setKeyboardLayoutId] = useState<KeyboardPreviewLayoutId>(() => loadKeyboardPreviewLayout());
-  const saveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const api = window.winUtils.macros;
+  const editQueue = macroEditsFor(api);
+  const [pendingEdits, setPendingEdits] = useState(0);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const appsPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const runtimePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const appsInFlight = useRef(false);
   const runtimeInFlight = useRef(false);
   const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  useEffect(() => editQueue.observe((next, pending) => {
+    setState(previous => overlayMacroEdits(previous && previous.config.activeProfile !== next.config.activeProfile ? previous : next, pending));
+    if (!pending.length) setSaveError(null);
+  }, failure => setSaveError(failure instanceof Error ? failure.message : 'Changes could not be saved.'), count => {
+    setPendingEdits(count); if (!count) setSaveError(null);
+  }), [editQueue]);
 
   // Load state
   const refresh = useCallback(async () => {
@@ -1984,7 +2005,7 @@ export function MacrosTab(): ReactElement {
     setError(null);
     try {
       const s = await window.winUtils.macros.getState();
-      setState(s);
+      setState(overlayMacroEdits(s, editQueue.pending));
       setRuntime(s.runtime ?? null);
       setExpandedFolders(prev => {
         const next = new Set(prev);
@@ -1996,14 +2017,14 @@ export function MacrosTab(): ReactElement {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [editQueue]);
 
   useEffect(() => { void refresh(); }, [refresh]);
 
   // Push notification: main process auto-switched the active profile
   useEffect(() => {
     const off = window.winUtils.macros.onProfileChanged(s => {
-      setState(s);
+      setState(overlayMacroEdits(s, editQueue.pending));
       setRuntime(s.runtime ?? null);
     });
     return off;
@@ -2067,7 +2088,6 @@ export function MacrosTab(): ReactElement {
     window.localStorage.setItem(KEYBOARD_PREVIEW_LAYOUT_STORAGE_KEY, keyboardLayoutId);
   }, [keyboardLayoutId]);
 
-  const api = window.winUtils.macros;
 
   const call = async <T,>(fn: () => Promise<T>): Promise<T | null> => {
     setBusyOp(true);
@@ -2085,7 +2105,7 @@ export function MacrosTab(): ReactElement {
   const update = async (fn: () => Promise<MacroState>): Promise<void> => {
     const s = await call(fn);
     if (s) {
-      setState(s);
+      setState(overlayMacroEdits(s, editQueue.pending));
       setRuntime(s.runtime ?? null);
     }
   };
@@ -2097,6 +2117,23 @@ export function MacrosTab(): ReactElement {
     : [];
   const selectedMacro = allMacros.find(m => m.id === selectedMacroId) ?? null;
   const hotkeyConflicts = runtime?.hotkeyConflicts ?? state?.runtime?.hotkeyConflicts ?? [];
+  const runSavedMacro = async (id: string): Promise<void> => {
+    if (!profile) throw new Error('Select a macro profile first.');
+    const name = profile.name;
+    await editQueue.flush(name, id);
+    await api.runMacro(id, name);
+  };
+  const deleteSavedMacro = async (id: string): Promise<MacroState> => {
+    if (!profile) throw new Error('Select a macro profile first.');
+    const name = profile.name;
+    return editQueue.removeMacro(name, id, () => api.deleteMacro(id, name));
+  };
+  const deleteSavedFolder = async (folder: MacroFolder): Promise<MacroState> => {
+    if (!profile) throw new Error('Select a macro profile first.');
+    const name = profile.name;
+    await Promise.all(folder.macros.map(macro => editQueue.flush(name, macro.id)));
+    return api.deleteFolder(folder.id, name);
+  };
 
   const importHelldiversPack = async (options: HelldiversPresetOptions): Promise<void> => {
     let createdFirstMacroId: string | null = null;
@@ -2166,6 +2203,7 @@ export function MacrosTab(): ReactElement {
   // Save macro after debounced edit
   const saveMacro = useCallback((macro: Macro) => {
     const profileName = state?.config.activeProfile;
+    if (!profileName || !editQueue.canEdit(profileName, macro.id)) return;
     const normalizedMacro: Macro = { ...macro, playback: normalizeMacroPlayback(macro.playback) };
     setState(prev => {
       if (!prev) return prev;
@@ -2184,17 +2222,8 @@ export function MacrosTab(): ReactElement {
         allMacros: prev.allMacros.map((m: Macro) => m.id === normalizedMacro.id ? normalizedMacro : m),
       };
     });
-    if (saveTimeout.current) clearTimeout(saveTimeout.current);
-    saveTimeout.current = setTimeout(() => {
-      void api.upsertMacro(normalizedMacro, profileName).then(s => {
-        setState(s);
-        setRuntime(s.runtime ?? null);
-      }).catch((error: unknown) => {
-        setError(error instanceof Error ? error.message : 'Failed to save macro.');
-        void refresh();
-      });
-    }, 600);
-  }, [api, state?.config.activeProfile]);
+    editQueue.schedule(profileName, normalizedMacro);
+  }, [editQueue, state?.config.activeProfile]);
 
   // ─── Render ─────────────────────────────────────────────────────────────
 
@@ -2204,7 +2233,7 @@ export function MacrosTab(): ReactElement {
     <div className="macros-layout">
       {/* ── Left panel: profile + macro tree ── */}
       <div className="macros-sidebar">
-        <MacroRecorderPanel onSaved={next => { setState(next); setRuntime(next.runtime ?? null); setNotice('Recording saved as a new macro.'); }} />
+        <MacroRecorderPanel onSaved={next => { setState(overlayMacroEdits(next, editQueue.pending)); setRuntime(next.runtime ?? null); setNotice('Recording saved as a new macro.'); }} />
 
         {/* Profile bar */}
         <div className="macros-profile-bar">
@@ -2283,8 +2312,10 @@ export function MacrosTab(): ReactElement {
                 title="Delete the active macro profile. The Default profile cannot be deleted."
                 disabled={state?.config.activeProfile === 'Default'}
                 onClick={() => {
-                  if (confirm(`Delete profile "${state?.config.activeProfile}"?`))
-                    void update(() => api.deleteProfile(state!.config.activeProfile));
+                  if (confirm(`Delete profile "${state?.config.activeProfile}"?`)) {
+                    const name = state!.config.activeProfile;
+                    void update(() => editQueue.removeProfile(name, () => api.deleteProfile(name)));
+                  }
                 }}
               >🗑</button>
             </>
@@ -2414,6 +2445,11 @@ export function MacrosTab(): ReactElement {
 
         {/* Error */}
         {error && <div className="error-banner">{error}</div>}
+        {saveError ? <div className="error-banner">Changes not saved: {saveError} <button className="ghost-button ghost-button--xs" onClick={() => void editQueue.flushAll().catch(() => undefined)}>Retry</button>
+          <button className="ghost-button ghost-button--xs" onClick={() => {
+            if (confirm('Discard unsaved macro edits? Changes already saved will be kept.')) void editQueue.discardAll().then(() => refresh());
+          }}>Discard changes</button></div>
+          : pendingEdits > 0 && <span className="inline-note">Saving changes…</span>}
         {notice && <div className="status-banner">{notice}</div>}
 
         {/* Macro tree */}
@@ -2428,10 +2464,10 @@ export function MacrosTab(): ReactElement {
               onSelect={() => setSelectedMacroId(macro.id)}
               onRun={async () => {
                 setRunningId(macro.id);
-                await call(() => api.runMacro(macro.id));
+                await call(() => runSavedMacro(macro.id));
                 setRunningId(null);
               }}
-              onDelete={() => void update(() => api.deleteMacro(macro.id))}
+              onDelete={() => void update(() => deleteSavedMacro(macro.id))}
               folders={profile.folders}
               onMove={folderId => void update(() => api.moveMacroToFolder(macro.id, folderId))}
             />
@@ -2463,7 +2499,7 @@ export function MacrosTab(): ReactElement {
                   }} title="Add macro to folder">＋</button>
                   <button type="button" className="micro-button micro-button--danger" onClick={() => {
                     if (confirm(`Delete folder "${folder.name}"? Macros will be moved to root.`))
-                      void update(() => api.deleteFolder(folder.id));
+                      void update(() => deleteSavedFolder(folder));
                   }} title="Delete folder">🗑</button>
                 </div>
               </div>
@@ -2477,10 +2513,10 @@ export function MacrosTab(): ReactElement {
                   onSelect={() => setSelectedMacroId(macro.id)}
                   onRun={async () => {
                     setRunningId(macro.id);
-                    await call(() => api.runMacro(macro.id));
+                    await call(() => runSavedMacro(macro.id));
                     setRunningId(null);
                   }}
-                  onDelete={() => void update(() => api.deleteMacro(macro.id))}
+                  onDelete={() => void update(() => deleteSavedMacro(macro.id))}
                   folders={profile.folders}
                   onMove={fId => void update(() => api.moveMacroToFolder(macro.id, fId))}
                 />
@@ -2541,11 +2577,11 @@ export function MacrosTab(): ReactElement {
             onChange={saveMacro}
             onDelete={() => {
               setSelectedMacroId(null);
-              void update(() => api.deleteMacro(selectedMacro.id));
+              void update(() => deleteSavedMacro(selectedMacro.id));
             }}
             onRun={async () => {
               setRunningId(selectedMacro.id);
-              await call(() => api.runMacro(selectedMacro.id));
+              await call(() => runSavedMacro(selectedMacro.id));
               setRunningId(null);
             }}
             onImportHelldiversPack={importHelldiversPack}

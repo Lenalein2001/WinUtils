@@ -26,6 +26,7 @@ import { AppSettingsStore } from './appSettingsStore';
 import { applyAppLoginItemSettings, getAppLaunchAtLogin } from './loginItem';
 import { HotkeyManager } from './hotkeyManager';
 import { MacroManager, registerMacroIpcHandlers } from './macroManager';
+import { guardEditorClose } from './editorCloseGuard';
 import { registerRenamerIpcHandlers } from './renamerIpc';
 import { RenamerManager } from './renamerManager';
 import { registerSettingsIpcHandlers } from './settingsIpc';
@@ -363,7 +364,7 @@ function openMainModule(moduleId: string): void {
   window.webContents.send('navigation:openModule', moduleId);
 }
 
-function setupTray(preloadPath: string, settingsStore: AppSettingsStore): void {
+function setupTray(preloadPath: string, settingsStore: AppSettingsStore, macroManager: MacroManager): void {
   const icon = buildTrayIcon();
   appTray = new Tray(icon);
   appTray.setToolTip('WinUtils');
@@ -393,17 +394,20 @@ function setupTray(preloadPath: string, settingsStore: AppSettingsStore): void {
   });
 
   handleTrustedIpc('tray:quit', () => {
-    isQuitting = true;
-    appTray?.destroy();
     app.quit();
   });
 
   if (mainWindow) {
-    mainWindow.on('close', (event) => {
-      if (!isQuitting && settingsStore.get().closeToTray) {
-        event.preventDefault();
-        hideMainWindowToTray();
-      }
+    guardEditorClose(mainWindow, {
+      isQuitting: () => isQuitting,
+      closeToTray: () => settingsStore.get().closeToTray,
+      hide: hideMainWindowToTray,
+      flush: () => macroManager.editors.flush(),
+      failed: error => {
+        if (fatalStarted) return;
+        showMainWindow();
+        dialog.showErrorBox('Macro changes not saved', `${String(error)}\n\nReturn to Macros and retry saving before closing WinUtils.`);
+      },
     });
 
     (mainWindow as NodeJS.EventEmitter).on('minimize', (event: { preventDefault(): void }) => {
@@ -483,6 +487,8 @@ async function createWindow(startMinimized: boolean): Promise<void> {
   mainWindow.on('closed', () => {
     logStartup('Main window closed.');
     mainWindow = null;
+    // Hidden utility windows must not keep an app with Close to tray off alive.
+    if (!isQuitting) app.quit();
   });
 }
 
@@ -663,14 +669,27 @@ async function bootstrap(): Promise<void> {
     fileSync: () => fileSyncManager.destroy(),
     clipboard: () => clipboardManager.destroy(),
   }, (name, error) => logStartup(`Shutdown cleanup failed: ${name}`, error));
-  const prepareShutdown = async (): Promise<void> => {
-    isQuitting = true;
-    stopAcceptingIpc();
-    updateManager.dispose();
-    await cleanup();
-    await drainIpcRequests();
-    await stopHandleFileOperations();
-    shutdownComplete = true;
+  let shutdownPreparation: Promise<void> | null = null;
+  let awaitingEditorSaves = false;
+  const prepareShutdown = (): Promise<void> => {
+    if (fatalStarted && awaitingEditorSaves) { macroManager.editors.cancel(); shutdownPreparation = null; }
+    if (shutdownPreparation) return shutdownPreparation;
+    const work = (async () => {
+      if (!fatalStarted) {
+        awaitingEditorSaves = true;
+        try { await macroManager.editors.flush(); } finally { awaitingEditorSaves = false; }
+      }
+      isQuitting = true;
+      stopAcceptingIpc();
+      updateManager.dispose();
+      await cleanup();
+      await drainIpcRequests();
+      await stopHandleFileOperations();
+      shutdownComplete = true;
+    })();
+    const preparation = work.catch(error => { if (shutdownPreparation === preparation) shutdownPreparation = null; throw error; });
+    shutdownPreparation = preparation;
+    return preparation;
   };
   const updateManager = new UpdateManager(prepareShutdown);
   fatalCleanup = prepareShutdown;
@@ -686,7 +705,7 @@ async function bootstrap(): Promise<void> {
     const shouldStartMinimized = contextInvocation
       || (settings.startMinimized && (hasMinimizedArg || Boolean(loginState.wasOpenedAtLogin)));
     await createWindow(shouldStartMinimized);
-    setupTray(preloadPath, settingsStore);
+    setupTray(preloadPath, settingsStore, macroManager);
     if (contextInvocation) {
       await contextMenuManager.handleArguments(process.argv);
     }
@@ -719,7 +738,12 @@ async function bootstrap(): Promise<void> {
   app.on('before-quit', event => {
     if (shutdownComplete) return;
     event.preventDefault();
-    void prepareShutdown().then(() => app.quit());
+    void prepareShutdown().then(() => app.quit()).catch(error => {
+      logStartup('Quit deferred because macro edits could not be saved.', error);
+      if (fatalStarted) return;
+      showMainWindow();
+      dialog.showErrorBox('Macro changes not saved', `${String(error)}\n\nReturn to Macros and retry saving before quitting WinUtils.`);
+    });
   });
 }
 

@@ -95,6 +95,8 @@ Recordings preserve individual input transitions, holds, wheel events, and optio
 
 WinUtils and injected input are excluded; application exclusions are configurable. Stop before entering sensitive information. Recordings stop at five minutes or their event limit, report dropped events, and complete held inputs at the boundary. Mouse movement uses screen coordinates; changing monitor positions requires a new movement recording. Windows scheduling and target-app input restrictions still affect accuracy.
 
+Macro edits autosave independently, and **Run** waits for the latest edit to be saved. Failed edits remain available when switching tools and can be retried or discarded. Normal close and quit finish pending saves first; closing with **Close to tray** off exits the app.
+
 ### Other notes
 
 - Directional sync requires its source folder to exist and be readable; a missing source is never interpreted as an empty tree. Two-way sync requires both folders to exist. Endpoint files, root junctions/symbolic links, and canonical same/nested locations are rejected.
