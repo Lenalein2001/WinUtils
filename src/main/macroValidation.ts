@@ -1,4 +1,5 @@
 import type { Macro, MacroAction, MacroConfig, MacroProfile } from '../shared/macro';
+import { validateTimeline } from './macroTimeline';
 
 function record(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid macro document.');
@@ -25,12 +26,14 @@ export function validateActions(value: unknown): asserts value is MacroAction[] 
       const action = record(value); text(action.id, 'action id', 128);
       if (typeof action.enabled !== 'boolean') throw new Error('Invalid macro action enabled flag.');
       switch (action.type) {
+        case 'timeline': validateTimeline(action.timeline); count += (action.timeline as { events: unknown[] }).events.length; if (count > 10000) throw new Error('Macro action budget exceeded.'); break;
         case 'delay': duration(action.milliseconds); break;
         case 'keyboard':
           text(action.key, 'key', 128); choice(action.pressType, 'key action', ['press', 'down', 'up']);
           if (action.holdMilliseconds !== undefined) duration(action.holdMilliseconds);
           break;
         case 'mouse':
+          if (action.holdMilliseconds !== undefined) duration(action.holdMilliseconds);
           choice(action.button, 'mouse button', ['left', 'right', 'middle']);
           choice(action.actionType, 'mouse action', ['click', 'double-click', 'down', 'up', 'move']);
           for (const key of ['x', 'y']) if (action[key] !== undefined) integer(action[key], 'mouse coordinate', -1000000, 1000000);
@@ -55,7 +58,7 @@ export function validateActions(value: unknown): asserts value is MacroAction[] 
             duration(action.intervalMilliseconds);
             if ((action.intervalMilliseconds as number) < 0.001) throw new Error('Fixed repeat interval must be at least 0.001 ms.');
             const inputOnly = (items: MacroAction[]): boolean => items.every(item => !item.enabled ||
-              (item.type === 'repeat' ? inputOnly(item.actions) : ['delay', 'keyboard', 'mouse', 'text', 'stop'].includes(item.type)));
+              (item.type === 'repeat' ? inputOnly(item.actions) : ['delay', 'keyboard', 'mouse', 'text', 'stop', 'timeline'].includes(item.type)));
             if (!inputOnly(action.actions as MacroAction[])) throw new Error('Fixed intervals require input-only repeated actions.');
           }
           break;

@@ -2,11 +2,13 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import path from 'node:path';
 import { app } from 'electron';
 import { stopWorkerGracefully } from './workerLifecycle';
+import type { MacroTimeline } from '../shared/macroRecording';
 
 export type NativeInputInstruction =
+  | { kind: 'timeline'; timeline: MacroTimeline }
   | { kind: 'delay'; ms: number }
   | { kind: 'keyboard'; keys: number[]; mode: number; holdMs?: number }
-  | { kind: 'mouse'; down: number; up: number; mode: number }
+  | { kind: 'mouse'; down: number; up: number; mode: number; holdMs?: number }
   | { kind: 'move'; x: number; y: number }
   | { kind: 'text'; text: string }
   | { kind: 'repeat'; times: number; actions: NativeInputInstruction[]; intervalMs?: number }
@@ -86,9 +88,10 @@ export class NativeMacroWorker {
 
   async run(actions: NativeInputInstruction[], runId: string, signal: AbortSignal, maxActions = 100_000): Promise<number> {
     const duration = (items: NativeInputInstruction[]): number => items.reduce((total, item) => total + (
-      item.kind === 'delay' ? item.ms : item.kind === 'repeat' ? item.times * (duration(item.actions) + (item.intervalMs ?? 0))
+      item.kind === 'timeline' ? (item.timeline.events.at(-1)?.timeUs ?? 0) / 1000 / item.timeline.speed
+        : item.kind === 'delay' ? item.ms : item.kind === 'repeat' ? item.times * (duration(item.actions) + (item.intervalMs ?? 0))
         : item.kind === 'text' ? item.text.length : item.kind === 'keyboard' && item.mode === 0 ? item.holdMs ?? 16
-          : item.kind === 'mouse' && item.mode === 3 ? 50 : 0
+          : item.kind === 'mouse' ? item.mode === 3 ? 50 + 2 * (item.holdMs ?? 0) : item.mode === 0 ? item.holdMs ?? 0 : 0 : 0
     ), 0);
     // Long configured waits are valid; don't kill them after a fixed 30 seconds.
     return Number(await this.request({ op: 'run', runId, actions, maxActions }, signal, duration(actions) + 30_000));

@@ -32,6 +32,8 @@ import { nativeMacroWorker } from './nativeMacroWorker';
 import { MacroStore } from './macroStore';
 import { SerialTaskQueue } from './atomicFile';
 import { validateActions, validateMacro, validateProfile } from './macroValidation';
+import { MacroRecorder } from './macroRecorder';
+import type { MacroRecordingOptions, MacroRecordingState } from '../shared/macroRecording';
 
 interface MacroPlaybackState {
   running: boolean;
@@ -47,6 +49,9 @@ function boundedRunCount(value: number): number {
 }
 
 export class MacroManager {
+  private readonly recorder = new MacroRecorder();
+  private recordingProfile: string | null = null;
+  private removeRecordingPauseListener: (() => void) | undefined;
   private destroyed = false;
   private readonly executions = new Set<Promise<MacroExecutionResult>>();
   private readonly store = new MacroStore();
@@ -91,7 +96,11 @@ export class MacroManager {
   constructor(
     private readonly actions: ActionEngine,
     private readonly hotkeys: HotkeyManager,
-  ) {}
+  ) {
+    this.removeRecordingPauseListener = actions.onPauseChanged?.(paused => {
+      if (paused) void this.recorder.stop().catch(error => console.error('[Macros] Recorder stop failed:', error));
+    });
+  }
 
   async init(): Promise<void> {
     if (this.destroyed || this.initialized) return;
@@ -701,6 +710,7 @@ while ($true) {
   }
 
   private async executeMacroActions(macro: Macro, shouldCancel?: () => boolean): Promise<MacroExecutionResult> {
+    if (this.recorder.busy) throw new Error('Save or discard recording before running macros.');
     if (this.destroyed) throw new Error('Macros are shutting down.');
     if (this.actions.getActivity?.().paused) return 'stopped';
     const generation = this.stopGeneration;
@@ -959,8 +969,9 @@ while ($true) {
       const normalizedMacro: Macro = { ...macro, playback: normalizeMacroPlayback(macro.playback) };
       const cfg = this.store['_config'] as MacroConfig;
       const profile = profileName
-        ? cfg.profiles.find(p => p.name === profileName) ?? this.store.getActiveProfile()
+        ? cfg.profiles.find(p => p.name === profileName)
         : this.store.getActiveProfile();
+      if (!profile) throw new Error('The selected macro profile no longer exists.');
 
       const normalizedHotkey = this.normalizeHotkey(normalizedMacro.hotkey);
       if (normalizedHotkey && normalizedMacro.enabled && (normalizedMacro.hotkeyEnabled ?? true)) {
@@ -1127,6 +1138,31 @@ while ($true) {
     if (macro) await this.executeMacroActions(macro);
   }
 
+  async startRecording(options: MacroRecordingOptions): Promise<MacroRecordingState> {
+    await this.init();
+    if (this.destroyed || this.actions.getActivity?.().paused) throw new Error('Resume automation before recording.');
+    const profile = this.store.getActiveProfile().name;
+    let state: MacroRecordingState;
+    try { state = await this.recorder.start(options, async () => {
+      await this.stopAll();
+      if (this.destroyed || this.actions.getActivity?.().paused) throw new Error('Recording was canceled before starting.');
+    }); } catch (error) { this.rebuildHotkeys(); throw error; }
+    this.recordingProfile = profile;
+    return state;
+  }
+  getRecording(): Promise<MacroRecordingState> { return this.recorder.status(); }
+  stopRecording(): Promise<MacroRecordingState> { return this.recorder.stop(); }
+  async discardRecording(): Promise<MacroRecordingState> { const state = await this.recorder.discard(); this.rebuildHotkeys(); return state; }
+  async saveRecording(name: string, acceptIncomplete: boolean): Promise<MacroState> {
+    return this.recorder.save(async recording => {
+      if (!recording.draft?.events.length || recording.error) throw new Error(recording.error ?? 'No input was recorded.');
+      if (recording.dropped > 0 && acceptIncomplete !== true) throw new Error('Review and acknowledge incomplete recording before saving.');
+      if (typeof name !== 'string' || !name.trim() || name.length > 512 || name.includes('\0')) throw new Error('Enter a recording name.');
+      return this.upsertMacro({ id: randomUUID(), name: name.trim(), hotkey: '', hotkeyEnabled: false, enabled: true,
+        playback: { mode: 'once', repeatCount: 2 }, actions: [{ id: randomUUID(), type: 'timeline', enabled: true, timeline: recording.draft }] }, this.recordingProfile ?? undefined);
+    });
+  }
+
   async reorderActions(macroId: string, actions: MacroAction[]): Promise<MacroState> {
     return this.mutationQueue.run(async () => {
       validateActions(actions);
@@ -1287,15 +1323,17 @@ while ($true) {
     });
   }
 
+  private activeAppsRequest: Promise<string[]> | null = null;
   getActiveApps(): Promise<string[]> {
-    return new Promise<string[]>(resolve => {
+    if (this.activeAppsRequest) return this.activeAppsRequest;
+    this.activeAppsRequest = new Promise<string[]>(resolve => {
       execFile(
         'powershell.exe',
         [
           '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command',
           "Get-Process | Where-Object { $_.MainWindowTitle -ne '' } | Select-Object -ExpandProperty ProcessName | Sort-Object -Unique",
         ],
-        { timeout: 5000 },
+        { timeout: 5000, windowsHide: true, maxBuffer: 1024 * 1024 },
         (_err, stdout) => {
           resolve(
             stdout
@@ -1306,11 +1344,15 @@ while ($true) {
           );
         },
       );
-    });
+    }).finally(() => { this.activeAppsRequest = null; });
+    return this.activeAppsRequest;
   }
 
   async destroy(): Promise<void> {
     this.destroyed = true;
+    this.removeRecordingPauseListener?.();
+    let recordingFailure: unknown;
+    try { await this.recorder.destroy(); } catch (error) { recordingFailure = error; }
     await this.initializing?.catch(() => undefined);
     this.stopFocusMonitor();
     this.stopAllHotkeyPlayback();
@@ -1321,10 +1363,16 @@ while ($true) {
     await this.store.drain();
     this.actions.replaceOwnerActions('macros', []);
     this.hotkeys.replaceOwnerBindings('macros', []);
+    if (recordingFailure) throw recordingFailure;
   }
 }
 
 export function registerMacroIpcHandlers(manager: MacroManager): void {
+  handleTrustedIpc('macros:startRecording', (_e, options: MacroRecordingOptions) => manager.startRecording(options));
+  handleTrustedIpc('macros:getRecording', () => manager.getRecording());
+  handleTrustedIpc('macros:stopRecording', () => manager.stopRecording());
+  handleTrustedIpc('macros:discardRecording', () => manager.discardRecording());
+  handleTrustedIpc('macros:saveRecording', (_e, name: string, acceptIncomplete: boolean) => manager.saveRecording(name, acceptIncomplete));
   handleTrustedIpc('macros:getState', async () => {
     await manager.init();
     return manager['getState']();

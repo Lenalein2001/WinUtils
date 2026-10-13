@@ -62,6 +62,8 @@ export interface MouseAction {
   enabled: boolean;
   button: MouseButton;
   actionType: MouseActionType;
+  /** Click hold duration; absent preserves immediate down/up. */
+  holdMilliseconds?: number;
   x?: number;
   y?: number;
 }
@@ -122,7 +124,15 @@ export interface StopAction {
   enabled: boolean;
 }
 
+export interface TimelineAction {
+  id: string;
+  type: 'timeline';
+  enabled: boolean;
+  timeline: import('./macroRecording').MacroTimeline;
+}
+
 export type MacroAction =
+  | TimelineAction
   | DelayAction
   | KeyboardAction
   | MouseAction

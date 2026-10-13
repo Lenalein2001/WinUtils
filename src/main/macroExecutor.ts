@@ -171,6 +171,7 @@ function delayMilliseconds(value: number): number {
 
 function inputInstruction(action: MacroAction): NativeInputInstruction | null {
   switch (action.type) {
+    case 'timeline': return { kind: 'timeline', timeline: action.timeline };
     case 'delay': return { kind: 'delay', ms: delayMilliseconds(action.milliseconds) };
     case 'keyboard': return { kind: 'keyboard', keys: keysForString(action.key), mode: action.pressType === 'down' ? 1 : action.pressType === 'up' ? 2 : 0, holdMs: delayMilliseconds(action.holdMilliseconds ?? 16) };
     case 'mouse': {
@@ -179,7 +180,8 @@ function inputInstruction(action: MacroAction): NativeInputInstruction | null {
         if (action.x === undefined || action.y === undefined) throw new Error('Mouse movement requires both coordinates.');
         return { kind: 'move', x: action.x, y: action.y };
       }
-      return { kind: 'mouse', ...flags, mode: action.actionType === 'down' ? 1 : action.actionType === 'up' ? 2 : action.actionType === 'double-click' ? 3 : 0 };
+      return { kind: 'mouse', ...flags, mode: action.actionType === 'down' ? 1 : action.actionType === 'up' ? 2 : action.actionType === 'double-click' ? 3 : 0,
+        holdMs: delayMilliseconds(action.holdMilliseconds ?? 0) };
     }
     case 'text': return { kind: 'text', text: action.text };
     case 'stop': return { kind: 'stop' };

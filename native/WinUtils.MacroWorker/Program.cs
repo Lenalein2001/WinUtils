@@ -16,15 +16,18 @@ internal static partial class Program
     private static readonly ConcurrentDictionary<string, Run> Runs = new();
     private static readonly BlockingCollection<Request> Queue = new(128);
     private static int shutdown;
+    private static int recordingSession;
 
     private sealed record Request(string Id, string Operation, string RunId, Instruction[] Actions, JsonElement Data, Binding? Binding = null);
     private sealed record Instruction(string Kind, double Delay = 0, ushort[]? Keys = null, int Mode = 0,
-        uint Flags = 0, uint Up = 0, int X = 0, int Y = 0, string? Text = null, int Times = 0, Instruction[]? Actions = null, double Interval = 0);
+        uint Flags = 0, uint Up = 0, int X = 0, int Y = 0, string? Text = null, int Times = 0, Instruction[]? Actions = null, double Interval = 0, Timeline? Timeline = null);
     private sealed class Run : IDisposable
     {
         public readonly CancellationTokenSource Cancellation = new();
         public readonly List<ushort> Keys = new();
         public readonly HashSet<uint> MouseUps = new();
+        public readonly List<TimelineKey> RecordedKeys = new();
+        public readonly HashSet<int> RecordedButtons = new();
         public int Actions;
         public int Limit = 100_000;
         public void Cancel() { try { Cancellation.Cancel(); } catch (ObjectDisposedException) { } }
@@ -39,6 +42,7 @@ internal static partial class Program
         var thread = new Thread(() => ExecuteQueue(timer)) { Name = "WinUtils macro input", IsBackground = false };
         thread.Start();
         using var hotkeys = new HotkeyLoop();
+        using var recorder = new Recorder();
         bool cleanupFailed = false;
         Write("READY");
         try
@@ -60,6 +64,8 @@ internal static partial class Program
                     using var document = JsonDocument.Parse(Convert.FromBase64String(line[(space + 1)..]), new JsonDocumentOptions { MaxDepth = 32 });
                     var data = document.RootElement;
                     var operation = data.GetProperty("op").GetString() ?? "";
+                    if (operation.StartsWith("record-", StringComparison.Ordinal)) { recorder.Command(operation, data, id); continue; }
+                    if (operation == "run" && Volatile.Read(ref recordingSession) != 0) throw new ArgumentException("Save or discard recording before playback.");
                     if (operation == "hotkeys") { hotkeys.Configure(data, id); continue; }
                     if (operation == "cancel-fast")
                     {
@@ -90,6 +96,7 @@ internal static partial class Program
         finally
         {
             hotkeys.Dispose();
+            recorder.Dispose();
             Interlocked.Exchange(ref shutdown, 1);
             foreach (var run in Runs.Values) run.Cancel();
             Queue.CompleteAdding();
@@ -192,8 +199,9 @@ internal static partial class Program
             switch (instruction.Kind)
             {
                 case "delay": timer.Delay(instruction.Delay, run.Cancellation.Token); break;
+                case "timeline": PlayTimeline(instruction.Timeline!, run, timer); break;
                 case "keyboard": Input.Keyboard(instruction.Keys!, instruction.Mode, instruction.Delay, run, timer); break;
-                case "mouse": Input.Mouse(instruction.Flags, instruction.Up, instruction.Mode, run, timer); break;
+                case "mouse": Input.Mouse(instruction.Flags, instruction.Up, instruction.Mode, run, timer, instruction.Delay); break;
                 case "move": if (!Input.SetCursorPos(instruction.X, instruction.Y)) throw new Win32Exception(); break;
                 case "text": Input.Text(instruction.Text!, run, timer); break;
                 case "stop": throw new Stopped();
@@ -223,6 +231,7 @@ internal static partial class Program
             result.Add(kind switch
             {
                 "delay" => new("delay", Delay: Number(item, "ms", 0, 600_000)),
+                "timeline" => new("timeline", Timeline: ParseTimeline(item.GetProperty("timeline"), ref count)),
                 "keyboard" => new("keyboard", Delay: item.TryGetProperty("holdMs", out _) ? Number(item, "holdMs", 0, 600_000) : 16, Keys: ParseKeys(item.GetProperty("keys")), Mode: Integer(item, "mode", 0, 2)),
                 "mouse" => MouseInstruction(item),
                 "move" => new("move", X: Integer(item, "x", -1_000_000, 1_000_000), Y: Integer(item, "y", -1_000_000, 1_000_000)),
@@ -240,7 +249,7 @@ internal static partial class Program
         var down = (uint)Integer(item, "down", 0, 32);
         var up = (uint)Integer(item, "up", 0, 64);
         if (!((down == 2 && up == 4) || (down == 8 && up == 16) || (down == 32 && up == 64))) throw new ArgumentException("Invalid mouse flags.");
-        return new("mouse", Flags: down, Up: up, Mode: Integer(item, "mode", 0, 3));
+        return new("mouse", Flags: down, Up: up, Mode: Integer(item, "mode", 0, 3), Delay: item.TryGetProperty("holdMs", out _) ? Number(item, "holdMs", 0, 600000) : 0);
     }
     private static string Text(JsonElement item)
     {
@@ -332,6 +341,8 @@ internal static partial class Program
     private sealed class PrecisionTimer : IDisposable
     {
         private readonly IntPtr handle;
+        private IntPtr[]? waitHandles;
+        private CancellationToken waitToken;
         public PrecisionTimer()
         {
             handle = CreateWaitableTimerExW(IntPtr.Zero, null, 2, 0x00100002); // synchronize + modify state
@@ -344,7 +355,6 @@ internal static partial class Program
             // Sleeping most of the interval avoids sustained full-core spinning.
             // Wake ahead of the deadline to absorb the observed Windows timer
             // wakeup granularity. Only the final fraction uses a precision tail.
-            IntPtr[]? handles = null;
             while (true)
             {
                 token.ThrowIfCancellationRequested();
@@ -352,10 +362,11 @@ internal static partial class Program
                 if (remainingMs <= 0) return;
                 if (remainingMs > 0.65)
                 {
-                    handles ??= new[] { token.WaitHandle.SafeWaitHandle.DangerousGetHandle(), handle };
+                    if (waitHandles == null || waitToken != token)
+                    { waitHandles = new[] { token.WaitHandle.SafeWaitHandle.DangerousGetHandle(), handle }; waitToken = token; }
                     long due = -Math.Max(1, (long)((remainingMs - 0.6) * 10_000));
                     if (!SetWaitableTimer(handle, ref due, 0, IntPtr.Zero, IntPtr.Zero, false)) throw new Win32Exception();
-                    var result = WaitForMultipleObjects(2, handles, false, uint.MaxValue);
+                    var result = WaitForMultipleObjects(2, waitHandles, false, uint.MaxValue);
                     if (result == 0) token.ThrowIfCancellationRequested();
                     if (result == uint.MaxValue) throw new Win32Exception();
                 }
@@ -369,8 +380,11 @@ internal static partial class Program
         [DllImport("kernel32.dll")] private static extern bool CloseHandle(IntPtr handle);
     }
 
-    private static class Input
+    private static partial class Input
     {
+        private static readonly Event[] Single = new Event[1];
+        private static readonly Event[] Pair = new Event[2];
+        private static void SendOne(Event value) { Single[0] = value; Send(Single); }
         [StructLayout(LayoutKind.Sequential)] private struct Event { public uint Type; public Union Data; }
         [StructLayout(LayoutKind.Explicit)] private struct Union { [FieldOffset(0)] public Key Key; [FieldOffset(0)] public MouseEvent Mouse; }
         [StructLayout(LayoutKind.Sequential)] private struct Key { public ushort Vk, Scan; public uint Flags, Time; public IntPtr Extra; }
@@ -405,14 +419,25 @@ internal static partial class Program
             KeyDown(keys, run);
             if (mode == 0) { timer.Delay(holdMs, run.Cancellation.Token); KeyUp(keys, run); }
         }
-        private static void MouseSend(uint flags) => Send(new[] { new Event { Data = new Union { Mouse = new MouseEvent { Flags = flags } } } });
-        public static void Mouse(uint down, uint up, int mode, Run run, PrecisionTimer timer)
+        private static void MouseSend(uint flags) => SendOne(new Event { Data = new Union { Mouse = new MouseEvent { Flags = flags } } });
+        public static void Mouse(uint down, uint up, int mode, Run run, PrecisionTimer timer, double holdMs = 0)
         {
             if (mode == 2) { MouseSend(up); run.MouseUps.Remove(up); return; }
-            run.MouseUps.Add(up); MouseSend(down);
-            if (mode == 1) return;
-            MouseSend(up); run.MouseUps.Remove(up);
-            if (mode == 3) { timer.Delay(50, run.Cancellation.Token); Mouse(down, up, 0, run, timer); }
+            run.MouseUps.Add(up);
+            if (mode != 1 && holdMs == 0)
+            {
+                Pair[0] = new Event { Data = new Union { Mouse = new MouseEvent { Flags = down } } };
+                Pair[1] = new Event { Data = new Union { Mouse = new MouseEvent { Flags = up } } };
+                Send(Pair); run.MouseUps.Remove(up);
+            }
+            else
+            {
+                MouseSend(down);
+                if (mode == 1) return;
+                timer.Delay(holdMs, run.Cancellation.Token);
+                MouseSend(up); run.MouseUps.Remove(up);
+            }
+            if (mode == 3) { timer.Delay(50, run.Cancellation.Token); Mouse(down, up, 0, run, timer, holdMs); }
         }
         public static void Text(string text, Run run, PrecisionTimer timer)
         {
@@ -426,6 +451,10 @@ internal static partial class Program
         public static void Release(Run run)
         {
             var errors = new List<Exception>();
+            foreach (var key in run.RecordedKeys.ToArray().Reverse())
+                try { RecordedKey(key, true, run); } catch (Exception error) { errors.Add(error); }
+            foreach (var button in run.RecordedButtons.ToArray())
+                try { RecordedButton(button, true, run); } catch (Exception error) { errors.Add(error); }
             foreach (var key in run.Keys.ToArray().Reverse())
                 try { Send(new[] { KeyEvent(key, true) }); run.Keys.Remove(key); } catch (Exception error) { errors.Add(error); }
             foreach (var up in run.MouseUps.ToArray())

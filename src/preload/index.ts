@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
+import type { MacroRecordingOptions, MacroRecordingState } from '../shared/macroRecording';
 import type { StartupEntry, StartupMutation } from '../shared/startup';
 import type { Macro, MacroAction, MacroFolder, MacroProfileExportResult, MacroRuntimeStats, MacroState } from '../shared/macro';
 import type { FocusAudioConfig, FocusAudioDuckRule, FocusAudioState } from '../shared/focusAudio';
@@ -125,6 +126,11 @@ const api = {
     },
   },
   macros: {
+    startRecording: (options: MacroRecordingOptions): Promise<MacroRecordingState> => ipcRenderer.invoke('macros:startRecording', options),
+    getRecording: (): Promise<MacroRecordingState> => ipcRenderer.invoke('macros:getRecording'),
+    stopRecording: (): Promise<MacroRecordingState> => ipcRenderer.invoke('macros:stopRecording'),
+    discardRecording: (): Promise<MacroRecordingState> => ipcRenderer.invoke('macros:discardRecording'),
+    saveRecording: (name: string, acceptIncomplete: boolean): Promise<MacroState> => ipcRenderer.invoke('macros:saveRecording', name, acceptIncomplete),
     getState: (): Promise<MacroState> => ipcRenderer.invoke('macros:getState'),
     newId: (): Promise<string> => ipcRenderer.invoke('macros:newId'),
     upsertMacro: (macro: Macro, profileName?: string): Promise<MacroState> =>

@@ -1,6 +1,8 @@
 import type { CSSProperties, DragEvent, ReactElement } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { normalizeMacroPlayback } from '../../shared/macro';
+import { MacroRecorderPanel } from './MacroRecorderPanel';
+import { MacroTimelineEditor } from './MacroTimelineEditor';
 import type { AutomationActionDefinition, AutomationActionParameterDefinition } from '../../shared/actions';
 import type {
   AutomationAction as RegisteredAutomationAction,
@@ -51,6 +53,7 @@ function blankCondition(): MacroCondition {
 
 function blankAction(type: MacroAction['type']): MacroAction {
   switch (type) {
+    case 'timeline': throw new Error('Use Record macro to create a recorded timeline.');
     case 'delay': return { id: newId(), type: 'delay', enabled: true, milliseconds: 500 };
     case 'keyboard': return { id: newId(), type: 'keyboard', enabled: true, key: 'Enter', pressType: 'press' };
     case 'mouse': return { id: newId(), type: 'mouse', enabled: true, button: 'left', actionType: 'click' };
@@ -184,6 +187,7 @@ function captureNumpadKeyName(code: string): string | null {
 
 function actionLabel(a: MacroAction): string {
   switch (a.type) {
+    case 'timeline': return `Recording · ${a.timeline.events.length} events`;
     case 'delay': return `Delay ${a.milliseconds} ms`;
     case 'keyboard': return `${a.pressType} ${a.key}`;
     case 'mouse': return `${a.button} ${a.actionType}${a.x !== undefined ? ` (${a.x},${a.y})` : ''}`;
@@ -215,6 +219,7 @@ function formatTimeAgo(iso: string | null): string {
 }
 
 const macroActionDescriptions: Record<MacroAction['type'], string> = {
+  timeline: 'Replay recorded input with its original timing and holds.',
   delay: 'Wait for a number of milliseconds before running the next action.',
   keyboard: 'Send a keyboard key or key combination.',
   mouse: 'Click, hold, release, or move the mouse.',
@@ -1367,7 +1372,7 @@ function ActionEditor({
   return (
     <div className={`action-row${action.enabled ? '' : ' action-row--disabled'}${pairClass}`} style={actionPairStyle(anchorDecoration)} title={anchorDecoration?.label}>
       <div className="action-row-header">
-        <span className="action-type-badge" title={macroActionDescriptions[action.type]}>{action.type}</span>
+        <span className="action-type-badge" title={macroActionDescriptions[action.type]}>{action.type === 'timeline' ? 'recording' : action.type}</span>
         <div className="action-row-controls">
           <button
             type="button"
@@ -1478,6 +1483,11 @@ function ActionEditor({
               />
             </>
           )}
+          {(action.actionType === 'click' || action.actionType === 'double-click') && <>
+            <label className="macro-label">Hold (ms)</label><input type="number" className="macro-input macro-input--short" min={0} max={600000} step="any"
+              value={action.holdMilliseconds ?? 0} onChange={event => patch({ holdMilliseconds: Number(event.target.value) })}
+              title="How long each click remains pressed. Zero keeps the existing immediate click." />
+          </>}
         </div>
       )}
 
@@ -1575,6 +1585,8 @@ function ActionEditor({
           />
         </div>
       )}
+
+      {action.type === 'timeline' && <MacroTimelineEditor action={action} onChange={onChange} />}
 
       {action.type === 'if' && (
         <div className="action-nested-editor">
@@ -1961,6 +1973,10 @@ export function MacrosTab(): ReactElement {
   const saveTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const appsPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const runtimePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const appsInFlight = useRef(false);
+  const runtimeInFlight = useRef(false);
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
 
   // Load state
   const refresh = useCallback(async () => {
@@ -1994,12 +2010,14 @@ export function MacrosTab(): ReactElement {
   }, []);
 
   const loadRuntime = useCallback(async () => {
+    if (runtimeInFlight.current || document.hidden) return;
+    runtimeInFlight.current = true;
     try {
       const stats = await window.winUtils.macros.getRuntimeStats();
-      setRuntime(stats);
+      if (mounted.current) setRuntime(stats);
     } catch {
       // ignore transient runtime polling failures
-    }
+    } finally { runtimeInFlight.current = false; }
   }, []);
 
   useEffect(() => {
@@ -2013,12 +2031,15 @@ export function MacrosTab(): ReactElement {
   }, [loadRuntime]);
 
   const loadActiveApps = useCallback(async () => {
+    if (appsInFlight.current || document.hidden) return;
+    appsInFlight.current = true;
     setAppsLoading(true);
     try {
       const apps = await window.winUtils.macros.getActiveApps();
-      setActiveApps(apps);
+      if (mounted.current) setActiveApps(apps);
     } catch { /* ignore */ } finally {
-      setAppsLoading(false);
+      appsInFlight.current = false;
+      if (mounted.current) setAppsLoading(false);
     }
   }, []);
 
@@ -2026,12 +2047,15 @@ export function MacrosTab(): ReactElement {
 
   useEffect(() => {
     appsPollRef.current = setInterval(() => {
-      void window.winUtils.macros.getActiveApps().then(setActiveApps).catch(() => undefined);
-    }, 3000);
+      void loadActiveApps();
+    }, 30000);
+    const visible = () => { if (!document.hidden) { void loadActiveApps(); void loadRuntime(); } };
+    document.addEventListener('visibilitychange', visible);
     return () => {
       if (appsPollRef.current) clearInterval(appsPollRef.current);
+      document.removeEventListener('visibilitychange', visible);
     };
-  }, []);
+  }, [loadActiveApps, loadRuntime]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -2141,6 +2165,7 @@ export function MacrosTab(): ReactElement {
 
   // Save macro after debounced edit
   const saveMacro = useCallback((macro: Macro) => {
+    const profileName = state?.config.activeProfile;
     const normalizedMacro: Macro = { ...macro, playback: normalizeMacroPlayback(macro.playback) };
     setState(prev => {
       if (!prev) return prev;
@@ -2161,7 +2186,7 @@ export function MacrosTab(): ReactElement {
     });
     if (saveTimeout.current) clearTimeout(saveTimeout.current);
     saveTimeout.current = setTimeout(() => {
-      void api.upsertMacro(normalizedMacro).then(s => {
+      void api.upsertMacro(normalizedMacro, profileName).then(s => {
         setState(s);
         setRuntime(s.runtime ?? null);
       }).catch((error: unknown) => {
@@ -2169,7 +2194,7 @@ export function MacrosTab(): ReactElement {
         void refresh();
       });
     }, 600);
-  }, [api]);
+  }, [api, state?.config.activeProfile]);
 
   // ─── Render ─────────────────────────────────────────────────────────────
 
@@ -2179,6 +2204,7 @@ export function MacrosTab(): ReactElement {
     <div className="macros-layout">
       {/* ── Left panel: profile + macro tree ── */}
       <div className="macros-sidebar">
+        <MacroRecorderPanel onSaved={next => { setState(next); setRuntime(next.runtime ?? null); setNotice('Recording saved as a new macro.'); }} />
 
         {/* Profile bar */}
         <div className="macros-profile-bar">

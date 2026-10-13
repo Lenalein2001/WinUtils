@@ -130,6 +130,7 @@ internal static partial class Program
         }
         private void Activate(Binding binding)
         {
+            if (Volatile.Read(ref recordingSession) != 0) return;
             Input.GetWindowThreadProcessId(Input.GetForegroundWindow(), out var pid);
             if (binding.SuppressPid != 0 && pid == binding.SuppressPid) return;
             binding.Active = binding.TrackRelease;

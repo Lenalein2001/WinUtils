@@ -87,6 +87,16 @@ npm run package:portable
 
 ## Notes
 
+### Recording macros
+
+Open **Macros**, choose keyboard/mouse capture, and press **Start · 3s**. Focus the target app during the countdown. Press **F8** or **Stop** to finish, then save the recording as a new macro or discard it. Captured input stays in memory until explicitly saved.
+
+Recordings preserve individual input transitions, holds, wheel events, and optional pointer movement. Expand **Recorded events** to edit timestamps or change playback speed. **Preserve timing** keeps spacing when Windows runs late; **Fixed schedule** retains the original deadlines. Fixed repeat intervals and optional mouse click holds are also available for manually created macros.
+
+WinUtils and injected input are excluded; application exclusions are configurable. Stop before entering sensitive information. Recordings stop at five minutes or their event limit, report dropped events, and complete held inputs at the boundary. Mouse movement uses screen coordinates; changing monitor positions requires a new movement recording. Windows scheduling and target-app input restrictions still affect accuracy.
+
+### Other notes
+
 - Directional sync requires its source folder to exist and be readable; a missing source is never interpreted as an empty tree. Two-way sync requires both folders to exist. Endpoint files, root junctions/symbolic links, and canonical same/nested locations are rejected.
 - Startup changes persist restore records before disabling entries and retain them until restoration succeeds. Cache mutations are serialized and published atomically; invalid cache files are preserved rather than replaced with empty data.
 - Batch Renamer journals each batch before moving files and recovers interrupted batches on startup. Undo uses staged renames for swaps and case-only changes, and new transactions track filesystem IDs to reject replacement files. If recovery cannot restore an original path safely, the journal and affected files are retained and the error identifies the recovery paths. Filesystems without stable file IDs are rejected for safety.

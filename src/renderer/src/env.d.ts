@@ -20,6 +20,7 @@ import type {
   WindowManagerState,
 } from '../../shared/windowManager';
 import type { AutomationTriggerInput, AutomationTriggerState } from '../../shared/automationTriggers';
+import type { MacroRecordingOptions, MacroRecordingState } from '../../shared/macroRecording';
 import type { ExplorerContextMenuState, ExplorerContextMenuUpdate } from '../../shared/contextMenu';
 
 declare global {
@@ -99,6 +100,11 @@ declare global {
         onChanged: (cb: () => void) => () => void;
       };
       macros: {
+        startRecording: (options: MacroRecordingOptions) => Promise<MacroRecordingState>;
+        getRecording: () => Promise<MacroRecordingState>;
+        stopRecording: () => Promise<MacroRecordingState>;
+        discardRecording: () => Promise<MacroRecordingState>;
+        saveRecording: (name: string, acceptIncomplete: boolean) => Promise<MacroState>;
         getState: () => Promise<MacroState>;
         newId: () => Promise<string>;
         upsertMacro: (macro: Macro, profileName?: string) => Promise<MacroState>;
