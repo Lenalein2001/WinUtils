@@ -27,7 +27,6 @@ export class NativeMacroWorker {
   private nextId = 1;
   private workerEpoch = 0;
   private buffer = '';
-  private stderr = '';
   private readyResolve: (() => void) | null = null;
   private readyReject: ((error: Error) => void) | null = null;
   private pending = new Map<string, { resolve: (value: string) => void; reject: (error: Error) => void; started: () => void }>();
@@ -124,7 +123,9 @@ export class NativeMacroWorker {
 
   private start(): Promise<void> {
     this.workerEpoch++;
-    this.buffer = ''; this.stderr = '';
+    this.buffer = '';
+    let stderr = '';
+    const startedAt = performance.now();
     const executable = path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(),
       'resources', 'native', 'WinUtils.MacroWorker.exe');
     return new Promise<void>((resolve, reject) => {
@@ -165,10 +166,21 @@ export class NativeMacroWorker {
             : status === 'STOPPED' ? new NativeMacroStopped(value) : new Error(value || 'Native macro input failed.'));
         }
       });
-      child.stderr.on('data', chunk => { this.stderr = (this.stderr + String(chunk)).slice(-4000); });
+      child.stderr.on('data', chunk => { stderr = (stderr + String(chunk)).slice(-4000); });
       child.stdin.on('error', error => this.fail(child, error));
       child.once('error', error => this.fail(child, error));
-      child.once('exit', (code, signal) => this.fail(child, new Error(`Native macro worker exited (${code ?? signal}). ${this.stderr}`)));
+      let unexpectedExit: string | null = null;
+      child.once('exit', (code, signal) => {
+        if (this.child !== child) return;
+        const status = code === null ? String(signal) : `${code}; 0x${(code >>> 0).toString(16).padStart(8, '0')}`;
+        unexpectedExit = `Native macro worker exited (${status}); uptime ${Math.round(performance.now() - startedAt)} ms; pending requests ${this.pending.size}; active fast runs ${this.fastRuns.size}.`;
+        this.fail(child, new Error(`${unexpectedExit} ${stderr}`));
+      });
+      // Exit can precede the final stderr chunk. Keep diagnostics per process so
+      // a late chunk cannot contaminate the next worker's failure report.
+      child.once('close', () => {
+        if (unexpectedExit) console.error('[Macros]', unexpectedExit, stderr);
+      });
     });
   }
 
