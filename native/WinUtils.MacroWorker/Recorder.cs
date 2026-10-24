@@ -156,7 +156,7 @@ internal static partial class Program
                             {
                                 bool eligible = Eligible(now);
                                 if (up && held[data.Key] is TimelineKey previous)
-                                { Append(new(0, "key", Key: previous, Up: true), now); held[data.Key] = null; }
+                                { if (Append(new(0, "key", Key: previous, Up: true), now)) held[data.Key] = null; }
                                 else if (!up && eligible)
                                 {
                                     var key = new TimelineKey((ushort)data.Key, (ushort)data.Scan, (data.Flags & 1) != 0);
@@ -176,6 +176,8 @@ internal static partial class Program
                 {
                     if (code >= 0 && Volatile.Read(ref stopped) == 0)
                     {
+                        // Movement is opt-in; do not classify foreground input for ignored moves.
+                        if ((uint)message == 0x200 && !movement) return CallNextHookEx(IntPtr.Zero, code, message, pointer);
                         var data = Marshal.PtrToStructure<MouseData>(pointer);
                         if ((data.Flags & 3) == 0)
                         {
@@ -184,7 +186,7 @@ internal static partial class Program
                             if (button >= 0)
                             {
                                 bool up = msg is 0x202 or 0x205 or 0x208 or 0x20c;
-                                if (up && buttons[button]) { Append(new(0, "button", Button: button, Up: true), now); buttons[button] = false; }
+                                if (up && buttons[button]) { if (Append(new(0, "button", Button: button, Up: true), now)) buttons[button] = false; }
                                 else if (!up && eligible && Append(new(0, "button", Button: button), now)) buttons[button] = true;
                             }
                             else if (eligible && msg == 0x200 && movement) Append(new(0, "move", X: data.X, Y: data.Y), now);

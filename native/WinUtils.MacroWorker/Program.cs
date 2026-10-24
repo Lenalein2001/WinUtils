@@ -18,7 +18,7 @@ internal static partial class Program
     private static int shutdown;
     private static int recordingSession;
 
-    private sealed record Request(string Id, string Operation, string RunId, Instruction[] Actions, JsonElement Data, Binding? Binding = null);
+    private sealed record Request(string Id, string Operation, string RunId, Instruction[] Actions, JsonElement Data, Binding? Binding = null, int? MaxActions = null);
     private sealed record Instruction(string Kind, double Delay = 0, ushort[]? Keys = null, int Mode = 0,
         uint Flags = 0, uint Up = 0, int X = 0, int Y = 0, string? Text = null, int Times = 0, Instruction[]? Actions = null, double Interval = 0, Timeline? Timeline = null);
     private sealed class Run : IDisposable
@@ -86,8 +86,9 @@ internal static partial class Program
                     if (operation is not ("run" or "release" or "measure" or "measure-periodic")) throw new ArgumentException("Unknown macro operation.");
                     if (runId.Length == 0) throw new ArgumentException("Missing macro owner.");
                     if (Runs.Count >= 128 && !Runs.ContainsKey(runId)) throw new ArgumentException("Too many pending macros.");
+                    int? maxActions = operation == "run" && data.TryGetProperty("maxActions", out _) ? Integer(data, "maxActions", 0, 100_000) : null;
                     Runs.GetOrAdd(runId, _ => new Run());
-                    if (!Queue.TryAdd(new Request(id, operation, runId, instructions, operation is "run" or "measure" or "measure-periodic" ? data.Clone() : default)))
+                    if (!Queue.TryAdd(new Request(id, operation, runId, instructions, operation is "measure" or "measure-periodic" ? data.Clone() : default, MaxActions: maxActions)))
                         throw new ArgumentException("Macro input queue is full.");
                 }
                 catch (Exception error) { Reply("ERR", id, error.Message); }
@@ -163,7 +164,7 @@ internal static partial class Program
                 else if (request.Operation == "measure-periodic") Reply("OK", request.Id, MeasurePeriodic(request.Data, run, timer));
                 else
                 {
-                    if (request.Binding == null && request.Data.TryGetProperty("maxActions", out _)) run.Limit = Integer(request.Data, "maxActions", 0, 100_000);
+                    if (request.Binding == null && request.MaxActions is int limit) run.Limit = limit;
                     Execute(request.Actions, run, timer);
                     if (request.Binding == null) Reply("OK", request.Id, run.Actions.ToString(CultureInfo.InvariantCulture));
                 }
