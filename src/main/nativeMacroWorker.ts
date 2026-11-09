@@ -129,7 +129,7 @@ export class NativeMacroWorker {
     const executable = path.join(app.isPackaged ? process.resourcesPath : app.getAppPath(),
       'resources', 'native', 'WinUtils.MacroWorker.exe');
     return new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => { this.readyReject?.(new Error('Native macro worker startup timed out.')); void this.stop().catch(() => undefined); }, 10_000);
+      const timer = setTimeout(() => this.fail(child, new Error('Native macro worker startup timed out.')), 10_000);
       const settle = (error?: Error): void => {
         clearTimeout(timer); this.readyResolve = null; this.readyReject = null;
         if (error) reject(error); else { this.ready = true; resolve(); }

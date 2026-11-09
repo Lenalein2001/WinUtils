@@ -25,7 +25,7 @@ import type {
 import { normalizeMacroPlayback } from '../shared/macro';
 import { normalizeHotkey as normalizeGlobalHotkey } from '../shared/hotkeys';
 import type { ActionEngine } from './actionEngine';
-import { compileInputActions, executeMacro, stopMacroExecutor, warmMacroExecutor, type MacroExecutionResult } from './macroExecutor';
+import { compileInputActions, executeMacro, stopMacroExecutor, type MacroExecutionResult } from './macroExecutor';
 import type { HotkeyManager, RuntimeHotkeyRegistration } from './hotkeyManager';
 import { getHotkeyDiagnostics, suspendNativePlayback } from './macroHook';
 import { nativeMacroWorker } from './nativeMacroWorker';
@@ -134,11 +134,6 @@ export class MacroManager {
       await this.store.save();
     }
 
-    try {
-      await warmMacroExecutor();
-    } catch (error) {
-      this.log(`Macro input worker warmup failed: ${error instanceof Error ? error.message : String(error)}`);
-    }
     if (this.destroyed) return;
     this.rebuildHotkeys();
     this.startFocusMonitor();

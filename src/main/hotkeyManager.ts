@@ -96,10 +96,10 @@ export class HotkeyManager {
     this.unsubscribeCatalog = this.actions.onCatalogChanged(() => this.syncActionBindings());
     this.unsubscribePause = this.actions.onPauseChanged(paused => setNativePlaybackEnabled(!paused));
     setNativePlaybackEnabled(!this.actions.getActivity().paused);
-    await startHook();
+    // A slow or unavailable native worker must not block the main window.
+    void startHook().catch(error => console.error('[Hotkeys] Native startup failed:', error));
     this.syncActionBindings();
     this.syncRegistrations();
-    await waitForHotkeyRegistrations();
   }
 
   replaceOwnerBindings(ownerId: string, bindings: RuntimeHotkeyRegistration[]): void {
