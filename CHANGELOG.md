@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.3.2 - 2026-11-09
+
+WinUtils now opens while its macro worker starts in the background. This release also adds macro recording and improves playback, editing, and clipboard tools.
+
+### Added
+
+- Record keyboard and mouse input, edit the timeline, and replay it at adjustable speeds.
+- Schedule repeating macros at fixed intervals.
+- Remove common tracking parameters when copying links from Clipboard History.
+
+### Changed
+
+- Reduced memory use and processing overhead during macro recording, hotkey checks, and playback.
+- Improved the layout of controls in narrow windows.
+
+### Fixed
+
+- A macro worker startup timeout no longer prevents WinUtils from opening. Hotkey registration retries in the background.
+- Recording preserves key and mouse button releases when its event buffer fills, and reports when a worker exit interrupts capture.
+- Run uses the latest macro edits. Normal close and quit wait for pending macro saves, and failed saves can be retried.
+- Failed hotkey updates stop obsolete macro plans from running.
+
 ## v0.3.1 - 2026-10-10
 
 This release improves macro responsiveness, keeps the interface responsive during clipboard image capture, and reduces background work.
